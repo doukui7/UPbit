@@ -1,0 +1,30 @@
+name: Auto Trade
+
+on:
+  schedule:
+    # 매일 한국시간 09:05 (UTC 00:05) - 일봉 마감 직후
+    - cron: '5 0 * * *'
+  workflow_dispatch:  # 수동 실행 가능
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Auto Trade
+        env:
+          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
+          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
+          PORTFOLIO: ${{ secrets.PORTFOLIO }}
+        run: python github_action_trade.py

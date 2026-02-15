@@ -1,0 +1,6 @@
+pyupbit
+streamlit
+pandas
+plotly
+python-dotenv
+numpy

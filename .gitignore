@@ -1,0 +1,27 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+
+# Config (contains API keys locally)
+user_config.json
+
+# Logs & exports
+*.csv
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reference
+GoldenToilet_ref/
+.ipynb_checkpoints/
