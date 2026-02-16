@@ -1,7 +1,40 @@
 import pyupbit
 import pandas as pd
 import time
+import logging
 from strategy.sma import SMAStrategy
+
+logger = logging.getLogger(__name__)
+
+# 시간봉별 실행 설정
+INTERVAL_EXEC_CONFIG = {
+    "day":       {"splits": 3, "wait_sec": 60,  "timeout_sec": 600, "fallback_market": True},
+    "minute240": {"splits": 3, "wait_sec": 30,  "timeout_sec": 300, "fallback_market": True},
+    "minute60":  {"splits": 2, "wait_sec": 20,  "timeout_sec": 120, "fallback_market": True},
+    "minute30":  {"splits": 2, "wait_sec": 10,  "timeout_sec": 60,  "fallback_market": True},
+    "minute15":  {"splits": 1, "wait_sec": 5,   "timeout_sec": 30,  "fallback_market": True},
+    "minute5":   {"splits": 1, "wait_sec": 3,   "timeout_sec": 15,  "fallback_market": True},
+    "minute1":   {"splits": 1, "wait_sec": 2,   "timeout_sec": 10,  "fallback_market": True},
+}
+
+# Upbit 호가 단위 (KRW 마켓)
+def get_tick_size(price):
+    """Upbit KRW 마켓 호가 단위 반환"""
+    if price >= 2000000: return 1000
+    elif price >= 1000000: return 500
+    elif price >= 500000: return 100
+    elif price >= 100000: return 50
+    elif price >= 10000: return 10
+    elif price >= 1000: return 5
+    elif price >= 100: return 1
+    elif price >= 10: return 0.1
+    elif price >= 1: return 0.01
+    else: return 0.001
+
+def round_to_tick(price, tick_size):
+    """호가 단위에 맞게 반올림"""
+    return round(price / tick_size) * tick_size
+
 
 class UpbitTrader:
     def __init__(self, access_key, secret_key):
@@ -9,147 +42,398 @@ class UpbitTrader:
         self.secret = secret_key
         self.upbit = pyupbit.Upbit(access_key, secret_key)
         self.strategy = SMAStrategy()
+        self.execution_log = []  # 체결 로그 기록
 
     def get_orders(self, ticker=None, state='wait'):
-        """
-        Fetch orders.
-        ticker: Optional. If provided, fetches orders for that specific ticker.
-        state: 'wait', 'done', 'cancel'. Default is 'wait'.
-        """
         try:
             if ticker:
                 return self.upbit.get_order(ticker, state=state)
             else:
-                # pyupbit.get_orders() fetches all orders for a given state, up to 100.
                 return self.upbit.get_orders(state=state)
         except Exception as e:
-            print(f"Error getting orders: {e}")
+            logger.error(f"Error getting orders: {e}")
             return None
 
     def get_history(self, kind="deposit", currency="KRW"):
-        """
-        Fetch account history.
-        kind: 'deposit', 'withdraw'
-        currency: 'KRW', 'BTC', 'USDT', etc.
-        """
         try:
             if kind == 'deposit':
                 return self.upbit.get_deposit_list(currency)
             elif kind == 'withdraw':
                 return self.upbit.get_withdraw_list(currency)
             else:
-                print(f"Invalid history kind: {kind}")
                 return []
         except Exception as e:
-            print(f"Error fetching {kind} history ({currency}): {e}")
+            logger.error(f"Error fetching {kind} history ({currency}): {e}")
             return []
 
     def get_balance(self, ticker="KRW"):
-        """
-        Get balance of specific ticker.
-        """
         try:
             return self.upbit.get_balance(ticker)
         except Exception as e:
-            print(f"Error getting balance: {e}")
+            logger.error(f"Error getting balance: {e}")
             return 0
 
     def get_current_price(self, ticker):
-        """
-        Get current price of ticker.
-        """
         try:
             return pyupbit.get_current_price(ticker)
         except Exception as e:
-            print(f"Error getting price: {e}")
+            logger.error(f"Error getting price: {e}")
+            return None
+
+    def get_orderbook(self, ticker):
+        """호가창 조회"""
+        try:
+            ob = pyupbit.get_orderbook(ticker)
+            if isinstance(ob, list):
+                ob = ob[0]
+            return ob
+        except Exception as e:
+            logger.error(f"Error getting orderbook: {e}")
             return None
 
     def buy_market(self, ticker, price_amount):
-        """
-        Buy coin at market price.
-        price_amount: Amount in KRW to buy.
-        """
         try:
             return self.upbit.buy_market_order(ticker, price_amount)
         except Exception as e:
             return {"error": str(e)}
 
     def sell_market(self, ticker, volume):
-        """
-        Sell coin at market price.
-        volume: Amount of coin to sell.
-        """
         try:
             return self.upbit.sell_market_order(ticker, volume)
         except Exception as e:
-            today_date = None # Not used in simple check
+            return {"error": str(e)}
+
+    def buy_limit(self, ticker, price, volume):
+        """지정가 매수"""
+        try:
+            return self.upbit.buy_limit_order(ticker, price, volume)
+        except Exception as e:
+            return {"error": str(e)}
+
+    def sell_limit(self, ticker, price, volume):
+        """지정가 매도"""
+        try:
+            return self.upbit.sell_limit_order(ticker, price, volume)
+        except Exception as e:
+            return {"error": str(e)}
+
+    def cancel_order(self, uuid):
+        """주문 취소"""
+        try:
+            return self.upbit.cancel_order(uuid)
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_order_detail(self, uuid):
+        """주문 상세 조회"""
+        try:
+            return self.upbit.get_individual_order(uuid)
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _wait_for_fill(self, uuid, timeout_sec=60, check_interval=3):
+        """주문 체결 대기. 체결되면 True, 타임아웃이면 False"""
+        elapsed = 0
+        while elapsed < timeout_sec:
+            time.sleep(check_interval)
+            elapsed += check_interval
+            detail = self.get_order_detail(uuid)
+            if detail and isinstance(detail, dict):
+                state = detail.get('state', '')
+                if state == 'done':
+                    return True, detail
+                elif state == 'cancel':
+                    return False, detail
+        return False, None
+
+    # ========================================================
+    # 스마트 주문 실행: 지정가 분할 주문 + 시간봉 대응
+    # ========================================================
+    def smart_buy(self, ticker, krw_amount, interval="day", price_offset_pct=0.02):
+        """
+        지정가 분할 매수.
+        - ticker: KRW-BTC 등
+        - krw_amount: 매수할 KRW 금액
+        - interval: 시간봉 (실행 전략 결정)
+        - price_offset_pct: 현재가 대비 지정가 오프셋 (0.02 = 0.02% 위)
+        Returns: {"filled_amount": 총 체결 수량, "avg_price": 평균 체결가, "logs": [...]}
+        """
+        config = INTERVAL_EXEC_CONFIG.get(interval, INTERVAL_EXEC_CONFIG["day"])
+        splits = config["splits"]
+        wait_sec = config["wait_sec"]
+        timeout_sec = config["timeout_sec"]
+        fallback = config["fallback_market"]
+
+        per_split = krw_amount / splits
+        total_filled_volume = 0
+        total_filled_krw = 0
+        logs = []
+        remaining_krw = krw_amount
+
+        for i in range(splits):
+            if remaining_krw < 5000:
+                break
+
+            amount = min(per_split, remaining_krw)
+            current_price = self.get_current_price(ticker)
+            if not current_price:
+                logs.append({"split": i+1, "status": "error", "msg": "가격 조회 실패"})
+                break
+
+            # 호가 1호가 위 지정가 (매수 유리 가격)
+            ob = self.get_orderbook(ticker)
+            if ob and ob.get('orderbook_units'):
+                best_ask = ob['orderbook_units'][0]['ask_price']
+                limit_price = best_ask  # 매도 1호가에 맞춤
+            else:
+                # Fallback: 현재가 + offset
+                tick = get_tick_size(current_price)
+                limit_price = round_to_tick(current_price * (1 + price_offset_pct / 100), tick)
+
+            volume = amount / limit_price
+            logger.info(f"[{ticker}] Split {i+1}/{splits}: Limit BUY {volume:.6f} @ {limit_price:,.0f}")
+
+            result = self.buy_limit(ticker, limit_price, volume)
+            if isinstance(result, dict) and result.get('error'):
+                logs.append({"split": i+1, "status": "error", "msg": result['error']})
+                break
+
+            uuid = result.get('uuid') if isinstance(result, dict) else None
+            if not uuid:
+                logs.append({"split": i+1, "status": "error", "msg": "주문 UUID 없음"})
+                break
+
+            # 체결 대기
+            per_timeout = timeout_sec // splits
+            filled, detail = self._wait_for_fill(uuid, timeout_sec=per_timeout, check_interval=wait_sec)
+
+            if filled and detail:
+                exec_vol = float(detail.get('executed_volume', 0))
+                exec_price = float(detail.get('price', limit_price)) if detail.get('trades') is None else limit_price
+                # trades에서 실제 체결 평균가 계산
+                trades = detail.get('trades', [])
+                if trades:
+                    t_krw = sum(float(t['funds']) for t in trades)
+                    t_vol = sum(float(t['volume']) for t in trades)
+                    exec_price = t_krw / t_vol if t_vol > 0 else limit_price
+                    total_filled_krw += t_krw
+                else:
+                    total_filled_krw += exec_vol * limit_price
+
+                total_filled_volume += exec_vol
+                remaining_krw -= exec_vol * limit_price
+                logs.append({
+                    "split": i+1, "status": "filled", "volume": exec_vol,
+                    "price": exec_price, "limit_price": limit_price
+                })
+            else:
+                # 미체결 → 취소
+                self.cancel_order(uuid)
+                # 잔여 확인
+                detail2 = self.get_order_detail(uuid)
+                partial_vol = float(detail2.get('executed_volume', 0)) if detail2 else 0
+                if partial_vol > 0:
+                    total_filled_volume += partial_vol
+                    total_filled_krw += partial_vol * limit_price
+                    remaining_krw -= partial_vol * limit_price
+
+                logs.append({
+                    "split": i+1, "status": "timeout_cancelled",
+                    "partial_volume": partial_vol, "limit_price": limit_price
+                })
+
+        # 잔여금이 있으면 시장가 마무리
+        if remaining_krw >= 5000 and fallback:
+            logger.info(f"[{ticker}] Fallback market buy: {remaining_krw:,.0f} KRW")
+            result = self.buy_market(ticker, remaining_krw * 0.999)
+            if isinstance(result, dict) and not result.get('error'):
+                # 시장가는 즉시 체결
+                time.sleep(2)
+                current_price = self.get_current_price(ticker)
+                est_vol = remaining_krw / current_price if current_price else 0
+                total_filled_volume += est_vol
+                total_filled_krw += remaining_krw
+                logs.append({"split": "market_fallback", "status": "filled", "krw": remaining_krw})
+
+        avg_price = total_filled_krw / total_filled_volume if total_filled_volume > 0 else 0
+
+        exec_result = {
+            "type": "buy",
+            "ticker": ticker,
+            "filled_volume": total_filled_volume,
+            "avg_price": avg_price,
+            "total_krw": total_filled_krw,
+            "splits_used": len(logs),
+            "logs": logs
+        }
+        self.execution_log.append(exec_result)
+        return exec_result
+
+    def smart_sell(self, ticker, volume, interval="day", price_offset_pct=0.02):
+        """
+        지정가 분할 매도.
+        - ticker: KRW-BTC 등
+        - volume: 매도할 코인 수량
+        - interval: 시간봉 (실행 전략 결정)
+        - price_offset_pct: 현재가 대비 지정가 오프셋
+        Returns: {"filled_krw": 총 체결 금액, "avg_price": 평균 체결가, "logs": [...]}
+        """
+        config = INTERVAL_EXEC_CONFIG.get(interval, INTERVAL_EXEC_CONFIG["day"])
+        splits = config["splits"]
+        wait_sec = config["wait_sec"]
+        timeout_sec = config["timeout_sec"]
+        fallback = config["fallback_market"]
+
+        per_split = volume / splits
+        total_filled_volume = 0
+        total_filled_krw = 0
+        logs = []
+        remaining_volume = volume
+
+        for i in range(splits):
+            current_price = self.get_current_price(ticker)
+            if not current_price or remaining_volume * current_price < 5000:
+                break
+
+            sell_vol = min(per_split, remaining_volume)
+
+            # 호가 1호가 아래 지정가 (매도 유리 가격)
+            ob = self.get_orderbook(ticker)
+            if ob and ob.get('orderbook_units'):
+                best_bid = ob['orderbook_units'][0]['bid_price']
+                limit_price = best_bid  # 매수 1호가에 맞춤
+            else:
+                tick = get_tick_size(current_price)
+                limit_price = round_to_tick(current_price * (1 - price_offset_pct / 100), tick)
+
+            logger.info(f"[{ticker}] Split {i+1}/{splits}: Limit SELL {sell_vol:.6f} @ {limit_price:,.0f}")
+
+            result = self.sell_limit(ticker, limit_price, sell_vol)
+            if isinstance(result, dict) and result.get('error'):
+                logs.append({"split": i+1, "status": "error", "msg": result['error']})
+                break
+
+            uuid = result.get('uuid') if isinstance(result, dict) else None
+            if not uuid:
+                logs.append({"split": i+1, "status": "error", "msg": "주문 UUID 없음"})
+                break
+
+            per_timeout = timeout_sec // splits
+            filled, detail = self._wait_for_fill(uuid, timeout_sec=per_timeout, check_interval=wait_sec)
+
+            if filled and detail:
+                exec_vol = float(detail.get('executed_volume', 0))
+                trades = detail.get('trades', [])
+                if trades:
+                    t_krw = sum(float(t['funds']) for t in trades)
+                    t_vol = sum(float(t['volume']) for t in trades)
+                    exec_price = t_krw / t_vol if t_vol > 0 else limit_price
+                    total_filled_krw += t_krw
+                else:
+                    exec_price = limit_price
+                    total_filled_krw += exec_vol * limit_price
+
+                total_filled_volume += exec_vol
+                remaining_volume -= exec_vol
+                logs.append({
+                    "split": i+1, "status": "filled", "volume": exec_vol,
+                    "price": exec_price, "limit_price": limit_price
+                })
+            else:
+                self.cancel_order(uuid)
+                detail2 = self.get_order_detail(uuid)
+                partial_vol = float(detail2.get('executed_volume', 0)) if detail2 else 0
+                if partial_vol > 0:
+                    total_filled_volume += partial_vol
+                    total_filled_krw += partial_vol * limit_price
+                    remaining_volume -= partial_vol
+
+                logs.append({
+                    "split": i+1, "status": "timeout_cancelled",
+                    "partial_volume": partial_vol, "limit_price": limit_price
+                })
+
+        # 잔여 수량 시장가 매도
+        current_price = self.get_current_price(ticker) or 0
+        if remaining_volume > 0 and remaining_volume * current_price >= 5000 and fallback:
+            logger.info(f"[{ticker}] Fallback market sell: {remaining_volume:.6f}")
+            result = self.sell_market(ticker, remaining_volume)
+            if isinstance(result, dict) and not result.get('error'):
+                time.sleep(2)
+                est_krw = remaining_volume * current_price
+                total_filled_volume += remaining_volume
+                total_filled_krw += est_krw
+                logs.append({"split": "market_fallback", "status": "filled", "volume": remaining_volume})
+
+        avg_price = total_filled_krw / total_filled_volume if total_filled_volume > 0 else 0
+
+        exec_result = {
+            "type": "sell",
+            "ticker": ticker,
+            "filled_volume": total_filled_volume,
+            "avg_price": avg_price,
+            "total_krw": total_filled_krw,
+            "splits_used": len(logs),
+            "logs": logs
+        }
+        self.execution_log.append(exec_result)
+        return exec_result
+
+    def get_execution_log(self):
+        """체결 로그 반환"""
+        return self.execution_log
+
+    def get_done_orders(self, ticker=None):
+        """체결 완료 주문 조회 (슬리피지 분석용)"""
+        try:
+            if ticker:
+                return self.upbit.get_order(ticker, state='done')
+            return self.upbit.get_orders(state='done')
+        except Exception as e:
+            logger.error(f"Error fetching done orders: {e}")
+            return []
 
     def check_and_trade(self, ticker, interval="day", sma_period=20):
         """
         Check signal and execute trade.
         Returns trade result or status message.
         """
-        # 1. Get Data
-        # Ensure we fetch enough data for long_period
-        count = 200
-        if long_period and long_period > 200:
-             count = long_period + 50
-             
+        count = max(200, sma_period * 3)
+
         df = pyupbit.get_ohlcv(ticker, interval=interval, count=count)
         if df is None:
             return "Failed to fetch data"
 
-        # 2. Analyze
         calc_periods = [sma_period]
-        if long_period:
-            calc_periods.append(long_period)
-            
         df = self.strategy.create_features(df, periods=calc_periods)
-        last_row = df.iloc[-1]
-        
-        # Using row[-2] (previous closed candle) is safer for backtest logic consistency,
-        # but for live trading, we might want to react to 'current' signal or strict 'close' signal.
-        # GoldenToilet usually uses 'current' row for indicators but makes decision based on logic.
-        # Let's use the standard approach: Check signal on the just-closed candle or current developing candle?
-        # Standard: Use *previous* completed candle to avoid repainting.
-        # However, for simplicity here, we'll check the *last complete* row if data is historical, 
-        # but get_ohlcv includes current incomplete candle as last row?
-        # pyupbit get_ohlcv includes current candle as last row.
-        # So df.iloc[-2] is the last *completed* candle.
-        
-        previous_row = df.iloc[-2] # Last completed candle
-        current_signal = self.strategy.get_signal(previous_row, strategy_type='SMA_CROSS', ma_period=sma_period, long_ma_period=long_period)
-        
-        # 3. Check Position
+
+        previous_row = df.iloc[-2]
+        current_signal = self.strategy.get_signal(previous_row, strategy_type='SMA_CROSS', ma_period=sma_period)
+
         krw_balance = self.get_balance("KRW")
-        coin_currency = ticker.split('-')[1] # KRW-BTC -> BTC
+        coin_currency = ticker.split('-')[1]
         coin_balance = self.get_balance(coin_currency)
         current_price = self.get_current_price(ticker)
-        
+
         if current_price is None:
             return "Failed to get current price"
 
-        min_order_amount = 5000 # KRW
+        min_order_amount = 5000
 
-        # Logic
         if current_signal == 'BUY':
-            # Buy if we have KRW and don't hold much coin? 
-            # Simple logic: If we have > 5000 KRW, buy.
             if krw_balance > min_order_amount:
-                # Buy 99% of balance to account for fees
                 amount_to_buy = krw_balance * 0.99
-                result = self.buy_market(ticker, amount_to_buy)
-                return f"BUY EXECUTED: {result}"
+                result = self.smart_buy(ticker, amount_to_buy, interval=interval)
+                return f"BUY EXECUTED (Smart): avg={result['avg_price']:,.0f}, vol={result['filled_volume']:.6f}"
             else:
                 return "BUY SIGNAL but Insufficient KRW"
-        
+
         elif current_signal == 'SELL':
-            # Sell if we have coin value > 5000 KRW
             coin_value = coin_balance * current_price
             if coin_value > min_order_amount:
-                result = self.sell_market(ticker, coin_balance)
-                return f"SELL EXECUTED: {result}"
+                result = self.smart_sell(ticker, coin_balance, interval=interval)
+                return f"SELL EXECUTED (Smart): avg={result['avg_price']:,.0f}, krw={result['total_krw']:,.0f}"
             else:
                 return "SELL SIGNAL but Insufficient Coin"
-        
+
         return f"HOLD (Signal: {current_signal})"

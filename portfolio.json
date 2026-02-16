@@ -1,0 +1,56 @@
+[
+  {
+    "market": "KRW",
+    "coin": "BTC",
+    "strategy": "Donchian",
+    "parameter": 20,
+    "sell_parameter": 20,
+    "weight": 10,
+    "interval": "day"
+  },
+  {
+    "market": "KRW",
+    "coin": "BTC",
+    "strategy": "Donchian",
+    "parameter": 115,
+    "sell_parameter": 105,
+    "weight": 15,
+    "interval": "minute240"
+  },
+  {
+    "market": "KRW",
+    "coin": "BTC",
+    "strategy": "Donchian",
+    "parameter": 170,
+    "sell_parameter": 170,
+    "weight": 15,
+    "interval": "minute30"
+  },
+  {
+    "market": "KRW",
+    "coin": "ETH",
+    "strategy": "SMA",
+    "parameter": 40,
+    "sell_parameter": 0,
+    "weight": 20,
+    "interval": "day"
+  },
+  {
+    "market": "KRW",
+    "coin": "SOL",
+    "strategy": "SMA",
+    "parameter": 40,
+    "sell_parameter": 0,
+    "weight": 20,
+    "interval": "day"
+  },
+  {
+    "market": "KRW",
+    "coin": "BTC",
+    "strategy": "SMA",
+    "parameter": 35,
+    "sell_parameter": 0,
+    "weight": 20,
+    "interval": "day"
+  }
+]

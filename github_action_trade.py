@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import time
 import logging
 import pyupbit
 import pandas as pd
@@ -40,14 +41,13 @@ def get_portfolio():
     }]
 
 
-def trade_single_asset(trader, item, total_capital):
-    """Process a single asset: fetch data, generate signal, execute trade."""
+def analyze_asset(trader, item):
+    """1단계: 데이터 조회 → 시그널 계산 → 보유 현황 확인"""
     ticker = f"{item['market']}-{item['coin'].upper()}"
     strategy_name = item.get("strategy", "SMA")
     param = item.get("parameter", 20)
     interval = item.get("interval", "day")
     weight = item.get("weight", 100)
-    allocated_cap = total_capital * (weight / 100.0)
 
     logger.info(f"--- [{ticker}] {strategy_name}({param}), {weight}%, {interval} ---")
 
@@ -56,7 +56,7 @@ def trade_single_asset(trader, item, total_capital):
     df = pyupbit.get_ohlcv(ticker, interval=interval, count=count)
     if df is None or len(df) < param + 5:
         logger.error(f"[{ticker}] Insufficient data (got {len(df) if df is not None else 0}, need {param + 5})")
-        return
+        return None
 
     # Generate signal
     last_candle = df.iloc[-2]  # Last completed candle
@@ -64,7 +64,7 @@ def trade_single_asset(trader, item, total_capital):
     if strategy_name == "Donchian":
         strat = DonchianStrategy()
         buy_p = param
-        sell_p = max(5, buy_p // 2)
+        sell_p = item.get("sell_parameter", 0) or max(5, buy_p // 2)
         df = strat.create_features(df, buy_period=buy_p, sell_period=sell_p)
         last_candle = df.iloc[-2]
         signal = strat.get_signal(last_candle, buy_period=buy_p, sell_period=sell_p)
@@ -77,36 +77,24 @@ def trade_single_asset(trader, item, total_capital):
         indicator_info = f"SMA_{param}={last_candle.get(f'SMA_{param}', 'N/A')}"
 
     current_price = pyupbit.get_current_price(ticker)
-    logger.info(f"[{ticker}] Close={last_candle['close']}, {indicator_info}, Signal={signal}, Price={current_price}")
-
-    # Check balances
     coin_sym = item['coin'].upper()
-    krw_balance = trader.get_balance("KRW")
     coin_balance = trader.get_balance(coin_sym)
     coin_value = coin_balance * current_price if current_price else 0
+    is_holding = coin_value >= MIN_ORDER_KRW
 
-    logger.info(f"[{ticker}] KRW={krw_balance:,.0f}, {coin_sym}={coin_balance:.6f} (≈{coin_value:,.0f} KRW)")
+    logger.info(f"[{ticker}] Close={last_candle['close']}, {indicator_info}, Signal={signal}, Price={current_price}")
+    logger.info(f"[{ticker}] {coin_sym}={coin_balance:.6f} (≈{coin_value:,.0f} KRW), Holding={is_holding}")
 
-    # Execute
-    if signal == 'BUY':
-        buy_budget = min(krw_balance, allocated_cap) * 0.999
-        if buy_budget > MIN_ORDER_KRW:
-            logger.info(f"[{ticker}] BUY {buy_budget:,.0f} KRW")
-            result = trader.buy_market(ticker, buy_budget)
-            logger.info(f"[{ticker}] Buy Result: {result}")
-        else:
-            logger.info(f"[{ticker}] BUY signal but insufficient KRW ({buy_budget:,.0f})")
-
-    elif signal == 'SELL':
-        if coin_value > MIN_ORDER_KRW:
-            logger.info(f"[{ticker}] SELL {coin_balance:.6f} {coin_sym}")
-            result = trader.sell_market(ticker, coin_balance)
-            logger.info(f"[{ticker}] Sell Result: {result}")
-        else:
-            logger.info(f"[{ticker}] SELL signal but coin value too low ({coin_value:,.0f})")
-
-    else:
-        logger.info(f"[{ticker}] HOLD - no action")
+    return {
+        'ticker': ticker,
+        'coin_sym': coin_sym,
+        'signal': signal,
+        'weight': weight,
+        'coin_balance': coin_balance,
+        'coin_value': coin_value,
+        'current_price': current_price,
+        'is_holding': is_holding,
+    }
 
 
 def run_auto_trade():
@@ -122,24 +110,72 @@ def run_auto_trade():
     trader = UpbitTrader(ACCESS_KEY, SECRET_KEY)
     portfolio = get_portfolio()
 
-    # Total capital = current KRW + all coin values
-    krw_bal = trader.get_balance("KRW")
-    total_capital = krw_bal
-    for item in portfolio:
-        coin_sym = item['coin'].upper()
-        ticker = f"{item['market']}-{coin_sym}"
-        cb = trader.get_balance(coin_sym)
-        cp = pyupbit.get_current_price(ticker) or 0
-        total_capital += cb * cp
+    logger.info(f"=== Portfolio Auto Trade ({len(portfolio)} assets) ===")
 
-    logger.info(f"=== Portfolio Auto Trade ===")
-    logger.info(f"Total Capital: {total_capital:,.0f} KRW | Assets: {len(portfolio)}")
-
+    # ── 1단계: 전체 시그널 분석 ──
+    analyses = []
     for item in portfolio:
         try:
-            trade_single_asset(trader, item, total_capital)
+            result = analyze_asset(trader, item)
+            if result:
+                analyses.append(result)
         except Exception as e:
-            logger.error(f"Error processing {item.get('coin', '?')}: {e}")
+            logger.error(f"Error analyzing {item.get('coin', '?')}: {e}")
+
+    if not analyses:
+        logger.error("No assets analyzed. Exiting.")
+        return
+
+    # ── 2단계: 매도 먼저 실행 (현금 확보) ──
+    for a in analyses:
+        if a['signal'] == 'SELL' and a['is_holding']:
+            logger.info(f"[{a['ticker']}] SELL {a['coin_balance']:.6f} {a['coin_sym']}")
+            try:
+                result = trader.sell_market(a['ticker'], a['coin_balance'])
+                logger.info(f"[{a['ticker']}] Sell Result: {result}")
+            except Exception as e:
+                logger.error(f"[{a['ticker']}] Sell Error: {e}")
+        elif a['signal'] == 'SELL' and not a['is_holding']:
+            logger.info(f"[{a['ticker']}] SELL signal but not holding - skip")
+
+    # 매도 체결 대기
+    time.sleep(1)
+
+    # ── 3단계: 현금 기준 비중 배분 후 매수 ──
+    krw_balance = trader.get_balance("KRW")
+
+    # 보유 중인 자산의 비중 합산 (매도된 건 제외)
+    held_weight = sum(
+        a['weight'] for a in analyses
+        if a['is_holding'] and a['signal'] != 'SELL'  # 아직 보유 중 (방금 매도한 건 제외)
+    )
+    available_weight = 100 - held_weight  # 현금으로 운용할 비중
+
+    logger.info(f"KRW={krw_balance:,.0f} | Held weight={held_weight}% | Available weight={available_weight}%")
+
+    for a in analyses:
+        if a['signal'] == 'BUY':
+            if a['is_holding']:
+                logger.info(f"[{a['ticker']}] Already holding (≈{a['coin_value']:,.0f} KRW) - HOLD")
+            else:
+                # 현금에서 비중 비례 배분
+                if available_weight > 0:
+                    buy_budget = krw_balance * (a['weight'] / available_weight) * 0.999
+                else:
+                    buy_budget = 0
+
+                if buy_budget > MIN_ORDER_KRW:
+                    logger.info(f"[{a['ticker']}] BUY {buy_budget:,.0f} KRW (weight {a['weight']}% / {available_weight}%)")
+                    try:
+                        result = trader.buy_market(a['ticker'], buy_budget)
+                        logger.info(f"[{a['ticker']}] Buy Result: {result}")
+                    except Exception as e:
+                        logger.error(f"[{a['ticker']}] Buy Error: {e}")
+                else:
+                    logger.info(f"[{a['ticker']}] BUY signal but budget too low ({buy_budget:,.0f} KRW)")
+
+        elif a['signal'] == 'HOLD':
+            logger.info(f"[{a['ticker']}] HOLD - no action")
 
     logger.info("=== Done ===")
 
