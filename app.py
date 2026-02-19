@@ -932,7 +932,9 @@ def main():
                                     )
                                     st.plotly_chart(fig_m, use_container_width=True)
 
-                            except Exception:
+                            except Exception as chart_err:
+                                with cols[ci]:
+                                    st.warning(f"{p_ticker} 데이터 로드 실패: {chart_err}")
                                 continue
 
                     # 1행: BTC 전략 (일봉 → 4시간봉)
@@ -1588,17 +1590,9 @@ def main():
         
         # Select ticker from portfolio for convenience, or custom
         port_tickers = [f"{r['market']}-{r['coin'].upper()}" for r in portfolio_list]
-        
+
         # Merge and Remove Duplicates
         base_options = list(dict.fromkeys(port_tickers + TOP_20_TICKERS))
-        
-        # --- Strategy Selection (Top) ---
-        bt_strategy = st.selectbox(
-            "전략 선택",
-            ["SMA 전략", "돈키안 전략"],
-            index=0,
-            key="bt_strategy_sel"
-        )
 
         selected_ticker_bt = st.selectbox("백테스트 대상", base_options + ["직접입력"])
 
@@ -1614,20 +1608,45 @@ def main():
         else:
             bt_ticker = selected_ticker_bt
 
-        # --- Strategy-specific Parameters ---
+        # 포트폴리오에서 해당 종목의 설정을 자동 로드
+        port_match = next((item for item in portfolio_list if f"{item['market']}-{item['coin'].upper()}" == bt_ticker), None)
+
+        # 전략 선택 (포트폴리오 설정 자동 반영)
+        default_strat_idx = 0
+        if port_match and port_match.get('strategy') == 'Donchian':
+            default_strat_idx = 1
+
+        bt_strategy = st.selectbox(
+            "전략 선택",
+            ["SMA 전략", "돈키안 전략"],
+            index=default_strat_idx,
+            key="bt_strategy_sel"
+        )
+
+        # --- Strategy-specific Parameters (포트폴리오 값 자동 반영) ---
         if bt_strategy == "SMA 전략":
-            item = next((item for item in portfolio_list if f"{item['market']}-{item['coin'].upper()}" == bt_ticker), None)
-            default_sma = item.get('parameter', 60) if item else 60
+            default_sma = port_match.get('parameter', 60) if port_match else 60
             bt_sma = st.number_input("단기 SMA (추세)", value=default_sma, key="bt_sma_select", min_value=5, step=1)
         else:  # Donchian Strategy
+            default_buy = int(port_match.get('parameter', 20)) if port_match and port_match.get('strategy') == 'Donchian' else 20
+            default_sell = int(port_match.get('sell_parameter', 10)) if port_match and port_match.get('strategy') == 'Donchian' else 10
+            if default_sell == 0:
+                default_sell = max(5, default_buy // 2)
             dc_col1, dc_col2 = st.columns(2)
             with dc_col1:
-                bt_buy_period = st.number_input("매수 채널 기간", value=20, min_value=5, max_value=300, step=1, key="bt_dc_buy", help="N일 고가 돌파 시 매수")
+                bt_buy_period = st.number_input("매수 채널 기간", value=default_buy, min_value=5, max_value=300, step=1, key="bt_dc_buy", help="N일 고가 돌파 시 매수")
             with dc_col2:
-                bt_sell_period = st.number_input("매도 채널 기간", value=10, min_value=5, max_value=300, step=1, key="bt_dc_sell", help="N일 저가 이탈 시 매도")
+                bt_sell_period = st.number_input("매도 채널 기간", value=default_sell, min_value=5, max_value=300, step=1, key="bt_dc_sell", help="N일 저가 이탈 시 매도")
 
-        # Backtest Interval Selection
-        bt_interval_label = st.selectbox("시간봉 선택", options=list(INTERVAL_MAP.keys()), index=0, key="bt_interval_sel")
+        # 시간봉 선택 (포트폴리오 값 자동 반영)
+        default_interval_idx = 0
+        if port_match:
+            port_iv_label = INTERVAL_REV_MAP.get(port_match.get('interval', 'day'), '일봉')
+            interval_keys = list(INTERVAL_MAP.keys())
+            if port_iv_label in interval_keys:
+                default_interval_idx = interval_keys.index(port_iv_label)
+
+        bt_interval_label = st.selectbox("시간봉 선택", options=list(INTERVAL_MAP.keys()), index=default_interval_idx, key="bt_interval_sel")
         bt_interval = INTERVAL_MAP[bt_interval_label]
 
         # 코인/시간봉별 기본 슬리피지 테이블 (%)
