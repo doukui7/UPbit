@@ -55,11 +55,52 @@ class UpbitTrader:
             return None
 
     def get_history(self, kind="deposit", currency="KRW"):
+        """입출금/체결 내역 조회. Upbit API 직접 호출로 안정성 확보."""
+        import jwt
+        import uuid as _uuid
+        import hashlib
+        from urllib.parse import urlencode
+        import requests
+
+        server_url = "https://api.upbit.com"
+
+        def _auth_header(query_params=None):
+            payload = {
+                'access_key': self.upbit.access if hasattr(self.upbit, 'access') else '',
+                'nonce': str(_uuid.uuid4()),
+            }
+            if query_params:
+                query_string = urlencode(query_params)
+                m = hashlib.sha512()
+                m.update(query_string.encode())
+                payload['query_hash'] = m.hexdigest()
+                payload['query_hash_alg'] = 'SHA512'
+            token = jwt.encode(payload, self.upbit.secret if hasattr(self.upbit, 'secret') else '')
+            return {"Authorization": f"Bearer {token}"}
+
         try:
             if kind == 'deposit':
-                return self.upbit.get_deposit_list(currency)
+                params = {"currency": currency, "limit": 100, "order_by": "desc"}
+                res = requests.get(f"{server_url}/v1/deposits", params=params, headers=_auth_header(params))
+                if res.status_code == 200:
+                    return res.json()
+                logger.error(f"Deposit API error: {res.status_code} {res.text}")
+                return []
             elif kind == 'withdraw':
-                return self.upbit.get_withdraw_list(currency)
+                params = {"currency": currency, "limit": 100, "order_by": "desc"}
+                res = requests.get(f"{server_url}/v1/withdraws", params=params, headers=_auth_header(params))
+                if res.status_code == 200:
+                    return res.json()
+                logger.error(f"Withdraw API error: {res.status_code} {res.text}")
+                return []
+            elif kind == 'order':
+                # 체결 완료 주문 조회 (전체 마켓)
+                params = {"state": "done", "limit": 100, "order_by": "desc"}
+                res = requests.get(f"{server_url}/v1/orders", params=params, headers=_auth_header(params))
+                if res.status_code == 200:
+                    return res.json()
+                logger.error(f"Order API error: {res.status_code} {res.text}")
+                return []
             else:
                 return []
         except Exception as e:

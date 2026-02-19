@@ -577,7 +577,8 @@ def main():
     start_date = st.sidebar.date_input(
         "기준 시작일 (Start Date)",
         value=default_start,
-        help="수익률 계산 및 이론적 자산 비교를 위한 기준일입니다. 실제 매매 신호와는 무관합니다."
+        help="수익률 계산 및 이론적 자산 비교를 위한 기준일입니다. 실제 매매 신호와는 무관합니다.",
+        disabled=IS_CLOUD
     )
 
     # Capital Input Customization
@@ -588,7 +589,8 @@ def main():
     initial_cap = st.sidebar.number_input(
         "초기 자본금 (KRW - 원 단위)",
         value=default_cap, step=100000, format="%d",
-        help="시뮬레이션을 위한 초기 투자금 설정입니다. 실제 계좌 잔고와는 무관하며, 수익률 계산의 기준이 됩니다."
+        help="시뮬레이션을 위한 초기 투자금 설정입니다. 실제 계좌 잔고와는 무관하며, 수익률 계산의 기준이 됩니다.",
+        disabled=IS_CLOUD
     )
     st.sidebar.caption(f"Set: **{initial_cap:,.0f} KRW**")
     
@@ -2265,39 +2267,57 @@ def main():
 
         with hist_tab2:
             st.subheader("Real Operation Logs")
-            
+
             if not trader:
                 st.warning("Please configure API Keys first.")
             else:
                 c_h1, c_h2 = st.columns(2)
-                h_type = c_h1.selectbox("조회 유형 (Type)", ["Executed Orders", "Deposits", "Withdrawals"])
-                h_curr = c_h2.selectbox("화폐 (Currency)", ["KRW", "USDT", "BTC", "ETH", "XRP"])
-                
-                if st.button("Fetch Real History"):
-                    with st.spinner("Fetching data from Upbit..."):
-                        if h_type == "Executed Orders":
-                            # Use new method (Order history usually ignores currency or uses distinct method)
-                            # UpbitTrader.get_history('order') does not use currency currently.
-                            data = fetch_history_cached(trader, 'order')
-                            if data:
-                                df = pd.DataFrame(data)
-                                st.dataframe(df)
-                            else:
-                                st.info("No recent orders found.")
-                        elif h_type == "Deposits":
-                            data = fetch_history_cached(trader, 'deposit', h_curr)
-                            if data:
-                                st.dataframe(pd.DataFrame(data))
-                            else:
-                                st.info(f"No recent deposits found for {h_curr}.")
-                        elif h_type == "Withdrawals":
-                            data = fetch_history_cached(trader, 'withdraw', h_curr)
-                            if data:
-                                st.dataframe(pd.DataFrame(data))
-                            else:
-                                st.info(f"No recent withdrawals found for {h_curr}.")
-            
-            st.caption("Data fetches are cached for 60 seconds.")
+                h_type = c_h1.selectbox("조회 유형 (Type)", ["입금 (Deposits)", "출금 (Withdrawals)", "체결 주문 (Orders)"])
+                h_curr = c_h2.selectbox("화폐 (Currency)", ["KRW", "BTC", "ETH", "XRP", "SOL", "USDT"])
+
+                # 날짜 범위 필터
+                d_h1, d_h2 = st.columns(2)
+                from datetime import datetime, timedelta
+                h_date_start = d_h1.date_input("조회 시작일", value=datetime.now().date() - timedelta(days=90), key="hist_start")
+                h_date_end = d_h2.date_input("조회 종료일", value=datetime.now().date(), key="hist_end")
+
+                if st.button("조회 (Fetch)"):
+                    with st.spinner("Upbit API 조회 중..."):
+                        data = None
+                        error_msg = None
+                        try:
+                            if "입금" in h_type:
+                                data = trader.get_history('deposit', h_curr)
+                            elif "출금" in h_type:
+                                data = trader.get_history('withdraw', h_curr)
+                            elif "체결" in h_type:
+                                data = trader.get_history('order', h_curr)
+                        except Exception as e:
+                            error_msg = str(e)
+
+                        if error_msg:
+                            st.error(f"API 오류: {error_msg}")
+                        elif data and len(data) > 0:
+                            df_hist = pd.DataFrame(data)
+                            # 날짜 필터 적용
+                            date_col = None
+                            for col in ['created_at', 'done_at', 'datetime', 'date']:
+                                if col in df_hist.columns:
+                                    date_col = col
+                                    break
+                            if date_col:
+                                df_hist[date_col] = pd.to_datetime(df_hist[date_col])
+                                mask = (df_hist[date_col].dt.date >= h_date_start) & (df_hist[date_col].dt.date <= h_date_end)
+                                df_hist = df_hist[mask]
+                                df_hist = df_hist.sort_values(date_col, ascending=False)
+
+                            st.success(f"{len(df_hist)}건 조회됨")
+                            st.dataframe(df_hist, use_container_width=True)
+                        else:
+                            st.warning(f"조회 결과 없음. (유형: {h_type}, 화폐: {h_curr})")
+                            st.caption("Upbit API는 최근 내역만 반환합니다. 조회 유형을 변경해보세요.")
+
+            st.caption("Upbit API 제한: 최근 100건까지 조회 가능")
 
         with hist_tab3:
             st.subheader("Slippage Analysis (실제 체결 vs 백테스트)")
