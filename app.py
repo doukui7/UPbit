@@ -147,7 +147,236 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+def render_gold_mode():
+    """금(Gold) 현물 거래 모드 - 키움증권 KRX 금시장"""
+    from kiwoom_gold import KiwoomGoldTrader
+
+    st.title("🥇 Gold Trading System (키움증권)")
+
+    # --- Sidebar: Gold 설정 ---
+    st.sidebar.header("Gold 설정")
+
+    # Kiwoom API Keys
+    try:
+        kiwoom_ak = st.secrets.get("KIWOOM_APP_KEY", "")
+        kiwoom_sk = st.secrets.get("KIWOOM_SECRET_KEY", "")
+        kiwoom_account = st.secrets.get("KIWOOM_ACCOUNT", "")
+    except Exception:
+        kiwoom_ak = os.getenv("KIWOOM_APP_KEY", "")
+        kiwoom_sk = os.getenv("KIWOOM_SECRET_KEY", "")
+        kiwoom_account = os.getenv("KIWOOM_ACCOUNT", "")
+
+    if IS_CLOUD:
+        st.sidebar.info("📱 조회 전용 모드 (Cloud)")
+    else:
+        with st.sidebar.expander("키움 API Keys", expanded=False):
+            kiwoom_ak = st.text_input("App Key", value=kiwoom_ak, type="password", key="kiwoom_ak")
+            kiwoom_sk = st.text_input("Secret Key", value=kiwoom_sk, type="password", key="kiwoom_sk")
+            kiwoom_account = st.text_input("계좌번호", value=kiwoom_account, key="kiwoom_acc")
+
+    # Gold 종목 설정
+    GOLD_PRODUCTS = {
+        "금 1g (KRX)": "401000",
+        "금 미니 100g": "401001",
+    }
+    st.sidebar.subheader("금 종목")
+    selected_gold = st.sidebar.selectbox("종목 선택", list(GOLD_PRODUCTS.keys()), key="gold_product")
+    gold_ticker = GOLD_PRODUCTS[selected_gold]
+
+    # 투자 설정
+    st.sidebar.subheader("투자 설정")
+    gold_initial_cap = st.sidebar.number_input(
+        "투자금 (KRW)", value=1000000, step=100000, format="%d", key="gold_cap"
+    )
+
+    # Gold Trader 초기화
+    gold_trader = None
+    if kiwoom_ak and kiwoom_sk:
+        gold_trader = KiwoomGoldTrader(is_mock=True)
+        gold_trader.app_key = kiwoom_ak
+        gold_trader.app_secret = kiwoom_sk
+        gold_trader.account_no = kiwoom_account
+
+    # --- Main Content ---
+    tab_g1, tab_g2, tab_g3 = st.tabs(["📊 금 시세", "💰 계좌/거래", "📈 차트 분석"])
+
+    # --- Tab 1: 금 시세 ---
+    with tab_g1:
+        st.header("금 현물 시세")
+
+        if not gold_trader:
+            st.warning("키움증권 API Key를 사이드바에서 입력해주세요.")
+            st.info("`.env` 파일에 `KIWOOM_APP_KEY`, `KIWOOM_SECRET_KEY`, `KIWOOM_ACCOUNT`를 설정하면 자동으로 로드됩니다.")
+        else:
+            # 시세 조회 (현재 Mock)
+            price_data = gold_trader.get_market_price(gold_ticker)
+
+            if price_data and "output" in price_data:
+                output = price_data["output"]
+                current_price = int(output.get("price", 0))
+                change = int(output.get("change", 0))
+
+                st.caption(f"종목: {selected_gold} ({gold_ticker}) | 데이터: Mock (실제 API 연동 필요)")
+
+                p1, p2, p3, p4 = st.columns(4)
+                p1.metric("현재가 (1g)", f"{current_price:,}원", delta=f"{change:,}원")
+                p2.metric("투자금", f"{gold_initial_cap:,}원")
+                p3.metric("매수 가능 수량", f"{gold_initial_cap // current_price if current_price > 0 else 0}g")
+                p4.metric("API 상태", "Mock 모드" if gold_trader.is_mock else "실거래")
+
+                st.divider()
+
+                # 국제 금 시세 참고 정보
+                st.subheader("참고: 국제 금 시세")
+                st.markdown("""
+| 구분 | 단위 | 비고 |
+|------|------|------|
+| 국제 금 (XAU/USD) | Troy oz (31.1g) | COMEX 기준 |
+| KRX 금현물 | 1g | 원화 기준 |
+| 순도 | 99.99% | KRX 금시장 표준 |
+                """)
+            else:
+                st.error("시세 조회 실패. API 연결을 확인해주세요.")
+
+        # API 연동 상태
+        with st.expander("🔧 API 연동 상태", expanded=False):
+            st.markdown(f"""
+**현재 상태**: {'Mock 데이터 사용 중' if not gold_trader or gold_trader.is_mock else '실거래 연동'}
+
+**구현 완료**:
+- OAuth2 인증 메서드
+- 금현물 현재가 조회 (Mock)
+
+**추가 구현 필요**:
+- 실제 API 엔드포인트 연동
+- 일봉/분봉 차트 데이터 조회
+- 매수/매도 주문 실행
+- 잔고 조회
+
+**필요 환경변수**:
+- `KIWOOM_APP_KEY`: 키움 Open API App Key
+- `KIWOOM_SECRET_KEY`: 키움 Open API Secret Key
+- `KIWOOM_ACCOUNT`: 키움증권 계좌번호
+            """)
+
+    # --- Tab 2: 계좌/거래 ---
+    with tab_g2:
+        st.header("계좌 및 거래")
+
+        if not gold_trader:
+            st.warning("API Key를 먼저 설정해주세요.")
+        else:
+            # 계좌 정보 (Mock)
+            st.subheader("계좌 정보")
+            acc_c1, acc_c2, acc_c3 = st.columns(3)
+            acc_c1.metric("계좌번호", kiwoom_account if kiwoom_account else "미설정")
+            acc_c2.metric("예수금", "- 원 (조회 필요)")
+            acc_c3.metric("금 보유량", "- g (조회 필요)")
+
+            st.divider()
+
+            # 매매 (Mock)
+            st.subheader("수동 매매")
+            trade_col1, trade_col2 = st.columns(2)
+
+            with trade_col1:
+                st.markdown("**매수**")
+                buy_qty = st.number_input("매수 수량 (g)", min_value=1, value=1, step=1, key="gold_buy_qty")
+                buy_price = st.number_input("매수 단가 (원)", min_value=0, value=100000, step=1000, key="gold_buy_price")
+                buy_total = buy_qty * buy_price
+                st.caption(f"매수 총액: {buy_total:,}원")
+                if st.button("매수 주문", key="gold_buy_btn", type="primary"):
+                    st.warning("실제 API 연동 후 사용 가능합니다. (현재 Mock 모드)")
+
+            with trade_col2:
+                st.markdown("**매도**")
+                sell_qty = st.number_input("매도 수량 (g)", min_value=1, value=1, step=1, key="gold_sell_qty")
+                sell_price = st.number_input("매도 단가 (원)", min_value=0, value=100000, step=1000, key="gold_sell_price")
+                sell_total = sell_qty * sell_price
+                st.caption(f"매도 총액: {sell_total:,}원")
+                if st.button("매도 주문", key="gold_sell_btn", type="primary"):
+                    st.warning("실제 API 연동 후 사용 가능합니다. (현재 Mock 모드)")
+
+    # --- Tab 3: 차트 분석 ---
+    with tab_g3:
+        st.header("금 차트 분석")
+
+        if not gold_trader:
+            st.warning("API Key를 먼저 설정해주세요.")
+        else:
+            chart_interval = st.selectbox("차트 주기", ["일봉", "주봉", "월봉", "30분봉"], key="gold_chart_interval")
+
+            st.info("차트 데이터는 실제 API 연동 후 표시됩니다. 현재 샘플 차트를 표시합니다.")
+
+            # 샘플 차트 생성 (Mock 데이터)
+            np.random.seed(42)
+            dates = pd.date_range(end=datetime.now(), periods=120, freq='D')
+            base_price = 100000
+            returns = np.random.normal(0.0003, 0.008, len(dates))
+            prices = base_price * np.cumprod(1 + returns)
+            high = prices * (1 + np.abs(np.random.normal(0, 0.005, len(dates))))
+            low = prices * (1 - np.abs(np.random.normal(0, 0.005, len(dates))))
+            open_p = prices * (1 + np.random.normal(0, 0.003, len(dates)))
+
+            df_gold_mock = pd.DataFrame({
+                'open': open_p, 'high': high, 'low': low, 'close': prices
+            }, index=dates)
+
+            # SMA 오버레이
+            gold_sma_period = st.slider("SMA 기간", 5, 60, 20, key="gold_sma")
+            df_gold_mock[f'SMA_{gold_sma_period}'] = df_gold_mock['close'].rolling(window=gold_sma_period).mean()
+
+            fig_gold = go.Figure()
+            fig_gold.add_trace(go.Candlestick(
+                x=df_gold_mock.index, open=df_gold_mock['open'],
+                high=df_gold_mock['high'], low=df_gold_mock['low'],
+                close=df_gold_mock['close'], name='금 가격',
+                increasing_line_color='#FF6B35', decreasing_line_color='#4169E1',
+            ))
+            fig_gold.add_trace(go.Scatter(
+                x=df_gold_mock.index, y=df_gold_mock[f'SMA_{gold_sma_period}'],
+                name=f'SMA({gold_sma_period})', line=dict(color='orange', width=2)
+            ))
+            fig_gold.update_layout(
+                title=f"{selected_gold} - {chart_interval} (Mock 데이터)",
+                height=500,
+                xaxis_rangeslider_visible=False,
+                yaxis_title="가격 (원/g)",
+                hovermode='x unified'
+            )
+            st.plotly_chart(fig_gold, use_container_width=True)
+
+            # 기본 지표
+            last_close = df_gold_mock['close'].iloc[-1]
+            last_sma = df_gold_mock[f'SMA_{gold_sma_period}'].iloc[-1]
+            disparity = (last_close - last_sma) / last_sma * 100
+
+            ind_c1, ind_c2, ind_c3 = st.columns(3)
+            ind_c1.metric("현재가", f"{last_close:,.0f}원")
+            ind_c2.metric(f"SMA({gold_sma_period})", f"{last_sma:,.0f}원")
+            ind_c3.metric("이격도", f"{disparity:+.2f}%")
+
+            signal = "매수 (SMA 위)" if last_close > last_sma else "매도 (SMA 아래)"
+            sig_color = "green" if last_close > last_sma else "red"
+            st.markdown(f"**SMA 시그널**: :{sig_color}[{signal}]")
+
+
 def main():
+    # --- 모드 선택 (코인 / Gold) ---
+    mode_col, title_col = st.columns([1, 5])
+    with mode_col:
+        trading_mode = st.selectbox(
+            "거래 모드",
+            ["🪙 코인", "🥇 Gold"],
+            key="trading_mode",
+            label_visibility="collapsed"
+        )
+
+    if trading_mode == "🥇 Gold":
+        render_gold_mode()
+        return
+
+    # === 코인 모드 (기존 코드) ===
     st.title("🪙 Upbit SMA Auto-Trading System")
 
     # Sticky Header (JS로 Streamlit DOM 직접 조작)
@@ -193,7 +422,7 @@ def main():
         setTimeout(applySticky, 1500);
     </script>
     """, height=0)
-    
+
     # --- Sidebar: Configuration ---
     st.sidebar.header("설정 (Configuration)")
     
@@ -239,23 +468,27 @@ def main():
         "minute30": 48, "minute15": 96, "minute5": 288, "minute1": 1440
     }
     
-    # Load portfolio: user_config.json → portfolio.json → 기본값
+    # Load portfolio: user_config.json → portfolio.json (기본값 없음, 없으면 오류)
     PORTFOLIO_JSON_LOAD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
-    _fallback_portfolio = [
-        {"coin": "BTC", "strategy": "SMA", "parameter": 120, "weight": 50, "interval": "day"},
-        {"coin": "ETH", "strategy": "SMA", "parameter": 60, "weight": 50, "interval": "day"}
-    ]
-    default_portfolio = config.get("portfolio", None)
-    if not default_portfolio and os.path.exists(PORTFOLIO_JSON_LOAD):
+    # portfolio.json에서 설정값도 로드 (object 형태 지원)
+    _pjson_config = {}
+    if os.path.exists(PORTFOLIO_JSON_LOAD):
         try:
             with open(PORTFOLIO_JSON_LOAD, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, list) and len(loaded) > 0:
-                default_portfolio = loaded
+                _pjson_raw = json.load(f)
+            if isinstance(_pjson_raw, dict):
+                _pjson_config = _pjson_raw
+            elif isinstance(_pjson_raw, list):
+                _pjson_config = {"portfolio": _pjson_raw}
         except Exception:
             pass
+
+    default_portfolio = config.get("portfolio", None)
     if not default_portfolio:
-        default_portfolio = _fallback_portfolio
+        default_portfolio = _pjson_config.get("portfolio", None)
+    if not default_portfolio:
+        st.error("portfolio.json 파일이 없거나 포트폴리오 데이터가 비어있습니다. 로컬에서 저장 후 push 해주세요.")
+        st.stop()
     
     # Convert to DataFrame for Editor (Use Labels)
     sanitized_portfolio = []
@@ -332,25 +565,32 @@ def main():
     st.sidebar.subheader("공통 설정")
     # Interval Removed (Per-Coin Setting)
     
-    default_start_str = config.get("start_date", "2025-01-01")
+    default_start_str = config.get("start_date", None) or _pjson_config.get("start_date", None)
+    if not default_start_str:
+        st.error("start_date 설정이 없습니다. 로컬에서 portfolio.json에 start_date를 설정 후 push 해주세요.")
+        st.stop()
     try:
         default_start = pd.to_datetime(default_start_str).date()
     except:
-        default_start = pd.to_datetime("2025-01-01").date()
+        st.error(f"start_date 형식 오류: {default_start_str}")
+        st.stop()
     start_date = st.sidebar.date_input(
-        "기준 시작일 (Start Date)", 
+        "기준 시작일 (Start Date)",
         value=default_start,
         help="수익률 계산 및 이론적 자산 비교를 위한 기준일입니다. 실제 매매 신호와는 무관합니다."
     )
 
     # Capital Input Customization
-    default_cap = config.get("initial_cap", 1000000)
+    default_cap = config.get("initial_cap", None) or _pjson_config.get("initial_cap", None)
+    if not default_cap:
+        st.error("initial_cap 설정이 없습니다. 로컬에서 portfolio.json에 initial_cap을 설정 후 push 해주세요.")
+        st.stop()
     initial_cap = st.sidebar.number_input(
-        "초기 자본금 (KRW - 원 단위)", 
+        "초기 자본금 (KRW - 원 단위)",
         value=default_cap, step=100000, format="%d",
         help="시뮬레이션을 위한 초기 투자금 설정입니다. 실제 계좌 잔고와는 무관하며, 수익률 계산의 기준이 됩니다."
     )
-    st.sidebar.caption(f"Set: **{initial_cap:,.0f} KRW**") # 1. Formatting
+    st.sidebar.caption(f"Set: **{initial_cap:,.0f} KRW**")
     
     # Strategy Selection REMOVED (Moved to Per-Coin)
 
@@ -366,8 +606,13 @@ def main():
                 "initial_cap": initial_cap
             }
             save_config(new_config)
+            portfolio_json_data = {
+                "portfolio": portfolio_list,
+                "start_date": str(start_date),
+                "initial_cap": initial_cap
+            }
             with open(PORTFOLIO_JSON, "w", encoding="utf-8") as f:
-                json.dump(portfolio_list, f, indent=2, ensure_ascii=False)
+                json.dump(portfolio_json_data, f, indent=2, ensure_ascii=False)
             st.sidebar.success("저장 완료!")
 
         if save_col2.button("📂 불러오기"):
@@ -841,7 +1086,8 @@ def main():
                                                 marker=dict(symbol='triangle-down', size=10, color='red')
                                             ))
 
-                                    fig_comp.update_layout(height=300, title="Strategy vs Buy/Hold (Normalized)", margin=dict(l=0,r=0,t=30,b=0))
+                                    fig_comp.update_layout(height=300, title="Strategy vs Buy/Hold (Normalized)", margin=dict(l=0,r=0,t=50,b=0),
+                                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
                                     st.plotly_chart(fig_comp, use_container_width=True)
 
                                     # 연도별 성과 테이블
@@ -1022,8 +1268,9 @@ def main():
                                 height=350,
                                 title="Combined Portfolio: Strategy vs Buy & Hold (Normalized)",
                                 yaxis_title="Normalized (%)",
-                                margin=dict(l=0, r=0, t=30, b=0),
-                                hovermode='x unified'
+                                margin=dict(l=0, r=0, t=50, b=0),
+                                hovermode='x unified',
+                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
                             )
                             st.plotly_chart(fig_port, use_container_width=True)
 
@@ -1035,11 +1282,12 @@ def main():
                                 line=dict(color='red', width=1)
                             ))
                             fig_dd.update_layout(
-                                height=200, 
+                                height=200,
                                 title="Portfolio Drawdown (%)",
                                 yaxis_title="Drawdown (%)",
-                                margin=dict(l=0, r=0, t=30, b=0),
-                                hovermode='x unified'
+                                margin=dict(l=0, r=0, t=50, b=0),
+                                hovermode='x unified',
+                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
                             )
                             st.plotly_chart(fig_dd, use_container_width=True)
 
@@ -1064,8 +1312,9 @@ def main():
                                 height=350,
                                 title="Asset Contribution (Stacked)",
                                 yaxis_title="KRW",
-                                margin=dict(l=0, r=0, t=30, b=0),
-                                hovermode='x unified'
+                                margin=dict(l=0, r=0, t=50, b=0),
+                                hovermode='x unified',
+                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
                             )
                             st.plotly_chart(fig_stack, use_container_width=True)
 
@@ -1571,7 +1820,8 @@ def main():
                         line=dict(color='red', width=1)
                     ), row=2, col=1)
 
-                    fig.update_layout(height=800, title_text="Backtest Results", xaxis_rangeslider_visible=False)
+                    fig.update_layout(height=800, title_text="Backtest Results", xaxis_rangeslider_visible=False,
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
                     fig.update_yaxes(title_text="Price (KRW)", row=1, col=1, secondary_y=False)
                     fig.update_yaxes(title_text="Equity (KRW)", row=1, col=1, secondary_y=True)
                     fig.update_yaxes(title_text="Drawdown (%)", row=2, col=1)
@@ -1967,7 +2217,8 @@ def main():
                     fig_history.update_layout(
                         title=f"Best {optuna_objective} over Trials",
                         xaxis_title="Trial", yaxis_title=optuna_objective,
-                        height=350
+                        height=350,
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
                     )
                     st.plotly_chart(fig_history, use_container_width=True)
                 except Exception:
@@ -2146,7 +2397,8 @@ def main():
                                     ))
                                     fig_slip.add_hline(y=avg_slip, line_dash="dash", line_color="blue",
                                                        annotation_text=f"Avg: {avg_slip:.3f}%")
-                                    fig_slip.update_layout(title="Trade Slippage (+ = Unfavorable)", height=350)
+                                    fig_slip.update_layout(title="Trade Slippage (+ = Unfavorable)", height=350,
+                                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
                                     st.plotly_chart(fig_slip, use_container_width=True)
 
                                     # 상세 테이블
