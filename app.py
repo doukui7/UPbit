@@ -232,11 +232,23 @@ def main():
         "minute30": 48, "minute15": 96, "minute5": 288, "minute1": 1440
     }
     
-    # Load portfolio from config or default
-    default_portfolio = config.get("portfolio", [
+    # Load portfolio: user_config.json → portfolio.json → 기본값
+    PORTFOLIO_JSON_LOAD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
+    _fallback_portfolio = [
         {"coin": "BTC", "strategy": "SMA", "parameter": 120, "weight": 50, "interval": "day"},
         {"coin": "ETH", "strategy": "SMA", "parameter": 60, "weight": 50, "interval": "day"}
-    ])
+    ]
+    default_portfolio = config.get("portfolio", None)
+    if not default_portfolio and os.path.exists(PORTFOLIO_JSON_LOAD):
+        try:
+            with open(PORTFOLIO_JSON_LOAD, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, list) and len(loaded) > 0:
+                default_portfolio = loaded
+        except Exception:
+            pass
+    if not default_portfolio:
+        default_portfolio = _fallback_portfolio
     
     # Convert to DataFrame for Editor (Use Labels)
     sanitized_portfolio = []
