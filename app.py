@@ -720,8 +720,8 @@ def main():
     TOP_20_TICKERS = [
         "KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE",
         "KRW-ADA", "KRW-SHIB", "KRW-TRX", "KRW-AVAX", "KRW-LINK",
-        "KRW-BCH", "KRW-DOT", "KRW-NEAR", "KRW-MATIC", "KRW-ETC",
-        "KRW-XLM", "KRW-STX", "KRW-WAVES", "KRW-EOS", "KRW-SAND"
+        "KRW-BCH", "KRW-DOT", "KRW-NEAR", "KRW-POL", "KRW-ETC",
+        "KRW-XLM", "KRW-STX", "KRW-HBAR", "KRW-EOS", "KRW-SAND"
     ]
 
     # --- Tabs ---
@@ -888,8 +888,8 @@ def main():
                                     "현재가": f"{close_now:,.0f}",
                                     "매수목표": f"{buy_target:,.0f}",
                                     "매도목표": f"{sell_target:,.0f}",
-                                    "이격도": f"{buy_dist:+.2f}%",
-                                    "이격도": f"{buy_dist:+.2f}%",
+                                    "매수이격도": f"{buy_dist:+.2f}%",
+                                    "매도이격도": f"{sell_dist:+.2f}%",
                                 })
 
                                 df_chart = df_60.iloc[-60:]
@@ -1655,7 +1655,7 @@ def main():
         col1, col2 = st.columns([1, 3])
         with col1:
             # Date Range Selector (Split)
-            st.caption("백테스트 기간 (Period)")
+            st.caption("백테스트 기간")
             d_col1, d_col2 = st.columns(2)
 
             # Default Backtest Start: 2020-01-01
@@ -1666,14 +1666,14 @@ def main():
             default_end_bt = datetime.now().date()
 
             bt_start = d_col1.date_input(
-                "시작일 (Start)",
+                "시작일",
                 value=default_start_bt,
                 max_value=datetime.now().date(),
                 format="YYYY.MM.DD"
             )
 
             bt_end = d_col2.date_input(
-                "종료일 (End)",
+                "종료일",
                 value=default_end_bt,
                 max_value=datetime.now().date(),
                 format="YYYY.MM.DD"
