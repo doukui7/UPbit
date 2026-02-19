@@ -440,7 +440,7 @@ def main():
                 
                 sum_col1, sum_col2, sum_col3, sum_col4 = st.columns(4)
                 
-                total_real_val = trader.get_balance("KRW") 
+                total_real_val = trader.get_balance("KRW") or 0
                 total_init_val = initial_cap
                 
                 # Cash Logic
@@ -452,7 +452,7 @@ def main():
                 total_theo_val = reserved_cash
                 
                 # --- 전체 자산 현황 테이블 ---
-                krw_bal_summary = trader.get_balance("KRW")
+                krw_bal_summary = trader.get_balance("KRW") or 0
                 asset_summary_rows = [{"자산": "KRW (현금)", "보유량": f"{krw_bal_summary:,.0f}", "현재가": "-", "평가금액(KRW)": f"{krw_bal_summary:,.0f}", "상태": "-"}]
                 seen_coins_summary = set()
                 for s_item in portfolio_list:
@@ -461,7 +461,7 @@ def main():
                         continue
                     seen_coins_summary.add(s_coin)
                     s_ticker = f"{s_item['market']}-{s_coin}"
-                    s_bal = trader.get_balance(s_coin)
+                    s_bal = trader.get_balance(s_coin) or 0
                     s_price = pyupbit.get_current_price(s_ticker) or 0
                     s_val = s_bal * s_price
                     is_holding = s_val >= 5000
@@ -473,7 +473,7 @@ def main():
                         "상태": "보유중" if is_holding else "미보유",
                     })
                 total_real_summary = krw_bal_summary + sum(
-                    trader.get_balance(c) * (pyupbit.get_current_price(f"KRW-{c}") or 0)
+                    (trader.get_balance(c) or 0) * (pyupbit.get_current_price(f"KRW-{c}") or 0)
                     for c in seen_coins_summary
                 )
                 asset_summary_rows.append({
@@ -717,8 +717,8 @@ def main():
                             
                             # 2. Fetch Balance 
                             coin_sym = item['coin'].upper()
-                            coin_bal = trader.get_balance(coin_sym)
-                            
+                            coin_bal = trader.get_balance(coin_sym) or 0
+
                             # 3. Theo Backtest (Sync Check) - 캐시 우선 (다운로드 없음)
                             sell_ratio = (item.get('sell_parameter', 0) or max(5, param_val // 2)) / param_val if param_val > 0 else 0.5
                             # 캐시 로드 (API 호출 없이 로컬 파일만)
@@ -1094,7 +1094,7 @@ def main():
                 # --- Portfolio Rebalancing Section ---
                 st.divider()
                 with st.expander("⚖️ 포트폴리오 리밸런싱 (Rebalancing)", expanded=False):
-                    krw_balance = trader.get_balance("KRW")
+                    krw_balance = trader.get_balance("KRW") or 0
 
                     # 각 자산의 실제 보유 상태 확인
                     asset_states = []
@@ -1107,7 +1107,7 @@ def main():
                         rb_param = rb_item.get('parameter', 20)
                         rb_sell_param = rb_item.get('sell_parameter', 0)
 
-                        rb_coin_bal = trader.get_balance(rb_coin)
+                        rb_coin_bal = trader.get_balance(rb_coin) or 0
                         rb_price = pyupbit.get_current_price(rb_ticker) or 0
                         rb_coin_val = rb_coin_bal * rb_price
                         rb_status = "HOLD" if rb_coin_val > 5000 else "CASH"
