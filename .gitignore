@@ -1,5 +1,6 @@
 # Secrets
 .env
+.streamlit/secrets.toml
 
 # Python
 __pycache__/
@@ -25,3 +26,8 @@ Thumbs.db
 # Reference
 GoldenToilet_ref/
 .ipynb_checkpoints/
+
+# Cache & temp
+cache/
+*.tmp.*
+nul

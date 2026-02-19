@@ -379,6 +379,132 @@ class UpbitTrader:
         self.execution_log.append(exec_result)
         return exec_result
 
+    def adaptive_buy(self, ticker, total_amount_krw, interval="minute240"):
+        """
+        Adaptive Buy Strategy:
+        - Gets Target Price (Current Candle Open).
+        - Checks slippage every 10 mins.
+        - If slippage > 0.1%, buys 10% and waits.
+        - If slippage <= 0.1%, buys remaining.
+        - Max 50 min loop (to avoid Action timeout).
+        """
+        # 1. Determine Target Price (Current Candle Open)
+        try:
+            df = pyupbit.get_ohlcv(ticker, interval=interval, count=1)
+            target_price = df['open'].iloc[0]
+        except Exception as e:
+            logger.error(f"Failed to get target price (OHLCV): {e}")
+            target_price = self.get_current_price(ticker)
+
+        if not target_price:
+            logger.error(f"[{ticker}] Failed to get any price. Fallback to Smart Buy.")
+            return self.smart_buy(ticker, total_amount_krw, interval)
+
+        logger.info(f"[{ticker}] Adaptive Buy Start. Target(Open)={target_price:,.0f} KRW, Budget={total_amount_krw:,.0f} KRW")
+        
+        remaining_krw = total_amount_krw
+        start_time = time.time()
+        
+        iteration = 0
+        logs = []
+        total_filled_volume = 0
+        total_filled_krw = 0
+
+        # Loop: 0, 10, 20, 30, 40 (Final check) -> Max 50 min
+        # GitHub Action timeout is usually 60 min, so 50 min is safe.
+        while (time.time() - start_time) < 3300: # 55 min limit
+            iteration += 1
+            current_price = self.get_current_price(ticker)
+            
+            if not current_price:
+                logger.warning(f"[{ticker}] Price check failed. Waiting...")
+                time.sleep(10)
+                continue
+
+            slippage_pct = (current_price - target_price) / target_price * 100
+            logger.info(f"[{ticker}] Iter {iteration}: Price={current_price:,.0f}, Slip={slippage_pct:+.3f}%")
+
+            buy_now = False
+            amount_to_exec = 0
+
+            # Condition 1: Favorable or Small Slippage (<= 0.1%) -> Buy ALL
+            if slippage_pct <= 0.1:
+                logger.info(f"[{ticker}] Slippage OK ({slippage_pct:.3f}%). Buying ALL remaining.")
+                buy_now = True
+                amount_to_exec = remaining_krw
+            
+            # Condition 2: High Slippage (> 0.1%) -> Buy 10% Only
+            else:
+                logger.info(f"[{ticker}] Slippage High ({slippage_pct:.3f}%). Buying 10% only.")
+                # If remaining is small, just buy all (avoid dust)
+                if remaining_krw < 10000:
+                    buy_now = True
+                    amount_to_exec = remaining_krw
+                else:
+                    buy_now = True
+                    amount_to_exec = total_amount_krw * 0.1 # 10% of INITIAL total
+                    if amount_to_exec > remaining_krw:
+                        amount_to_exec = remaining_krw
+
+            if buy_now and amount_to_exec >= 5000:
+                # Use Smart Buy for the chunk (Limit Order logic)
+                # Note: Smart Buy handles splits internally. 
+                # For small 10% chunk, it might not split much.
+                # using interval='minute1' to force quick execution for the chunk?
+                # No, stick to original interval config or use tight setting.
+                # Let's use current interval config but maybe reduced timeout?
+                # Actually, smart_buy is robust.
+                
+                res = self.smart_buy(ticker, amount_to_exec, interval=interval)
+                
+                filled = res.get('filled_volume', 0)
+                spent = res.get('total_krw', 0)
+                avg = res.get('avg_price', 0)
+                
+                remaining_krw -= spent
+                total_filled_volume += filled
+                total_filled_krw += spent
+                
+                logs.append({
+                    "iter": iteration, "slippage": slippage_pct, 
+                    "action": "buy_all" if amount_to_exec == remaining_krw else "buy_10%",
+                    "spent": spent, "avg": avg
+                })
+
+                if remaining_krw < 5000:
+                    logger.info(f"[{ticker}] Buy Complete.")
+                    break
+
+            # If we bought ALL, break
+            if remaining_krw < 5000:
+                break
+            
+            # If we bought 10% (High Slippage), Wait 10 min
+            logger.info(f"[{ticker}] Waiting 10 minutes... (Elapsed: {(time.time()-start_time)/60:.1f}m)")
+            time.sleep(600) 
+
+        # Timeout / Loop End
+        if remaining_krw >= 5000:
+            logger.info(f"[{ticker}] Timeout. Buying remaining {remaining_krw:,.0f} KRW at Market/Smart")
+            res = self.smart_buy(ticker, remaining_krw, interval=interval)
+            filled = res.get('filled_volume', 0)
+            spent = res.get('total_krw', 0)
+            remaining_krw -= spent
+            total_filled_volume += filled
+            total_filled_krw += spent
+
+        avg_price = total_filled_krw / total_filled_volume if total_filled_volume > 0 else 0
+        result = {
+            "type": "buy_adaptive",
+            "ticker": ticker,
+            "filled_volume": total_filled_volume,
+            "avg_price": avg_price,
+            "total_krw": total_filled_krw,
+            "logs": logs
+        }
+        self.execution_log.append(result)
+        return result
+
     def get_execution_log(self):
         """체결 로그 반환"""
         return self.execution_log

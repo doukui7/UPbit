@@ -410,3 +410,117 @@ class BacktestEngine:
                 progress_callback(idx, total, f"SMA: {p}")
 
         return results
+
+    # ================================================================
+    # Optuna 베이지안 최적화
+    # ================================================================
+    def optuna_optimize(self, df, strategy_mode="SMA Strategy",
+                        buy_range=(5, 200), sell_range=(5, 100),
+                        fee=0.0005, slippage=0.0, start_date=None,
+                        initial_balance=1000000, n_trials=100,
+                        objective_metric="calmar",
+                        progress_callback=None):
+        """
+        Optuna TPE 기반 베이지안 최적화.
+        objective_metric: "calmar", "sharpe", "return", "mdd"
+        Returns: dict with best_params, best_value, trials, study
+        """
+        import optuna
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+        df = df.copy()
+        full_index = df.index
+
+        # start_date 필터
+        start_idx = 0
+        if start_date:
+            start_ts = pd.to_datetime(start_date)
+            if full_index.tz is not None and start_ts.tz is None:
+                start_ts = start_ts.tz_localize(full_index.tz)
+            mask = full_index >= start_ts
+            start_idx = mask.argmax() if mask.any() else 0
+
+        close_arr_full = df['close'].values
+        open_arr_full = df['open'].values
+
+        # 사전계산 캐시
+        is_donchian = strategy_mode in ("Donchian", "Donchian Trend")
+        if is_donchian:
+            upper_cache = {}
+            lower_cache = {}
+            for bp in range(buy_range[0], buy_range[1] + 1):
+                upper_cache[bp] = df['high'].rolling(window=bp).max().shift(1).values
+            for sp in range(sell_range[0], sell_range[1] + 1):
+                lower_cache[sp] = df['low'].rolling(window=sp).min().shift(1).values
+        else:
+            sma_cache = {}
+            for p in range(buy_range[0], buy_range[1] + 1):
+                sma_cache[p] = df['close'].rolling(window=p).mean().values
+
+        trial_results = []
+
+        def _metric_value(res, calmar):
+            if objective_metric == "calmar":
+                return calmar
+            elif objective_metric == "sharpe":
+                return res['sharpe']
+            elif objective_metric == "return":
+                return res['total_return']
+            elif objective_metric == "mdd":
+                return res['mdd']  # maximize = least negative
+            return calmar
+
+        def objective(trial):
+            if is_donchian:
+                bp = trial.suggest_int("buy_period", buy_range[0], buy_range[1])
+                sp = trial.suggest_int("sell_period", sell_range[0], sell_range[1])
+
+                signal_arr = np.zeros(len(close_arr_full), dtype=np.int8)
+                signal_arr[close_arr_full > upper_cache[bp]] = 1
+                signal_arr[close_arr_full < lower_cache[sp]] = -1
+            else:
+                p = trial.suggest_int("sma_period", buy_range[0], buy_range[1])
+
+                sma_vals = sma_cache[p]
+                signal_arr = np.zeros(len(close_arr_full), dtype=np.int8)
+                valid = ~np.isnan(sma_vals)
+                signal_arr[valid & (close_arr_full > sma_vals)] = 1
+                signal_arr[valid & (close_arr_full <= sma_vals)] = -1
+
+            o = open_arr_full[start_idx:]
+            c = close_arr_full[start_idx:]
+            s = signal_arr[start_idx:]
+
+            if len(o) < 5:
+                return float('-inf')
+
+            res = self._fast_simulate(o, c, s, fee, slippage, initial_balance)
+            calmar = abs(res['cagr'] / res['mdd']) if res['mdd'] != 0 else 0
+
+            record = {**res, 'calmar': calmar}
+            if is_donchian:
+                record['buy_period'] = bp
+                record['sell_period'] = sp
+            else:
+                record['sma_period'] = p
+            trial_results.append(record)
+
+            if progress_callback:
+                val = _metric_value(res, calmar)
+                progress_callback(len(trial_results), n_trials,
+                                  f"Trial {len(trial_results)}: {objective_metric}={val:.2f}")
+
+            return _metric_value(res, calmar)
+
+        study = optuna.create_study(
+            direction="maximize",
+            sampler=optuna.samplers.TPESampler(seed=42)
+        )
+        study.optimize(objective, n_trials=n_trials)
+
+        return {
+            "best_params": study.best_params,
+            "best_value": study.best_value,
+            "trials": trial_results,
+            "study": study,
+        }

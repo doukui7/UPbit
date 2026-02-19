@@ -79,29 +79,128 @@ st.markdown("""
         font-weight: 600 !important;
     }
     
-    /* Sidebar Width Override */
+    /* Sidebar Width Override (PC) */
     [data-testid="stSidebar"] {
         min-width: 400px !important;
         max-width: 520px !important;
     }
-    
+
     /* Tabs */
     button[data-baseweb="tab"] {
         font-size: 18px !important;
         font-weight: 600 !important;
     }
+
+    /* ===== Mobile Responsive ===== */
+    @media (max-width: 768px) {
+        html, body, [class*="css"] {
+            font-size: 14px;
+        }
+        .stMarkdown p {
+            font-size: 14px !important;
+        }
+        [data-testid="stMetricValue"] {
+            font-size: 22px !important;
+        }
+        [data-testid="stMetricLabel"] {
+            font-size: 13px !important;
+        }
+        [data-testid="stMetricDelta"] {
+            font-size: 12px !important;
+        }
+        .streamlit-expanderHeader {
+            font-size: 16px !important;
+        }
+        button[data-baseweb="tab"] {
+            font-size: 13px !important;
+            padding: 6px 10px !important;
+        }
+        [data-testid="stSidebar"] {
+            min-width: 280px !important;
+            max-width: 320px !important;
+        }
+        /* 모바일에서 컬럼 세로 스택 */
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+        }
+        [data-testid="stHorizontalBlock"] > div {
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+        }
+        /* 차트 높이 조정 */
+        .js-plotly-plot {
+            max-height: 250px !important;
+        }
+        /* 데이터프레임 가로 스크롤 */
+        [data-testid="stDataFrame"] {
+            overflow-x: auto !important;
+        }
+        .block-container {
+            padding-left: 0.5rem !important;
+            padding-right: 0.5rem !important;
+        }
+    }
+
     </style>
 """, unsafe_allow_html=True)
 
 def main():
     st.title("🪙 Upbit SMA Auto-Trading System")
+
+    # Sticky Header (JS로 Streamlit DOM 직접 조작)
+    import streamlit.components.v1 as components
+    components.html("""
+    <script>
+        const doc = window.parent.document;
+        if (!doc.getElementById('sticky-title-style')) {
+            const style = doc.createElement('style');
+            style.id = 'sticky-title-style';
+            style.textContent = `
+                section[data-testid="stMain"] > div.block-container {
+                    overflow: visible !important;
+                }
+                #sticky-title-wrap {
+                    position: sticky;
+                    top: 0;
+                    background: white;
+                    z-index: 999;
+                    padding-bottom: 6px;
+                    border-bottom: 2px solid #e6e6e6;
+                }
+            `;
+            doc.head.appendChild(style);
+        }
+
+        function applySticky() {
+            if (doc.getElementById('sticky-title-wrap')) return;
+            const titles = doc.querySelectorAll('h1');
+            for (const h1 of titles) {
+                if (h1.textContent.includes('Upbit SMA')) {
+                    const wrapper = h1.closest('[data-testid="stVerticalBlockBorderWrapper"]')
+                                  || h1.parentElement?.parentElement;
+                    if (wrapper) {
+                        wrapper.id = 'sticky-title-wrap';
+                    }
+                    break;
+                }
+            }
+        }
+        applySticky();
+        setTimeout(applySticky, 500);
+        setTimeout(applySticky, 1500);
+    </script>
+    """, height=0)
     
     # --- Sidebar: Configuration ---
     st.sidebar.header("설정 (Configuration)")
     
-    # API Keys
-    env_access = os.getenv("UPBIT_ACCESS_KEY")
-    env_secret = os.getenv("UPBIT_SECRET_KEY")
+    # API Keys (Streamlit Cloud secrets 또는 .env 지원)
+    try:
+        env_access = st.secrets["UPBIT_ACCESS_KEY"]
+        env_secret = st.secrets["UPBIT_SECRET_KEY"]
+    except Exception:
+        env_access = os.getenv("UPBIT_ACCESS_KEY")
+        env_secret = os.getenv("UPBIT_SECRET_KEY")
     
     with st.sidebar.expander("API Keys", expanded=False):
         ak_input = st.text_input("Access Key", value=env_access if env_access else "", type="password")
@@ -296,7 +395,14 @@ def main():
     
     worker = get_worker()
 
-    # --- Tabs ---
+    # 시가총액 상위 20 티커 (글로벌 Market Cap 기준)
+    TOP_20_TICKERS = [
+        "KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE",
+        "KRW-ADA", "KRW-SHIB", "KRW-TRX", "KRW-AVAX", "KRW-LINK",
+        "KRW-BCH", "KRW-DOT", "KRW-NEAR", "KRW-MATIC", "KRW-ETC",
+        "KRW-XLM", "KRW-STX", "KRW-WAVES", "KRW-EOS", "KRW-SAND"
+    ]
+
     # --- Tabs ---
     tab1, tab2, tab3, tab4 = st.tabs(["🚀 Live Portfolio", "📊 Backtest (Single)", "📜 자산 입출금 (History)", "📡 전체 종목 스캔"])
 
@@ -347,7 +453,7 @@ def main():
                 
                 # --- 전체 자산 현황 테이블 ---
                 krw_bal_summary = trader.get_balance("KRW")
-                asset_summary_rows = [{"자산": "KRW (현금)", "보유량": f"{krw_bal_summary:,.0f}", "현재가": "-", "평가금액(KRW)": f"{krw_bal_summary:,.0f}"}]
+                asset_summary_rows = [{"자산": "KRW (현금)", "보유량": f"{krw_bal_summary:,.0f}", "현재가": "-", "평가금액(KRW)": f"{krw_bal_summary:,.0f}", "상태": "-"}]
                 seen_coins_summary = set()
                 for s_item in portfolio_list:
                     s_coin = s_item['coin'].upper()
@@ -358,13 +464,14 @@ def main():
                     s_bal = trader.get_balance(s_coin)
                     s_price = pyupbit.get_current_price(s_ticker) or 0
                     s_val = s_bal * s_price
-                    if s_bal > 0 or s_val > 100:
-                        asset_summary_rows.append({
-                            "자산": s_coin,
-                            "보유량": f"{s_bal:.8f}" if s_bal < 1 else f"{s_bal:,.4f}",
-                            "현재가": f"{s_price:,.0f}",
-                            "평가금액(KRW)": f"{s_val:,.0f}"
-                        })
+                    is_holding = s_val >= 5000
+                    asset_summary_rows.append({
+                        "자산": s_coin,
+                        "보유량": (f"{s_bal:.8f}" if s_bal < 1 else f"{s_bal:,.4f}") if s_bal > 0 else "0",
+                        "현재가": f"{s_price:,.0f}",
+                        "평가금액(KRW)": f"{s_val:,.0f}",
+                        "상태": "보유중" if is_holding else "미보유",
+                    })
                 total_real_summary = krw_bal_summary + sum(
                     trader.get_balance(c) * (pyupbit.get_current_price(f"KRW-{c}") or 0)
                     for c in seen_coins_summary
@@ -373,10 +480,149 @@ def main():
                     "자산": "합계",
                     "보유량": "",
                     "현재가": "",
-                    "평가금액(KRW)": f"{total_real_summary:,.0f}"
+                    "평가금액(KRW)": f"{total_real_summary:,.0f}",
+                    "상태": "",
                 })
                 with st.expander(f"💰 전체 자산 현황 (Total: {total_real_summary:,.0f} KRW)", expanded=True):
                     st.dataframe(pd.DataFrame(asset_summary_rows), use_container_width=True, hide_index=True)
+
+                # --- 단기 모니터링 차트 (60봉) ---
+                with st.expander("📊 단기 시그널 모니터링 (60봉)", expanded=True):
+                    signal_rows = []
+
+                    # BTC / 비BTC 분리 (BTC: 일봉→4시간봉 순)
+                    interval_order = {'day': 0, 'minute240': 1, 'minute60': 2, 'minute30': 3, 'minute15': 4, 'minute10': 5}
+                    btc_items = sorted(
+                        [x for x in portfolio_list if x.get('coin', '').upper() == 'BTC'],
+                        key=lambda x: interval_order.get(x.get('interval', 'day'), 99)
+                    )
+                    other_items = sorted(
+                        [x for x in portfolio_list if x.get('coin', '').upper() != 'BTC'],
+                        key=lambda x: interval_order.get(x.get('interval', 'day'), 99)
+                    )
+
+                    # 차트 데이터 수집 + 렌더링 함수
+                    def render_chart_row(items):
+                        if not items:
+                            return
+                        cols = st.columns(len(items))
+                        for ci, item in enumerate(items):
+                            p_ticker = f"{item['market']}-{item['coin'].upper()}"
+                            p_strategy = item.get('strategy', 'SMA')
+                            p_param = item.get('parameter', 20)
+                            p_sell_param = item.get('sell_parameter', 0) or max(5, p_param // 2)
+                            p_interval = item.get('interval', 'day')
+                            iv_label = INTERVAL_REV_MAP.get(p_interval, p_interval)
+
+                            try:
+                                df_60 = pyupbit.get_ohlcv(p_ticker, interval=p_interval, count=max(60 + p_param, 200))
+                                if df_60 is None or len(df_60) < p_param + 5:
+                                    continue
+
+                                close_now = df_60['close'].iloc[-1]
+
+                                if p_strategy == "Donchian":
+                                    upper_vals = df_60['high'].rolling(window=p_param).max().shift(1)
+                                    lower_vals = df_60['low'].rolling(window=p_sell_param).min().shift(1)
+                                    buy_target = upper_vals.iloc[-1]
+                                    sell_target = lower_vals.iloc[-1]
+                                    buy_dist = (close_now - buy_target) / buy_target * 100 if buy_target else 0
+                                    sell_dist = (close_now - sell_target) / sell_target * 100 if sell_target else 0
+
+                                    # 포지션 상태 시뮬레이션 (돈치안은 상태 기반)
+                                    in_position = False
+                                    for i in range(len(df_60)):
+                                        u = upper_vals.iloc[i]
+                                        l = lower_vals.iloc[i]
+                                        c = df_60['close'].iloc[i]
+                                        if not pd.isna(u) and c > u:
+                                            in_position = True
+                                        elif not pd.isna(l) and c < l:
+                                            in_position = False
+
+                                    if in_position:
+                                        position_label = "Hold"
+                                        signal = "SELL" if close_now < sell_target else "HOLD"
+                                    else:
+                                        position_label = "Cash"
+                                        signal = "BUY" if close_now > buy_target else "WAIT"
+                                else:
+                                    sma_vals = df_60['close'].rolling(window=p_param).mean()
+                                    buy_target = sma_vals.iloc[-1]
+                                    sell_target = buy_target
+                                    buy_dist = (close_now - buy_target) / buy_target * 100 if buy_target else 0
+                                    sell_dist = buy_dist
+                                    if close_now > buy_target:
+                                        signal = "BUY"
+                                        position_label = "Hold"
+                                    else:
+                                        signal = "SELL"
+                                        position_label = "Cash"
+
+                                signal_rows.append({
+                                    "종목": p_ticker.replace("KRW-", ""),
+                                    "전략": f"{p_strategy} {p_param}",
+                                    "시간봉": iv_label,
+                                    "포지션": position_label,
+                                    "현재가": f"{close_now:,.0f}",
+                                    "매수목표": f"{buy_target:,.0f}",
+                                    "매도목표": f"{sell_target:,.0f}",
+                                    "이격도": f"{buy_dist:+.2f}%",
+                                    "이격도": f"{buy_dist:+.2f}%",
+                                })
+
+                                df_chart = df_60.iloc[-60:]
+                                with cols[ci]:
+                                    fig_m = go.Figure()
+                                    fig_m.add_trace(go.Candlestick(
+                                        x=df_chart.index, open=df_chart['open'],
+                                        high=df_chart['high'], low=df_chart['low'],
+                                        close=df_chart['close'], name='Price',
+                                        increasing_line_color='#26a69a', decreasing_line_color='#ef5350',
+                                    ))
+
+                                    if p_strategy == "Donchian":
+                                        upper_chart = upper_vals.loc[df_chart.index]
+                                        lower_chart = lower_vals.loc[df_chart.index]
+                                        fig_m.add_trace(go.Scatter(
+                                            x=df_chart.index, y=upper_chart,
+                                            name=f'Upper({p_param})', line=dict(color='green', width=1, dash='dot')
+                                        ))
+                                        fig_m.add_trace(go.Scatter(
+                                            x=df_chart.index, y=lower_chart,
+                                            name=f'Lower({p_sell_param})', line=dict(color='red', width=1, dash='dot')
+                                        ))
+                                    else:
+                                        sma_chart = sma_vals.loc[df_chart.index]
+                                        fig_m.add_trace(go.Scatter(
+                                            x=df_chart.index, y=sma_chart,
+                                            name=f'SMA({p_param})', line=dict(color='orange', width=2)
+                                        ))
+
+                                    sig_color = "green" if signal == "BUY" else ("red" if signal == "SELL" else ("blue" if signal == "WAIT" else "gray"))
+                                    title_pos = f" [{position_label}]" if p_strategy == "Donchian" else ""
+                                    fig_m.update_layout(
+                                        title=f"{p_ticker.replace('KRW-','')} {p_strategy}{p_param} ({iv_label}){title_pos} [{buy_dist:+.1f}%]",
+                                        title_font_color=sig_color,
+                                        height=300, margin=dict(l=0, r=0, t=35, b=30),
+                                        xaxis_rangeslider_visible=False,
+                                        showlegend=False,
+                                        xaxis=dict(showticklabels=True, tickformat='%m/%d %H:%M', tickangle=-45, nticks=6),
+                                    )
+                                    st.plotly_chart(fig_m, use_container_width=True)
+
+                            except Exception:
+                                continue
+
+                    # 1행: BTC 전략 (일봉 → 4시간봉)
+                    render_chart_row(btc_items)
+                    # 2행: ETH, SOL 등
+                    render_chart_row(other_items)
+
+                    # 시그널 요약 테이블
+                    if signal_rows:
+                        df_sig = pd.DataFrame(signal_rows)
+                        st.dataframe(df_sig, use_container_width=True, hide_index=True)
 
                 # 리밸런싱 규칙 (항상 표시)
                 with st.expander("⚖️ 리밸런싱 규칙", expanded=False):
@@ -514,12 +760,13 @@ def main():
                             c1, c2, c3, c4 = st.columns(4)
                             c1.metric("Price / SMA", f"{curr_price:,.0f}", delta=f"{curr_price - curr_sma:,.0f}")
                             
-                            sig_color = "green" if curr_signal=="BUY" else "red" if curr_signal=="SELL" else "gray"
-                            c2.markdown(f"**Signal**: :{sig_color}[{curr_signal}]")
+                            
+                            # Signal Metric Removed as requested
+                            # c2.markdown(f"**Signal**: :{sig_color}[{curr_signal}]")
                             if strategy_mode == "Donchian":
-                                c2.caption(f"Donch({buy_p}/{sell_p})")
+                                c2.metric("Channel", f"{buy_p}/{sell_p}")
                             else:
-                                c2.caption(f"SMA({param_val})")
+                                c2.metric("SMA Period", f"{param_val}")
                             
                             # Asset Performance
                             roi_theo = (expected_eq - per_coin_cap) / per_coin_cap * 100
@@ -753,6 +1000,22 @@ def main():
                                 hovermode='x unified'
                             )
                             st.plotly_chart(fig_port, use_container_width=True)
+
+                            # 포트폴리오 MDD(Drawdown) 차트 추가
+                            fig_dd = go.Figure()
+                            fig_dd.add_trace(go.Scatter(
+                                x=port_dd.index, y=port_dd.values,
+                                name='Drawdown', fill='tozeroy',
+                                line=dict(color='red', width=1)
+                            ))
+                            fig_dd.update_layout(
+                                height=200, 
+                                title="Portfolio Drawdown (%)",
+                                yaxis_title="Drawdown (%)",
+                                margin=dict(l=0, r=0, t=30, b=0),
+                                hovermode='x unified'
+                            )
+                            st.plotly_chart(fig_dd, use_container_width=True)
 
                             # 개별 자산 에쿼티 기여도 차트
                             fig_stack = go.Figure()
@@ -999,14 +1262,6 @@ def main():
         st.header("Single Asset Backtest")
         
         # Select ticker from portfolio for convenience, or custom
-        # Top 20 Market Cap (Approx Static List)
-        TOP_20_TICKERS = [
-            "KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE", 
-            "KRW-ADA", "KRW-SHIB", "KRW-TRX", "KRW-AVAX", "KRW-LINK", 
-            "KRW-BCH", "KRW-DOT", "KRW-NEAR", "KRW-MATIC", "KRW-ETC", 
-            "KRW-XLM", "KRW-STX", "KRW-WAVES", "KRW-EOS", "KRW-SAND"
-        ]
-        
         port_tickers = [f"{r['market']}-{r['coin'].upper()}" for r in portfolio_list]
         
         # Merge and Remove Duplicates
@@ -1395,6 +1650,13 @@ def main():
                     st.rerun()
 
             with st.form("optimization_form"):
+                # 최적화 방법 선택
+                opt_method = st.radio(
+                    "최적화 방법", ["Grid Search (전수 탐색)", "Optuna (베이지안 최적화)"],
+                    horizontal=True, key="opt_method"
+                )
+                use_optuna = "Optuna" in opt_method
+
                 # 공통: 시간봉 선택
                 opt_interval_label = st.selectbox(
                     "시간봉 (Interval)", options=list(INTERVAL_MAP.keys()),
@@ -1425,6 +1687,14 @@ def main():
                     opt_s_start = c1.number_input("Start", 5, 200, 20, key="opt_s_start")
                     opt_s_end = c2.number_input("End", 5, 200, 60, key="opt_s_end")
                     opt_s_step = c3.number_input("Step", 1, 50, 5, key="opt_s_step")
+
+                # Optuna 전용 설정
+                if use_optuna:
+                    st.divider()
+                    st.markdown("##### Optuna 설정")
+                    oc1, oc2 = st.columns(2)
+                    optuna_n_trials = oc1.number_input("탐색 횟수 (Trials)", 50, 2000, 200, step=50, key="optuna_trials")
+                    optuna_objective = oc2.selectbox("목적함수", ["Calmar (CAGR/|MDD|)", "Sharpe", "수익률 (Return)", "MDD 최소"], key="optuna_obj")
 
                 opt_submitted = st.form_submit_button("Start Optimization", type="primary")
 
@@ -1489,57 +1759,108 @@ def main():
 
                     st.write(f"✅ 데이터 준비 완료: {full_df.index[0].strftime('%Y-%m-%d')} ~ {full_df.index[-1].strftime('%Y-%m-%d')} ({len(full_df):,} candles, {dl_elapsed:.1f}초)")
 
-                    # --- Phase 2: 고속 최적화 ---
+                    # --- Phase 2: 최적화 실행 ---
                     def opt_progress(idx, total, msg):
-                        pct = 0.3 + (idx / total) * 0.7  # 30%~100%
+                        pct = 0.3 + (idx / total) * 0.7
                         progress_bar.progress(min(pct, 1.0))
                         log_area.text(f"{msg} ({idx}/{total} · {idx/total*100:.0f}%)")
 
-                    st.write(f"🚀 총 {total_iter}개 조합 고속 최적화 시작...")
                     t1 = _time.time()
+                    optuna_result = None
 
-                    if bt_strategy == "Donchian Strategy":
-                        raw_results = backtest_engine.optimize_donchian(
-                            full_df, buy_range, sell_range,
-                            fee=fee, slippage=bt_slippage,
-                            start_date=bt_start, initial_balance=initial_cap,
-                            progress_callback=opt_progress
-                        )
+                    if use_optuna:
+                        # --- Optuna 베이지안 최적화 ---
+                        obj_map = {"Calmar (CAGR/|MDD|)": "calmar", "Sharpe": "sharpe",
+                                   "수익률 (Return)": "return", "MDD 최소": "mdd"}
+                        obj_key = obj_map.get(optuna_objective, "calmar")
 
-                        for r in raw_results:
-                            results.append({
-                                "Buy Period": r["Buy Period"],
-                                "Sell Period": r["Sell Period"],
+                        if bt_strategy == "Donchian Strategy":
+                            st.write(f"🧠 Optuna {optuna_n_trials}회 탐색 (Buy {opt_buy_start}~{opt_buy_end}, Sell {opt_sell_start}~{opt_sell_end}, 목적: {optuna_objective})")
+                            optuna_result = backtest_engine.optuna_optimize(
+                                full_df, strategy_mode="Donchian",
+                                buy_range=(opt_buy_start, opt_buy_end),
+                                sell_range=(opt_sell_start, opt_sell_end),
+                                fee=fee, slippage=bt_slippage,
+                                start_date=bt_start, initial_balance=initial_cap,
+                                n_trials=optuna_n_trials, objective_metric=obj_key,
+                                progress_callback=opt_progress
+                            )
+                        else:
+                            st.write(f"🧠 Optuna {optuna_n_trials}회 탐색 (SMA {opt_s_start}~{opt_s_end}, 목적: {optuna_objective})")
+                            optuna_result = backtest_engine.optuna_optimize(
+                                full_df, strategy_mode="SMA Strategy",
+                                buy_range=(opt_s_start, opt_s_end),
+                                fee=fee, slippage=bt_slippage,
+                                start_date=bt_start, initial_balance=initial_cap,
+                                n_trials=optuna_n_trials, objective_metric=obj_key,
+                                progress_callback=opt_progress
+                            )
+
+                        # Optuna 결과 → results 리스트 변환
+                        for r in optuna_result['trials']:
+                            row = {
                                 "Total Return (%)": r["total_return"],
                                 "CAGR (%)": r["cagr"],
                                 "MDD (%)": r["mdd"],
+                                "Calmar": r["calmar"],
                                 "Win Rate (%)": r["win_rate"],
                                 "Sharpe": r["sharpe"],
                                 "Trades": r["trade_count"]
-                            })
+                            }
+                            if bt_strategy == "Donchian Strategy":
+                                row["Buy Period"] = r["buy_period"]
+                                row["Sell Period"] = r["sell_period"]
+                            else:
+                                row["SMA Period"] = r["sma_period"]
+                            results.append(row)
+
+                        total_iter = optuna_n_trials
                     else:
-                        raw_results = backtest_engine.optimize_sma(
-                            full_df, sma_range,
-                            fee=fee, slippage=bt_slippage,
-                            start_date=bt_start, initial_balance=initial_cap,
-                            progress_callback=opt_progress
-                        )
+                        # --- Grid Search (기존) ---
+                        st.write(f"🚀 총 {total_iter}개 조합 Grid Search 시작...")
 
-                        for r in raw_results:
-                            results.append({
-                                "SMA Period": r["SMA Period"],
-                                "Total Return (%)": r["total_return"],
-                                "CAGR (%)": r["cagr"],
-                                "MDD (%)": r["mdd"],
-                                "Win Rate (%)": r["win_rate"],
-                                "Sharpe": r["sharpe"],
-                                "Trades": r["trade_count"]
-                            })
+                        if bt_strategy == "Donchian Strategy":
+                            raw_results = backtest_engine.optimize_donchian(
+                                full_df, buy_range, sell_range,
+                                fee=fee, slippage=bt_slippage,
+                                start_date=bt_start, initial_balance=initial_cap,
+                                progress_callback=opt_progress
+                            )
+                            for r in raw_results:
+                                results.append({
+                                    "Buy Period": r["Buy Period"],
+                                    "Sell Period": r["Sell Period"],
+                                    "Total Return (%)": r["total_return"],
+                                    "CAGR (%)": r["cagr"],
+                                    "MDD (%)": r["mdd"],
+                                    "Calmar": abs(r["cagr"] / r["mdd"]) if r["mdd"] != 0 else 0,
+                                    "Win Rate (%)": r["win_rate"],
+                                    "Sharpe": r["sharpe"],
+                                    "Trades": r["trade_count"]
+                                })
+                        else:
+                            raw_results = backtest_engine.optimize_sma(
+                                full_df, sma_range,
+                                fee=fee, slippage=bt_slippage,
+                                start_date=bt_start, initial_balance=initial_cap,
+                                progress_callback=opt_progress
+                            )
+                            for r in raw_results:
+                                results.append({
+                                    "SMA Period": r["SMA Period"],
+                                    "Total Return (%)": r["total_return"],
+                                    "CAGR (%)": r["cagr"],
+                                    "MDD (%)": r["mdd"],
+                                    "Calmar": abs(r["cagr"] / r["mdd"]) if r["mdd"] != 0 else 0,
+                                    "Win Rate (%)": r["win_rate"],
+                                    "Sharpe": r["sharpe"],
+                                    "Trades": r["trade_count"]
+                                })
 
                     opt_elapsed = _time.time() - t1
                     total_elapsed = _time.time() - t0
-
-                    status.update(label=f"✅ 완료! ({total_iter}개, 다운로드 {dl_elapsed:.1f}초 + 최적화 {opt_elapsed:.1f}초 = 총 {total_elapsed:.1f}초)", state="complete")
+                    method_label = "Optuna" if use_optuna else "Grid Search"
+                    status.update(label=f"✅ {method_label} 완료! ({total_iter}건, {dl_elapsed:.1f}초 + {opt_elapsed:.1f}초 = 총 {total_elapsed:.1f}초)", state="complete")
 
                 except Exception as e:
                     status.update(label=f"❌ 오류: {e}", state="error")
@@ -1547,34 +1868,99 @@ def main():
                     st.code(traceback.format_exc())
                     return
 
-            # --- Results Display (outside st.status) ---
+            # --- Results Display ---
             if not results:
                 st.warning("No results found.")
                 return
 
             opt_df = pd.DataFrame(results)
-            best_idx = opt_df['Total Return (%)'].idxmax()
-            best_row = opt_df.loc[best_idx]
 
+            # 정렬 기준: Optuna면 목적함수 기준, Grid면 수익률 기준
+            sort_col = "Calmar" if use_optuna else "Total Return (%)"
+            opt_df = opt_df.sort_values(sort_col, ascending=False).reset_index(drop=True)
+            opt_df.index = opt_df.index + 1
+            opt_df.index.name = "순위"
+            best_row = opt_df.iloc[0]
+
+            # Best 결과 표시
             if bt_strategy == "Donchian Strategy":
                 st.subheader("🏆 Best Result")
-                st.success(f"Best Return: **{best_row['Total Return (%)']:.2f}%** (Buy: {int(best_row['Buy Period'])}, Sell: {int(best_row['Sell Period'])})")
+                st.success(f"Buy: **{int(best_row['Buy Period'])}**, Sell: **{int(best_row['Sell Period'])}** → "
+                           f"Return: {best_row['Total Return (%)']:.1f}%, CAGR: {best_row['CAGR (%)']:.1f}%, "
+                           f"MDD: {best_row['MDD (%)']:.1f}%, Calmar: {best_row['Calmar']:.2f}")
+            else:
+                st.subheader("🏆 Best Result")
+                st.success(f"SMA: **{int(best_row['SMA Period'])}** → "
+                           f"Return: {best_row['Total Return (%)']:.1f}%, CAGR: {best_row['CAGR (%)']:.1f}%, "
+                           f"MDD: {best_row['MDD (%)']:.1f}%, Calmar: {best_row['Calmar']:.2f}")
 
-                st.dataframe(opt_df.sort_values(by="Total Return (%)", ascending=False).style.background_gradient(cmap='RdYlGn', subset=['Total Return (%)', 'Sharpe']).format("{:,.2f}"), use_container_width=True)
+            # 결과 테이블
+            gradient_cols = ['Total Return (%)', 'Calmar', 'Sharpe']
+            st.dataframe(
+                opt_df.style
+                    .background_gradient(cmap='RdYlGn', subset=[c for c in gradient_cols if c in opt_df.columns])
+                    .background_gradient(cmap='RdYlGn_r', subset=['MDD (%)'])
+                    .format("{:,.2f}"),
+                use_container_width=True, height=500
+            )
 
+            # 차트
+            if bt_strategy == "Donchian Strategy" and not use_optuna:
                 fig_opt = px.density_heatmap(
-                    opt_df, x="Buy Period", y="Sell Period", z="Total Return (%)",
-                    histfunc="avg", title="Donchian Optimization Heatmap (Return %)",
+                    opt_df.reset_index(), x="Buy Period", y="Sell Period", z="Total Return (%)",
+                    histfunc="avg", title="Donchian Optimization Heatmap",
                     text_auto=".0f", color_continuous_scale="RdYlGn"
                 )
                 st.plotly_chart(fig_opt, use_container_width=True)
-            else:
-                st.subheader("🏆 Best Result")
-                st.success(f"Best Return: **{best_row['Total Return (%)']:.2f}%** (SMA: {int(best_row['SMA Period'])})")
+            elif bt_strategy != "Donchian Strategy" and not use_optuna:
+                st.line_chart(opt_df.reset_index().set_index("SMA Period")[['Total Return (%)', 'MDD (%)']])
 
-                st.dataframe(opt_df.sort_values(by="Total Return (%)", ascending=False).style.background_gradient(cmap='RdYlGn', subset=['Total Return (%)', 'Sharpe']).format("{:,.2f}"), use_container_width=True)
+            # Optuna 전용: 탐색 이력 차트
+            if use_optuna and optuna_result:
+                st.divider()
+                st.subheader("📈 Optuna 탐색 이력")
 
-                st.line_chart(opt_df.set_index("SMA Period")[['Total Return (%)', 'MDD (%)']])
+                trial_df = opt_df.reset_index()
+                trial_df['Trial'] = range(1, len(trial_df) + 1)
+
+                # Best value 누적 추이
+                import optuna.visualization as optuna_vis
+                try:
+                    fig_history = go.Figure()
+                    study = optuna_result['study']
+                    best_vals = []
+                    running_best = float('-inf')
+                    for t in study.trials:
+                        if t.value is not None and t.value > running_best:
+                            running_best = t.value
+                        best_vals.append(running_best)
+                    fig_history.add_trace(go.Scatter(
+                        y=best_vals, mode='lines', name=f'Best {optuna_objective}',
+                        line=dict(color='blue', width=2)
+                    ))
+                    fig_history.update_layout(
+                        title=f"Best {optuna_objective} over Trials",
+                        xaxis_title="Trial", yaxis_title=optuna_objective,
+                        height=350
+                    )
+                    st.plotly_chart(fig_history, use_container_width=True)
+                except Exception:
+                    pass
+
+                # 파라미터 중요도
+                if bt_strategy == "Donchian Strategy":
+                    st.caption("파라미터별 목적함수 분포")
+                    pc1, pc2 = st.columns(2)
+                    with pc1:
+                        fig_buy = px.scatter(trial_df, x="Buy Period", y="Calmar",
+                                             color="MDD (%)", color_continuous_scale="RdYlGn_r",
+                                             title="Buy Period vs Calmar")
+                        st.plotly_chart(fig_buy, use_container_width=True)
+                    with pc2:
+                        fig_sell = px.scatter(trial_df, x="Sell Period", y="Calmar",
+                                             color="MDD (%)", color_continuous_scale="RdYlGn_r",
+                                             title="Sell Period vs Calmar")
+                        st.plotly_chart(fig_sell, use_container_width=True)
 
         optimization_section()
 
@@ -1775,28 +2161,15 @@ def main():
             default=["일봉", "4시간", "1시간"],
             key="scan_intervals"
         )
-        scan_top_n = scan_col5.number_input("상위 종목 수", 5, 50, 20, key="scan_top_n")
-
         sell_ratio = 0.5
         if scan_strategy == "Donchian":
             sell_ratio = st.slider("매도 채널 비율", 0.1, 1.0, 0.5, 0.1, key="scan_sell_ratio")
 
+        st.caption(f"대상: 시가총액 상위 {len(TOP_20_TICKERS)}개 — {', '.join(t.replace('KRW-','') for t in TOP_20_TICKERS)}")
+
         if st.button("🔍 스캔 시작", key="scan_run", type="primary"):
             engine = BacktestEngine()
-
-            with st.spinner("상위 종목 조회 중..."):
-                # Upbit API로 거래대금 상위 종목 조회
-                try:
-                    all_krw_tickers = pyupbit.get_tickers(fiat="KRW")
-                    url = "https://api.upbit.com/v1/ticker"
-                    resp = requests.get(url, params={"markets": ",".join(all_krw_tickers)}, timeout=10)
-                    ticker_data = resp.json()
-                    # 24h 거래대금 기준 정렬
-                    ticker_data.sort(key=lambda x: float(x.get('acc_trade_price_24h', 0)), reverse=True)
-                    top_tickers = [t['market'] for t in ticker_data[:scan_top_n]]
-                except Exception as e:
-                    st.error(f"종목 조회 실패: {e}")
-                    top_tickers = []
+            top_tickers = TOP_20_TICKERS
 
             if top_tickers:
                 interval_apis = [INTERVAL_MAP[k] for k in scan_intervals]

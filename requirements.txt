@@ -4,3 +4,5 @@ pandas
 plotly
 python-dotenv
 numpy
+optuna
+requests

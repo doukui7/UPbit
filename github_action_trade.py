@@ -94,6 +94,7 @@ def analyze_asset(trader, item):
         'coin_value': coin_value,
         'current_price': current_price,
         'is_holding': is_holding,
+        'interval': interval,  # Pass interval for smart/adaptive execution
     }
 
 
@@ -129,9 +130,10 @@ def run_auto_trade():
     # ── 2단계: 매도 먼저 실행 (현금 확보) ──
     for a in analyses:
         if a['signal'] == 'SELL' and a['is_holding']:
-            logger.info(f"[{a['ticker']}] SELL {a['coin_balance']:.6f} {a['coin_sym']}")
+            logger.info(f"[{a['ticker']}] SELL {a['coin_balance']:.6f} {a['coin_sym']} (Smart Sell)")
             try:
-                result = trader.sell_market(a['ticker'], a['coin_balance'])
+                # Use Smart Sell (Limit Order Split)
+                result = trader.smart_sell(a['ticker'], a['coin_balance'], interval=a.get('interval', 'day'))
                 logger.info(f"[{a['ticker']}] Sell Result: {result}")
             except Exception as e:
                 logger.error(f"[{a['ticker']}] Sell Error: {e}")
@@ -165,9 +167,10 @@ def run_auto_trade():
                     buy_budget = 0
 
                 if buy_budget > MIN_ORDER_KRW:
-                    logger.info(f"[{a['ticker']}] BUY {buy_budget:,.0f} KRW (weight {a['weight']}% / {available_weight}%)")
+                    logger.info(f"[{a['ticker']}] BUY {buy_budget:,.0f} KRW (Adaptive) | Weight {a['weight']}%")
                     try:
-                        result = trader.buy_market(a['ticker'], buy_budget)
+                        # Use Adaptive Buy (Monitor price spike)
+                        result = trader.adaptive_buy(a['ticker'], buy_budget, interval=a.get('interval', 'day'))
                         logger.info(f"[{a['ticker']}] Buy Result: {result}")
                     except Exception as e:
                         logger.error(f"[{a['ticker']}] Buy Error: {e}")
