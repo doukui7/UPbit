@@ -2346,7 +2346,11 @@ def main():
                             error_msg = str(e)
 
                         if error_msg:
-                            st.error(f"API 오류: {error_msg}")
+                            if "out_of_scope" in error_msg or "권한" in error_msg:
+                                st.error("⚠️ API 키에 해당 조회 권한이 없습니다.")
+                                st.info("💡 [업비트 > 마이페이지 > Open API 관리]에서 **자산조회**, **입출금 조회** 권한을 활성화해주세요.")
+                            else:
+                                st.error(f"API 오류: {error_msg}")
                         if data and len(data) > 0:
                             df_hist = pd.DataFrame(data)
                             # 날짜 필터 적용
