@@ -42,7 +42,7 @@ config = load_config()
 # Cloud 환경 감지 (Streamlit Cloud에서는 HOSTNAME이 *.streamlit.app 또는 /mount/src 경로)
 IS_CLOUD = os.path.exists("/mount/src") or "streamlit.app" in os.getenv("HOSTNAME", "")
 
-st.set_page_config(page_title="Upbit SMA Trader", layout="wide")
+st.set_page_config(page_title="업비트 자동매매", layout="wide")
 
 # --- Custom CSS for Better Readability ---
 st.markdown("""
@@ -94,6 +94,38 @@ st.markdown("""
         font-weight: 600 !important;
     }
 
+    /* === 글자 겹침 방지 === */
+    [data-testid="stMetricValue"],
+    [data-testid="stMetricLabel"],
+    [data-testid="stMetricDelta"] {
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+    }
+    [data-testid="stHorizontalBlock"] > div {
+        overflow: hidden !important;
+    }
+    [data-testid="column"] {
+        overflow: hidden !important;
+    }
+    /* 탭 버튼 겹침 방지 */
+    [data-baseweb="tab-list"] {
+        flex-wrap: wrap !important;
+        gap: 4px !important;
+    }
+    /* 셀렉트박스/인풋 라벨 겹침 방지 */
+    .stSelectbox label, .stNumberInput label, .stDateInput label, .stTextInput label {
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+        max-width: 100% !important;
+    }
+    /* 캡션/텍스트 겹침 방지 */
+    .stCaption, .stMarkdown {
+        word-break: break-word !important;
+        overflow-wrap: break-word !important;
+    }
+
     /* ===== Mobile Responsive ===== */
     @media (max-width: 768px) {
         html, body, [class*="css"] {
@@ -102,21 +134,37 @@ st.markdown("""
         .stMarkdown p {
             font-size: 14px !important;
         }
-        [data-testid="stMetricValue"] {
-            font-size: 22px !important;
-        }
-        [data-testid="stMetricLabel"] {
-            font-size: 13px !important;
-        }
         [data-testid="stMetricDelta"] {
             font-size: 12px !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
         }
         .streamlit-expanderHeader {
             font-size: 16px !important;
         }
         button[data-baseweb="tab"] {
-            font-size: 13px !important;
-            padding: 6px 10px !important;
+            font-size: 11px !important;
+            padding: 4px 8px !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+        }
+        [data-baseweb="tab-list"] {
+            gap: 2px !important;
+        }
+        /* 모바일 메트릭 겹침 방지 */
+        [data-testid="stMetricValue"] {
+            font-size: 18px !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+        }
+        [data-testid="stMetricLabel"] {
+            font-size: 11px !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
         }
         [data-testid="stSidebar"] {
             min-width: 280px !important;
@@ -198,7 +246,7 @@ def render_gold_mode():
         gold_trader.account_no = kiwoom_account
 
     # --- Main Content ---
-    tab_g1, tab_g2, tab_g3 = st.tabs(["📊 금 시세", "💰 계좌/거래", "📈 차트 분석"])
+    tab_g1, tab_g2, tab_g3, tab_g4 = st.tabs(["📊 금 시세", "💰 계좌/거래", "📈 차트 분석", "💳 수수료/세금"])
 
     # --- Tab 1: 금 시세 ---
     with tab_g1:
@@ -377,7 +425,7 @@ def main():
         return
 
     # === 코인 모드 (기존 코드) ===
-    st.title("🪙 Upbit SMA Auto-Trading System")
+    st.title("🪙 업비트 자동매매 시스템")
 
     # Sticky Header (JS로 Streamlit DOM 직접 조작)
     import streamlit.components.v1 as components
@@ -424,7 +472,7 @@ def main():
     """, height=0)
 
     # --- Sidebar: Configuration ---
-    st.sidebar.header("설정 (Configuration)")
+    st.sidebar.header("설정")
     
     # API Keys (Streamlit Cloud secrets 또는 .env 지원)
     try:
@@ -440,7 +488,7 @@ def main():
         current_sk = env_secret
         st.sidebar.info("📱 조회 전용 모드 (Cloud)")
     else:
-        with st.sidebar.expander("API Keys", expanded=False):
+        with st.sidebar.expander("API 키", expanded=False):
             ak_input = st.text_input("Access Key", value=env_access if env_access else "", type="password")
             sk_input = st.text_input("Secret Key", value=env_secret if env_secret else "", type="password")
             current_ak = ak_input if ak_input else env_access
@@ -501,7 +549,7 @@ def main():
         param_val = p.get("parameter", p.get("sma", 20))
         
         # Migration: Map old long names to short names
-        strat_map = {"SMA Strategy": "SMA", "Donchian Trend": "Donchian"}
+        strat_map = {"SMA 전략": "SMA", "돈키안 전략": "Donchian", "Donchian Trend": "Donchian"}
         strat_val = p.get("strategy", "SMA")
         strat_val = strat_map.get(strat_val, strat_val)
 
@@ -542,7 +590,7 @@ def main():
         st.sidebar.error(f"총 비중이 {total_weight}% 입니다. (100% 이하로 설정해주세요)")
     else:
         cash_weight = 100 - total_weight
-        st.sidebar.info(f"투자 비중: {total_weight}% | 현금(Cash): {cash_weight}%")
+        st.sidebar.info(f"투자 비중: {total_weight}% | 현금: {cash_weight}%")
     
     # Convert back to list of dicts (Map Labels back to API Keys)
     portfolio_list = []
@@ -575,7 +623,7 @@ def main():
         st.error(f"start_date 형식 오류: {default_start_str}")
         st.stop()
     start_date = st.sidebar.date_input(
-        "기준 시작일 (Start Date)",
+        "기준 시작일",
         value=default_start,
         help="수익률 계산 및 이론적 자산 비교를 위한 기준일입니다. 실제 매매 신호와는 무관합니다.",
         disabled=IS_CLOUD
@@ -592,7 +640,7 @@ def main():
         help="시뮬레이션을 위한 초기 투자금 설정입니다. 실제 계좌 잔고와는 무관하며, 수익률 계산의 기준이 됩니다.",
         disabled=IS_CLOUD
     )
-    st.sidebar.caption(f"Set: **{initial_cap:,.0f} KRW**")
+    st.sidebar.caption(f"설정: **{initial_cap:,.0f} KRW**")
     
     # Strategy Selection REMOVED (Moved to Per-Coin)
 
@@ -677,15 +725,15 @@ def main():
     ]
 
     # --- Tabs ---
-    tab1, tab2, tab3, tab4 = st.tabs(["🚀 Live Portfolio", "📊 Backtest (Single)", "📜 자산 입출금 (History)", "📡 전체 종목 스캔"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🚀 실시간 포트폴리오", "📊 백테스트", "📜 자산 입출금", "📡 전체 종목 스캔"])
 
     # --- Tab 1: Live Portfolio (Default) ---
     with tab1:
-        st.header("Real-Time Portfolio Dashboard")
-        st.caption("Monitoring all configured assets.")
+        st.header("실시간 포트폴리오 대시보드")
+        st.caption("설정된 모든 자산을 모니터링합니다.")
         
         if not trader:
-            st.warning("Please enter valid API Keys in the sidebar to enable trading.")
+            st.warning("사이드바에서 API 키를 설정해주세요.")
         else:
             # Configure and Start Worker
             worker.update_config(portfolio_list)
@@ -696,20 +744,20 @@ def main():
             # Control Bar
             col_ctrl1, col_ctrl2 = st.columns([1,3])
             with col_ctrl1:
-                if st.button("🔄 Refresh View"):
+                if st.button("🔄 새로고침"):
                     st.rerun()
             with col_ctrl2:
-                st.info(f"Worker Status: **{w_msg}**")
+                st.info(f"워커 상태: **{w_msg}**")
                 
             if not portfolio_list:
-                st.warning("Please add coins to your portfolio in the Sidebar.")
+                st.warning("사이드바에서 포트폴리오에 코인을 추가해주세요.")
             else:
                 count = len(portfolio_list)
                 per_coin_cap = initial_cap / count
                 
                 # --- Total Summary Container ---
-                st.subheader("🏁 Portfolio Summary")
-                st.caption(f"Init Capital: {initial_cap:,.0f} KRW | Assets: {count} | Per Asset: {per_coin_cap:,.0f} KRW")
+                st.subheader("🏁 포트폴리오 요약")
+                st.caption(f"초기자본: {initial_cap:,.0f} KRW | 자산수: {count} | 자산당: {per_coin_cap:,.0f} KRW")
                 
                 sum_col1, sum_col2, sum_col3, sum_col4 = st.columns(4)
                 
@@ -814,10 +862,10 @@ def main():
                                             in_position = False
 
                                     if in_position:
-                                        position_label = "Hold"
+                                        position_label = "보유"
                                         signal = "SELL" if close_now < sell_target else "HOLD"
                                     else:
-                                        position_label = "Cash"
+                                        position_label = "현금"
                                         signal = "BUY" if close_now > buy_target else "WAIT"
                                 else:
                                     sma_vals = df_60['close'].rolling(window=p_param).mean()
@@ -827,10 +875,10 @@ def main():
                                     sell_dist = buy_dist
                                     if close_now > buy_target:
                                         signal = "BUY"
-                                        position_label = "Hold"
+                                        position_label = "보유"
                                     else:
                                         signal = "SELL"
-                                        position_label = "Cash"
+                                        position_label = "현금"
 
                                 signal_rows.append({
                                     "종목": p_ticker.replace("KRW-", ""),
@@ -850,7 +898,7 @@ def main():
                                     fig_m.add_trace(go.Candlestick(
                                         x=df_chart.index, open=df_chart['open'],
                                         high=df_chart['high'], low=df_chart['low'],
-                                        close=df_chart['close'], name='Price',
+                                        close=df_chart['close'], name='가격',
                                         increasing_line_color='#26a69a', decreasing_line_color='#ef5350',
                                     ))
 
@@ -859,11 +907,11 @@ def main():
                                         lower_chart = lower_vals.loc[df_chart.index]
                                         fig_m.add_trace(go.Scatter(
                                             x=df_chart.index, y=upper_chart,
-                                            name=f'Upper({p_param})', line=dict(color='green', width=1, dash='dot')
+                                            name=f'상단({p_param})', line=dict(color='green', width=1, dash='dot')
                                         ))
                                         fig_m.add_trace(go.Scatter(
                                             x=df_chart.index, y=lower_chart,
-                                            name=f'Lower({p_sell_param})', line=dict(color='red', width=1, dash='dot')
+                                            name=f'하단({p_sell_param})', line=dict(color='red', width=1, dash='dot')
                                         ))
                                     else:
                                         sma_chart = sma_vals.loc[df_chart.index]
@@ -930,7 +978,7 @@ def main():
                 # 합산 포트폴리오 자리 미리 확보 (데이터 수집 후 렌더링)
                 combined_portfolio_container = st.container()
 
-                st.write(f"### 📋 Asset Details (Cash Reserve: {reserved_cash:,.0f} KRW)")
+                st.write(f"### 📋 자산 상세 (현금 예비: {reserved_cash:,.0f} KRW)")
 
                 # 포트폴리오 합산용 에쿼티 수집
                 portfolio_equity_data = []  # [(label, equity_series, close_series, per_coin_cap, perf)]
@@ -955,7 +1003,7 @@ def main():
                             df_curr = worker.get_data(ticker, interval)
                             
                             if df_curr is None or len(df_curr) < param_val:
-                                st.warning(f"Waiting for data... ({ticker}, {interval})")
+                                st.warning(f"데이터 대기 중... ({ticker}, {interval})")
                                 total_theo_val += per_coin_cap 
                                 continue
                                 
@@ -1031,29 +1079,29 @@ def main():
                             
                             # --- Display Metrics ---
                             c1, c2, c3, c4 = st.columns(4)
-                            c1.metric("Price / SMA", f"{curr_price:,.0f}", delta=f"{curr_price - curr_sma:,.0f}")
+                            c1.metric("가격 / SMA", f"{curr_price:,.0f}", delta=f"{curr_price - curr_sma:,.0f}")
                             
                             
                             # Signal Metric Removed as requested
                             # c2.markdown(f"**Signal**: :{sig_color}[{curr_signal}]")
                             if strategy_mode == "Donchian":
-                                c2.metric("Channel", f"{buy_p}/{sell_p}")
+                                c2.metric("채널", f"{buy_p}/{sell_p}")
                             else:
-                                c2.metric("SMA Period", f"{param_val}")
+                                c2.metric("SMA 기간", f"{param_val}")
                             
                             # Asset Performance
                             roi_theo = (expected_eq - per_coin_cap) / per_coin_cap * 100
-                            c3.metric(f"Theo Asset", f"{expected_eq:,.0f}", delta=f"{roi_theo:.2f}%")
+                            c3.metric(f"이론 자산", f"{expected_eq:,.0f}", delta=f"{roi_theo:.2f}%")
                             
                             match = (real_status == theo_status)
                             match_color = "green" if match else "red"
-                            c4.markdown(f"**Sync**: :{match_color}[{'MATCH' if match else 'DIFF'}]")
-                            c4.caption(f"Real: {coin_bal:,.4f} {coin_sym} ({real_status})")
+                            c4.markdown(f"**동기화**: :{match_color}[{'일치' if match else '불일치'}]")
+                            c4.caption(f"실제: {coin_bal:,.4f} {coin_sym} ({real_status})")
                             
                             st.divider()
                             
                             # --- Tabs for Charts & Orders ---
-                            p_tab1, p_tab2 = st.tabs(["📈 Analysis & Benchmark", "🛒 Orders & Execution"])
+                            p_tab1, p_tab2 = st.tabs(["📈 분석 & 벤치마크", "🛒 주문 & 체결"])
                             
                             with p_tab1:
                                 if "error" not in bt_res:
@@ -1066,8 +1114,8 @@ def main():
                                     hist_df['Norm_Bench'] = hist_df['close'] / start_price * 100
 
                                     fig_comp = go.Figure()
-                                    fig_comp.add_trace(go.Scatter(x=hist_df.index, y=hist_df['Norm_Strat'], name='Strategy', line=dict(color='blue')))
-                                    fig_comp.add_trace(go.Scatter(x=hist_df.index, y=hist_df['Norm_Bench'], name='Benchmark', line=dict(color='gray', dash='dot')))
+                                    fig_comp.add_trace(go.Scatter(x=hist_df.index, y=hist_df['Norm_Strat'], name='전략', line=dict(color='blue')))
+                                    fig_comp.add_trace(go.Scatter(x=hist_df.index, y=hist_df['Norm_Bench'], name='벤치마크', line=dict(color='gray', dash='dot')))
 
                                     # 매수/매도 마커 추가
                                     if perf.get('trades'):
@@ -1077,18 +1125,18 @@ def main():
                                             buy_dates = [t['date'] for t in buy_trades]
                                             buy_vals = [hist_df.loc[d, 'Norm_Strat'] if d in hist_df.index else None for d in buy_dates]
                                             fig_comp.add_trace(go.Scatter(
-                                                x=buy_dates, y=buy_vals, mode='markers', name='BUY',
+                                                x=buy_dates, y=buy_vals, mode='markers', name='매수',
                                                 marker=dict(symbol='triangle-up', size=10, color='green')
                                             ))
                                         if sell_trades:
                                             sell_dates = [t['date'] for t in sell_trades]
                                             sell_vals = [hist_df.loc[d, 'Norm_Strat'] if d in hist_df.index else None for d in sell_dates]
                                             fig_comp.add_trace(go.Scatter(
-                                                x=sell_dates, y=sell_vals, mode='markers', name='SELL',
+                                                x=sell_dates, y=sell_vals, mode='markers', name='매도',
                                                 marker=dict(symbol='triangle-down', size=10, color='red')
                                             ))
 
-                                    fig_comp.update_layout(height=300, title="Strategy vs Buy/Hold (Normalized)", margin=dict(l=0,r=0,t=50,b=0),
+                                    fig_comp.update_layout(height=300, title="전략 vs 단순보유 (정규화)", margin=dict(l=0,r=0,t=80,b=0),
                                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
                                     st.plotly_chart(fig_comp, use_container_width=True)
 
@@ -1102,7 +1150,7 @@ def main():
                             with p_tab2:
                                 o_col1, o_col2 = st.columns([1, 1])
                                 with o_col1:
-                                    st.write("**Orderbook**")
+                                    st.write("**호가창**")
                                     try:
                                         ob = pyupbit.get_orderbook(ticker)
                                         if isinstance(ob, list): ob = ob[0]
@@ -1114,31 +1162,31 @@ def main():
                                             for b in asks: # Use same count
                                                  st.markdown(f"<div style='color:green; text-align:right'>{b['bid_price']:,.0f} | {b['bid_size']:.3f}</div>", unsafe_allow_html=True)
                                     except:
-                                        st.write("N/A")
+                                        st.write("호가 없음")
                                 
                                 with o_col2:
-                                    st.write("**Manual Execution**")
-                                    if st.button(f"Check Trade Logic ({item['coin']})", key=f"btn_{ticker}_{asset_idx}"):
+                                    st.write("**수동 실행**")
+                                    if st.button(f"매매 로직 확인 ({item['coin']})", key=f"btn_{ticker}_{asset_idx}"):
                                         res = trader.check_and_trade(ticker, interval=interval, sma_period=param_val)
                                         st.info(res)
 
                         except Exception as e:
-                            st.error(f"Error processing {ticker}: {e}")
+                            st.error(f"{ticker} 처리 오류: {e}")
                 
                 # --- Populate Total Summary ---
                 total_roi = (total_theo_val - total_init_val) / total_init_val * 100 if total_init_val else 0
                 real_roi = (total_real_val - total_init_val) / total_init_val * 100 if total_init_val else 0
                 diff_val = total_real_val - total_theo_val
 
-                sum_col1.metric("Initial Capital", f"{total_init_val:,.0f} KRW")
-                sum_col2.metric("Total Theo Equity", f"{total_theo_val:,.0f} KRW", delta=f"{total_roi:.2f}%")
-                sum_col3.metric("Total Real Assets", f"{total_real_val:,.0f} KRW", delta=f"{real_roi:.2f}%")
-                sum_col4.metric("Difference (Real-Theo)", f"{diff_val:,.0f} KRW", delta_color="off" if abs(diff_val)<1000 else "inverse")
+                sum_col1.metric("초기 자본", f"{total_init_val:,.0f} KRW")
+                sum_col2.metric("이론 총자산", f"{total_theo_val:,.0f} KRW", delta=f"{total_roi:.2f}%")
+                sum_col3.metric("실제 총자산", f"{total_real_val:,.0f} KRW", delta=f"{real_roi:.2f}%")
+                sum_col4.metric("차이 (실제-이론)", f"{diff_val:,.0f} KRW", delta_color="off" if abs(diff_val)<1000 else "inverse")
 
                 # --- 합산 포트폴리오 성과 (Combined Portfolio) → 위에 예약한 container에 렌더링 ---
                 if portfolio_equity_data:
                     with combined_portfolio_container:
-                        with st.expander("📊 합산 포트폴리오 성과 (Combined Portfolio)", expanded=True):
+                        with st.expander("📊 합산 포트폴리오 성과", expanded=True):
                             import numpy as np
 
                             # 각 자산의 에쿼티를 일자 기준으로 합산
@@ -1202,11 +1250,11 @@ def main():
 
                             # 메트릭 표시
                             pm1, pm2, pm3, pm4, pm5 = st.columns(5)
-                            pm1.metric("Total Return", f"{port_return:.2f}%")
+                            pm1.metric("총 수익률", f"{port_return:.2f}%")
                             pm2.metric("CAGR", f"{port_cagr:.2f}%")
                             pm3.metric("MDD", f"{port_mdd:.2f}%")
                             pm4.metric("Sharpe", f"{port_sharpe:.2f}")
-                            pm5.metric("vs Buy&Hold", f"{port_return - bench_return:+.2f}%p")
+                            pm5.metric("vs 단순보유", f"{port_return - bench_return:+.2f}%p")
 
                             st.caption(f"기간: {total_eq.index[0].strftime('%Y-%m-%d')} ~ {total_eq.index[-1].strftime('%Y-%m-%d')} ({port_days}일) | 초기자금: {port_init:,.0f} → 최종: {port_final:,.0f} KRW")
 
@@ -1214,11 +1262,11 @@ def main():
                             fig_port = go.Figure()
                             fig_port.add_trace(go.Scatter(
                                 x=norm_eq.index, y=norm_eq.values,
-                                name='Portfolio (Strategy)', line=dict(color='blue', width=2)
+                                name='포트폴리오 (전략)', line=dict(color='blue', width=2)
                             ))
                             fig_port.add_trace(go.Scatter(
                                 x=norm_bench.index, y=norm_bench.values,
-                                name='Portfolio (Buy & Hold)', line=dict(color='gray', dash='dot')
+                                name='포트폴리오 (단순보유)', line=dict(color='gray', dash='dot')
                             ))
 
                             # 합산 차트에 매수/매도 마커 표시
@@ -1245,7 +1293,7 @@ def main():
                                         buy_vals.append(norm_eq.iloc[idx[0]])
                                 if buy_dates_valid:
                                     fig_port.add_trace(go.Scatter(
-                                        x=buy_dates_valid, y=buy_vals, mode='markers', name='BUY',
+                                        x=buy_dates_valid, y=buy_vals, mode='markers', name='매수',
                                         marker=dict(symbol='triangle-up', size=8, color='green', opacity=0.7)
                                     ))
 
@@ -1262,15 +1310,15 @@ def main():
                                         sell_vals.append(norm_eq.iloc[idx[0]])
                                 if sell_dates_valid:
                                     fig_port.add_trace(go.Scatter(
-                                        x=sell_dates_valid, y=sell_vals, mode='markers', name='SELL',
+                                        x=sell_dates_valid, y=sell_vals, mode='markers', name='매도',
                                         marker=dict(symbol='triangle-down', size=8, color='red', opacity=0.7)
                                     ))
 
                             fig_port.update_layout(
                                 height=350,
-                                title="Combined Portfolio: Strategy vs Buy & Hold (Normalized)",
-                                yaxis_title="Normalized (%)",
-                                margin=dict(l=0, r=0, t=50, b=0),
+                                title="합산 포트폴리오: 전략 vs 단순보유 (정규화)",
+                                yaxis_title="정규화 (%)",
+                                margin=dict(l=0, r=0, t=80, b=0),
                                 hovermode='x unified',
                                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
                             )
@@ -1280,14 +1328,14 @@ def main():
                             fig_dd = go.Figure()
                             fig_dd.add_trace(go.Scatter(
                                 x=port_dd.index, y=port_dd.values,
-                                name='Drawdown', fill='tozeroy',
+                                name='낙폭', fill='tozeroy',
                                 line=dict(color='red', width=1)
                             ))
                             fig_dd.update_layout(
                                 height=200,
-                                title="Portfolio Drawdown (%)",
-                                yaxis_title="Drawdown (%)",
-                                margin=dict(l=0, r=0, t=50, b=0),
+                                title="포트폴리오 낙폭 (%)",
+                                yaxis_title="낙폭 (%)",
+                                margin=dict(l=0, r=0, t=80, b=0),
                                 hovermode='x unified',
                                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
                             )
@@ -1307,14 +1355,14 @@ def main():
                             if reserved_cash > 0:
                                 fig_stack.add_trace(go.Scatter(
                                     x=total_eq.index, y=[reserved_cash] * len(total_eq),
-                                    name='Cash Reserve', stackgroup='one',
+                                    name='현금 예비', stackgroup='one',
                                     line=dict(color='lightgray')
                                 ))
                             fig_stack.update_layout(
                                 height=350,
-                                title="Asset Contribution (Stacked)",
+                                title="자산별 기여도 (적층)",
                                 yaxis_title="KRW",
-                                margin=dict(l=0, r=0, t=50, b=0),
+                                margin=dict(l=0, r=0, t=80, b=0),
                                 hovermode='x unified',
                                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
                             )
@@ -1536,7 +1584,7 @@ def main():
 
     # --- Tab 2: Backtest (Single) ---
     with tab2:
-        st.header("Single Asset Backtest")
+        st.header("개별 자산 백테스트")
         
         # Select ticker from portfolio for convenience, or custom
         port_tickers = [f"{r['market']}-{r['coin'].upper()}" for r in portfolio_list]
@@ -1546,40 +1594,40 @@ def main():
         
         # --- Strategy Selection (Top) ---
         bt_strategy = st.selectbox(
-            "전략 선택 (Strategy)",
-            ["SMA Strategy", "Donchian Strategy"],
+            "전략 선택",
+            ["SMA 전략", "돈키안 전략"],
             index=0,
             key="bt_strategy_sel"
         )
 
-        selected_ticker_bt = st.selectbox("백테스트 대상 (Target)", base_options + ["Custom"])
+        selected_ticker_bt = st.selectbox("백테스트 대상", base_options + ["직접입력"])
 
         bt_ticker = ""
         bt_sma = 0
         bt_buy_period = 20
         bt_sell_period = 10
 
-        if selected_ticker_bt == "Custom":
+        if selected_ticker_bt == "직접입력":
             c1, c2 = st.columns(2)
-            c = c2.text_input("Coin", "BTC", key="bt_c")
+            c = c2.text_input("코인", "BTC", key="bt_c")
             bt_ticker = f"KRW-{c.upper()}"
         else:
             bt_ticker = selected_ticker_bt
 
         # --- Strategy-specific Parameters ---
-        if bt_strategy == "SMA Strategy":
+        if bt_strategy == "SMA 전략":
             item = next((item for item in portfolio_list if f"{item['market']}-{item['coin'].upper()}" == bt_ticker), None)
             default_sma = item.get('parameter', 60) if item else 60
             bt_sma = st.number_input("단기 SMA (추세)", value=default_sma, key="bt_sma_select", min_value=5, step=1)
         else:  # Donchian Strategy
             dc_col1, dc_col2 = st.columns(2)
             with dc_col1:
-                bt_buy_period = st.number_input("매수 채널 기간 (Buy Period)", value=20, min_value=5, max_value=300, step=1, key="bt_dc_buy", help="N일 고가 돌파 시 매수")
+                bt_buy_period = st.number_input("매수 채널 기간", value=20, min_value=5, max_value=300, step=1, key="bt_dc_buy", help="N일 고가 돌파 시 매수")
             with dc_col2:
-                bt_sell_period = st.number_input("매도 채널 기간 (Sell Period)", value=10, min_value=5, max_value=300, step=1, key="bt_dc_sell", help="N일 저가 이탈 시 매도")
+                bt_sell_period = st.number_input("매도 채널 기간", value=10, min_value=5, max_value=300, step=1, key="bt_dc_sell", help="N일 저가 이탈 시 매도")
 
         # Backtest Interval Selection
-        bt_interval_label = st.selectbox("시간봉 선택 (Interval)", options=list(INTERVAL_MAP.keys()), index=0, key="bt_interval_sel")
+        bt_interval_label = st.selectbox("시간봉 선택", options=list(INTERVAL_MAP.keys()), index=0, key="bt_interval_sel")
         bt_interval = INTERVAL_MAP[bt_interval_label]
 
         # 코인/시간봉별 기본 슬리피지 테이블 (%)
@@ -1650,17 +1698,17 @@ def main():
             st.caption(f"편도 비용: {cost_per_trade:.2f}% (수수료 {fee_pct:.2f}% + 슬리피지 {bt_slippage:.2f}%)")
             st.caption(f"왕복 비용: {cost_round_trip:.2f}% (매수+매도)")
 
-            run_btn = st.button("Run Backtest", type="primary")
+            run_btn = st.button("백테스트 실행", type="primary")
 
         if run_btn:
             # Determine period for data fetch buffer
-            if bt_strategy == "Donchian Strategy":
+            if bt_strategy == "돈키안 전략":
                 req_period = max(bt_buy_period, bt_sell_period)
                 bt_strategy_mode = "Donchian"
                 bt_sell_ratio = bt_sell_period / bt_buy_period if bt_buy_period > 0 else 0.5
             else:
                 req_period = bt_sma
-                bt_strategy_mode = "SMA Strategy"
+                bt_strategy_mode = "SMA 전략"
                 bt_sell_ratio = 0.5
 
             to_date = bt_end + timedelta(days=1)
@@ -1670,17 +1718,17 @@ def main():
             req_count = days_diff * cpd + req_period + 300
             fetch_count = max(req_count, req_period + 300)
 
-            with st.spinner(f"Running Backtest ({bt_start} ~ {bt_end}, {bt_interval_label}, {bt_strategy})..."):
+            with st.spinner(f"백테스트 실행 중 ({bt_start} ~ {bt_end}, {bt_interval_label}, {bt_strategy})..."):
                 df_bt = pyupbit.get_ohlcv(bt_ticker, interval=bt_interval, to=to_str, count=fetch_count)
 
                 if df_bt is None or df_bt.empty:
-                    st.error("No data fetched.")
+                    st.error("데이터를 가져올 수 없습니다.")
                     st.stop()
 
                 # Data range validation
                 data_start = df_bt.index[0]
                 data_end = df_bt.index[-1]
-                st.caption(f"Fetched {len(df_bt)} candles: {data_start.strftime('%Y-%m-%d')} ~ {data_end.strftime('%Y-%m-%d')}")
+                st.caption(f"조회된 캔들: {len(df_bt)}개 ({data_start.strftime('%Y-%m-%d')} ~ {data_end.strftime('%Y-%m-%d')})")
 
                 result = backtest_engine.run_backtest(
                     bt_ticker,
@@ -1704,11 +1752,11 @@ def main():
                     
                     # Metrics Row
                     m1, m2, m3, m4, m5 = st.columns(5)
-                    m1.metric("Total Return", f"{res['total_return']:,.2f}%")
-                    m2.metric("CAGR", f"{res.get('cagr', 0):,.2f}%")
-                    m3.metric("Win Rate", f"{res['win_rate']:,.2f}%")
-                    m4.metric("MDD", f"{res['mdd']:,.2f}%")
-                    m5.metric("Sharpe", f"{res['sharpe']:.2f}")
+                    m1.metric("총 수익률", f"{res['total_return']:,.2f}%")
+                    m2.metric("연평균(CAGR)", f"{res.get('cagr', 0):,.2f}%")
+                    m3.metric("승률", f"{res['win_rate']:,.2f}%")
+                    m4.metric("최대낙폭(MDD)", f"{res['mdd']:,.2f}%")
+                    m5.metric("샤프비율", f"{res['sharpe']:.2f}")
 
                     # 비용 & 결과 요약
                     trade_count = res['trade_count']
@@ -1736,14 +1784,14 @@ def main():
                             slip_cost = res_ns['final_equity'] - res['final_equity']
                             slip_ret_diff = res_ns['total_return'] - res['total_return']
                             st.info(
-                                f"Slippage Impact: 슬리피지 {bt_slippage}% 적용 시 "
+                                f"슬리피지 영향: {bt_slippage}% 적용 시 "
                                 f"수익률 차이 **{slip_ret_diff:,.2f}%p**, "
                                 f"금액 차이 **{slip_cost:,.0f} KRW** "
                                 f"(슬리피지 없는 경우 {res_ns['final_equity']:,.0f} KRW)"
                             )
                     
                     # --- Combined Chart ---
-                    st.subheader("Price & Strategy Performance")
+                    st.subheader("가격 & 전략 성과")
 
                     
                     # Create Dual Axis Chart + Drawdown
@@ -1759,7 +1807,7 @@ def main():
                     fig.add_trace(go.Candlestick(
                         x=df.index, open=df['open'], high=df['high'],
                         low=df['low'], close=df['close'],
-                        name='Price'
+                        name='가격'
                     ), row=1, col=1, secondary_y=False)
                     
                     # 2. Strategy Indicator Lines - Row 1, Primary Y
@@ -1770,13 +1818,13 @@ def main():
                             fig.add_trace(go.Scatter(
                                 x=df.index, y=df[upper_col],
                                 line=dict(color='green', width=1.5, dash='dash'),
-                                name=f'Upper ({bt_buy_period})'
+                                name=f'상단 ({bt_buy_period})'
                             ), row=1, col=1, secondary_y=False)
                         if lower_col in df.columns:
                             fig.add_trace(go.Scatter(
                                 x=df.index, y=df[lower_col],
                                 line=dict(color='red', width=1.5, dash='dash'),
-                                name=f'Lower ({bt_sell_period})'
+                                name=f'하단 ({bt_sell_period})'
                             ), row=1, col=1, secondary_y=False)
                     else:
                         fig.add_trace(go.Scatter(
@@ -1790,7 +1838,7 @@ def main():
                     fig.add_trace(go.Scatter(
                         x=df.index, y=df['equity'],
                         line=dict(color='blue', width=2),
-                        name='Strategy Equity'
+                        name='전략 자산'
                     ), row=1, col=1, secondary_y=True)
                     
                     # 4. Buy/Sell Signals - Row 1, Primary Y
@@ -1804,62 +1852,62 @@ def main():
                         fig.add_trace(go.Scatter(
                             x=buy_dates, y=buy_prices,
                             mode='markers', marker=dict(symbol='triangle-up', size=12, color='green'),
-                            name='Buy Signal'
+                            name='매수 신호'
                         ), row=1, col=1, secondary_y=False)
 
                     if sell_dates:
                         fig.add_trace(go.Scatter(
                             x=sell_dates, y=sell_prices,
                             mode='markers', marker=dict(symbol='triangle-down', size=12, color='red'),
-                            name='Sell Signal'
+                            name='매도 신호'
                         ), row=1, col=1, secondary_y=False)
                         
                     # 5. Drawdown - Row 2
                     fig.add_trace(go.Scatter(
                         x=df.index, y=df['drawdown'],
-                        name='Drawdown (%)',
+                        name='낙폭 (%)',
                         fill='tozeroy',
                         line=dict(color='red', width=1)
                     ), row=2, col=1)
 
-                    fig.update_layout(height=800, title_text="Backtest Results", xaxis_rangeslider_visible=False,
+                    fig.update_layout(height=800, title_text="백테스트 결과", xaxis_rangeslider_visible=False, margin=dict(t=80),
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
-                    fig.update_yaxes(title_text="Price (KRW)", row=1, col=1, secondary_y=False)
-                    fig.update_yaxes(title_text="Equity (KRW)", row=1, col=1, secondary_y=True)
-                    fig.update_yaxes(title_text="Drawdown (%)", row=2, col=1)
+                    fig.update_yaxes(title_text="가격 (KRW)", row=1, col=1, secondary_y=False)
+                    fig.update_yaxes(title_text="자산 (KRW)", row=1, col=1, secondary_y=True)
+                    fig.update_yaxes(title_text="낙폭 (%)", row=2, col=1)
                     
                     st.plotly_chart(fig, use_container_width=True)
                     
                     # Yearly Performance Table
                     if 'yearly_stats' in res:
-                        st.subheader("📊 Yearly Performance")
+                        st.subheader("📊 연도별 성과")
                         st.dataframe(res['yearly_stats'].style.format("{:.2f}%"))
                         
-                    st.info(f"Strategy Status: **{res['final_status']}** | Next Action: **{res['next_action'] if res['next_action'] else 'None'}**")
+                    st.info(f"전략 상태: **{res['final_status']}** | 다음 행동: **{res['next_action'] if res['next_action'] else '없음'}**")
                     
                     # Trade List
-                    with st.expander("Trade Log"):
+                    with st.expander("거래 내역"):
                         if res['trades']:
                             trades_df = pd.DataFrame(res['trades'])
                             st.dataframe(trades_df.style.format({"price": "{:,.2f}", "amount": "{:,.6f}", "balance": "{:,.2f}", "profit": "{:,.2f}%"}))
                         else:
-                            st.info("No trades executed.")
+                            st.info("실행된 거래가 없습니다.")
                             
                     # Export Full Daily Log
                     csv_data = df.to_csv(index=True).encode('utf-8')
                     st.download_button(
-                        label="📥 Download Daily Log (Full Data)",
+                        label="📥 일별 로그 다운로드 (전체 데이터)",
                         data=csv_data,
                         file_name=f"{bt_ticker}_{bt_start}_daily_log.csv",
                         mime="text/csv",
-                        help="Download daily OHLCV + Indicators + Signals to verify logic."
+                        help="일별 OHLCV + 지표 + 신호 데이터를 다운로드하여 로직을 검증합니다."
                     )
 
         # --- Optimization Section (Fragment: prevents full page dimming) ---
         @st.fragment
         def optimization_section():
             st.divider()
-            st.subheader("🛠️ 파라미터 최적화 (Parameter Optimization)")
+            st.subheader("🛠️ 파라미터 최적화")
 
             # 캐시 관리
             with st.expander("📦 데이터 캐시 관리", expanded=False):
@@ -1937,34 +1985,34 @@ def main():
 
                 # 공통: 시간봉 선택
                 opt_interval_label = st.selectbox(
-                    "시간봉 (Interval)", options=list(INTERVAL_MAP.keys()),
+                    "시간봉", options=list(INTERVAL_MAP.keys()),
                     index=0, key="opt_interval_sel"
                 )
                 opt_interval = INTERVAL_MAP[opt_interval_label]
 
-                if bt_strategy == "Donchian Strategy":
-                    st.caption("돈치안 채널의 매수 기간(Buy Period)과 매도 기간(Sell Period)을 최적화합니다.")
+                if bt_strategy == "돈키안 전략":
+                    st.caption("돈치안 채널의 매수 기간과 매도 기간을 최적화합니다.")
 
-                    st.markdown("##### 1. 매수 채널 기간 (Buy Period)")
+                    st.markdown("##### 1. 매수 채널 기간")
                     c1, c2, c3 = st.columns(3)
-                    opt_buy_start = c1.number_input("Start", 5, 200, 10, key="opt_dc_buy_start")
-                    opt_buy_end = c2.number_input("End", 5, 200, 60, key="opt_dc_buy_end")
-                    opt_buy_step = c3.number_input("Step", 1, 50, 5, key="opt_dc_buy_step")
+                    opt_buy_start = c1.number_input("시작", 5, 200, 10, key="opt_dc_buy_start")
+                    opt_buy_end = c2.number_input("끝", 5, 200, 60, key="opt_dc_buy_end")
+                    opt_buy_step = c3.number_input("간격", 1, 50, 5, key="opt_dc_buy_step")
 
-                    st.markdown("##### 2. 매도 채널 기간 (Sell Period)")
+                    st.markdown("##### 2. 매도 채널 기간")
                     c1, c2, c3 = st.columns(3)
-                    opt_sell_start = c1.number_input("Start", 5, 200, 5, key="opt_dc_sell_start")
-                    opt_sell_end = c2.number_input("End", 5, 200, 30, key="opt_dc_sell_end")
-                    opt_sell_step = c3.number_input("Step", 1, 50, 5, key="opt_dc_sell_step")
+                    opt_sell_start = c1.number_input("시작", 5, 200, 5, key="opt_dc_sell_start")
+                    opt_sell_end = c2.number_input("끝", 5, 200, 30, key="opt_dc_sell_end")
+                    opt_sell_step = c3.number_input("간격", 1, 50, 5, key="opt_dc_sell_step")
 
                 else:  # SMA Strategy
                     st.caption("SMA 이동평균 기간을 최적화합니다.")
 
-                    st.markdown("##### SMA 기간 (Period)")
+                    st.markdown("##### SMA 기간")
                     c1, c2, c3 = st.columns(3)
-                    opt_s_start = c1.number_input("Start", 5, 200, 20, key="opt_s_start")
-                    opt_s_end = c2.number_input("End", 5, 200, 60, key="opt_s_end")
-                    opt_s_step = c3.number_input("Step", 1, 50, 5, key="opt_s_step")
+                    opt_s_start = c1.number_input("시작", 5, 200, 20, key="opt_s_start")
+                    opt_s_end = c2.number_input("끝", 5, 200, 60, key="opt_s_end")
+                    opt_s_step = c3.number_input("간격", 1, 50, 5, key="opt_s_step")
 
                 # Optuna 전용 설정
                 if use_optuna:
@@ -1993,7 +2041,7 @@ def main():
                     to_str_opt = to_date_opt.strftime("%Y-%m-%d 09:00:00")
 
                     # --- Phase 1: 데이터 다운로드 ---
-                    if bt_strategy == "Donchian Strategy":
+                    if bt_strategy == "돈키안 전략":
                         buy_range = range(opt_buy_start, opt_buy_end + 1, opt_buy_step)
                         sell_range = range(opt_sell_start, opt_sell_end + 1, opt_sell_step)
                         total_iter = len(buy_range) * len(sell_range)
@@ -2052,7 +2100,7 @@ def main():
                                    "수익률 (Return)": "return", "MDD 최소": "mdd"}
                         obj_key = obj_map.get(optuna_objective, "calmar")
 
-                        if bt_strategy == "Donchian Strategy":
+                        if bt_strategy == "돈키안 전략":
                             st.write(f"🧠 Optuna {optuna_n_trials}회 탐색 (Buy {opt_buy_start}~{opt_buy_end}, Sell {opt_sell_start}~{opt_sell_end}, 목적: {optuna_objective})")
                             optuna_result = backtest_engine.optuna_optimize(
                                 full_df, strategy_mode="Donchian",
@@ -2066,7 +2114,7 @@ def main():
                         else:
                             st.write(f"🧠 Optuna {optuna_n_trials}회 탐색 (SMA {opt_s_start}~{opt_s_end}, 목적: {optuna_objective})")
                             optuna_result = backtest_engine.optuna_optimize(
-                                full_df, strategy_mode="SMA Strategy",
+                                full_df, strategy_mode="SMA 전략",
                                 buy_range=(opt_s_start, opt_s_end),
                                 fee=fee, slippage=bt_slippage,
                                 start_date=bt_start, initial_balance=initial_cap,
@@ -2085,7 +2133,7 @@ def main():
                                 "Sharpe": r["sharpe"],
                                 "Trades": r["trade_count"]
                             }
-                            if bt_strategy == "Donchian Strategy":
+                            if bt_strategy == "돈키안 전략":
                                 row["Buy Period"] = r["buy_period"]
                                 row["Sell Period"] = r["sell_period"]
                             else:
@@ -2097,7 +2145,7 @@ def main():
                         # --- Grid Search (기존) ---
                         st.write(f"🚀 총 {total_iter}개 조합 Grid Search 시작...")
 
-                        if bt_strategy == "Donchian Strategy":
+                        if bt_strategy == "돈키안 전략":
                             raw_results = backtest_engine.optimize_donchian(
                                 full_df, buy_range, sell_range,
                                 fee=fee, slippage=bt_slippage,
@@ -2148,7 +2196,7 @@ def main():
 
             # --- Results Display ---
             if not results:
-                st.warning("No results found.")
+                st.warning("결과가 없습니다.")
                 return
 
             opt_df = pd.DataFrame(results)
@@ -2161,15 +2209,15 @@ def main():
             best_row = opt_df.iloc[0]
 
             # Best 결과 표시
-            if bt_strategy == "Donchian Strategy":
-                st.subheader("🏆 Best Result")
-                st.success(f"Buy: **{int(best_row['Buy Period'])}**, Sell: **{int(best_row['Sell Period'])}** → "
-                           f"Return: {best_row['Total Return (%)']:.1f}%, CAGR: {best_row['CAGR (%)']:.1f}%, "
+            if bt_strategy == "돈키안 전략":
+                st.subheader("🏆 최적 결과")
+                st.success(f"매수: **{int(best_row['Buy Period'])}**, 매도: **{int(best_row['Sell Period'])}** → "
+                           f"수익률: {best_row['Total Return (%)']:.1f}%, CAGR: {best_row['CAGR (%)']:.1f}%, "
                            f"MDD: {best_row['MDD (%)']:.1f}%, Calmar: {best_row['Calmar']:.2f}")
             else:
-                st.subheader("🏆 Best Result")
+                st.subheader("🏆 최적 결과")
                 st.success(f"SMA: **{int(best_row['SMA Period'])}** → "
-                           f"Return: {best_row['Total Return (%)']:.1f}%, CAGR: {best_row['CAGR (%)']:.1f}%, "
+                           f"수익률: {best_row['Total Return (%)']:.1f}%, CAGR: {best_row['CAGR (%)']:.1f}%, "
                            f"MDD: {best_row['MDD (%)']:.1f}%, Calmar: {best_row['Calmar']:.2f}")
 
             # 결과 테이블
@@ -2183,14 +2231,14 @@ def main():
             )
 
             # 차트
-            if bt_strategy == "Donchian Strategy" and not use_optuna:
+            if bt_strategy == "돈키안 전략" and not use_optuna:
                 fig_opt = px.density_heatmap(
                     opt_df.reset_index(), x="Buy Period", y="Sell Period", z="Total Return (%)",
-                    histfunc="avg", title="Donchian Optimization Heatmap",
+                    histfunc="avg", title="돈키안 최적화 히트맵",
                     text_auto=".0f", color_continuous_scale="RdYlGn"
                 )
                 st.plotly_chart(fig_opt, use_container_width=True)
-            elif bt_strategy != "Donchian Strategy" and not use_optuna:
+            elif bt_strategy != "돈키안 전략" and not use_optuna:
                 st.line_chart(opt_df.reset_index().set_index("SMA Period")[['Total Return (%)', 'MDD (%)']])
 
             # Optuna 전용: 탐색 이력 차트
@@ -2213,12 +2261,12 @@ def main():
                             running_best = t.value
                         best_vals.append(running_best)
                     fig_history.add_trace(go.Scatter(
-                        y=best_vals, mode='lines', name=f'Best {optuna_objective}',
+                        y=best_vals, mode='lines', name=f'최고 {optuna_objective}',
                         line=dict(color='blue', width=2)
                     ))
                     fig_history.update_layout(
-                        title=f"Best {optuna_objective} over Trials",
-                        xaxis_title="Trial", yaxis_title=optuna_objective,
+                        title=f"최고 {optuna_objective} 추이",
+                        xaxis_title="시행 횟수", yaxis_title=optuna_objective,
                         height=350,
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
                     )
@@ -2227,77 +2275,79 @@ def main():
                     pass
 
                 # 파라미터 중요도
-                if bt_strategy == "Donchian Strategy":
+                if bt_strategy == "돈키안 전략":
                     st.caption("파라미터별 목적함수 분포")
                     pc1, pc2 = st.columns(2)
                     with pc1:
                         fig_buy = px.scatter(trial_df, x="Buy Period", y="Calmar",
                                              color="MDD (%)", color_continuous_scale="RdYlGn_r",
-                                             title="Buy Period vs Calmar")
+                                             title="매수 기간 vs Calmar")
                         st.plotly_chart(fig_buy, use_container_width=True)
                     with pc2:
                         fig_sell = px.scatter(trial_df, x="Sell Period", y="Calmar",
                                              color="MDD (%)", color_continuous_scale="RdYlGn_r",
-                                             title="Sell Period vs Calmar")
+                                             title="매도 기간 vs Calmar")
                         st.plotly_chart(fig_sell, use_container_width=True)
 
         optimization_section()
 
     # --- Tab 3: History ---
     with tab3:
-        st.header("Trade Logs & Money Management")
-        
-        hist_tab1, hist_tab2, hist_tab3 = st.tabs(["🧪 Virtual Logs (Backtest/Paper)", "💸 Real Logs (Exchange)", "📊 Slippage Analysis"])
+        st.header("거래 내역 & 자금 관리")
+
+        hist_tab1, hist_tab2, hist_tab3 = st.tabs(["🧪 가상 로그 (백테스트/페이퍼)", "💸 실제 거래 내역 (거래소)", "📊 슬리피지 분석"])
         
         with hist_tab1:
-            st.subheader("Virtual Account Management")
-            
+            st.subheader("가상 계좌 관리")
+
             # Simulated Deposit/Withdraw
             if 'virtual_adjustment' not in st.session_state:
                 st.session_state.virtual_adjustment = 0
-            
+
             c1, c2 = st.columns(2)
-            amount = c1.number_input("Amount (KRW)", step=100000)
-            if c2.button("Deposit/Withdraw (Virtual)"):
+            amount = c1.number_input("금액 (KRW)", step=100000)
+            if c2.button("입출금 (가상)"):
                 st.session_state.virtual_adjustment += amount
-                st.success(f"Adjusted Virtual Balance by {amount:,.0f} KRW")
-            
-            st.info(f"Cumulative Virtual Adjustment: {st.session_state.virtual_adjustment:,.0f} KRW")
-            st.write("To view strategy logs, run the Backtest in Tab 1 or check individual assets in Tab 2.")
+                st.success(f"가상 잔고 조정: {amount:,.0f} KRW")
+
+            st.info(f"누적 가상 조정액: {st.session_state.virtual_adjustment:,.0f} KRW")
+            st.write("전략 로그를 보려면 백테스트 탭에서 실행하거나, 개별 자산 탭에서 확인하세요.")
 
         with hist_tab2:
-            st.subheader("Real Operation Logs")
+            st.subheader("실제 거래 내역")
 
             if not trader:
-                st.warning("Please configure API Keys first.")
+                st.warning("사이드바에서 API 키를 설정해주세요.")
             else:
                 c_h1, c_h2 = st.columns(2)
-                h_type = c_h1.selectbox("조회 유형 (Type)", ["입금 (Deposits)", "출금 (Withdrawals)", "체결 주문 (Orders)"])
-                h_curr = c_h2.selectbox("화폐 (Currency)", ["KRW", "BTC", "ETH", "XRP", "SOL", "USDT"])
+                h_type = c_h1.selectbox("조회 유형", ["입금", "출금", "체결 주문"])
+                h_curr = c_h2.selectbox("화폐", ["전체", "KRW", "BTC", "ETH", "XRP", "SOL", "USDT", "DOGE", "ADA", "AVAX", "LINK"])
 
                 # 날짜 범위 필터
                 d_h1, d_h2 = st.columns(2)
-                from datetime import datetime, timedelta
                 h_date_start = d_h1.date_input("조회 시작일", value=datetime.now().date() - timedelta(days=90), key="hist_start")
                 h_date_end = d_h2.date_input("조회 종료일", value=datetime.now().date(), key="hist_end")
 
-                if st.button("조회 (Fetch)"):
+                if st.button("조회"):
                     with st.spinner("Upbit API 조회 중..."):
-                        data = None
+                        # 화폐: "전체"면 None 전달
+                        api_curr = None if h_curr == "전체" else h_curr
+
+                        data = []
                         error_msg = None
                         try:
                             if "입금" in h_type:
-                                data = trader.get_history('deposit', h_curr)
+                                data, error_msg = trader.get_history('deposit', api_curr)
                             elif "출금" in h_type:
-                                data = trader.get_history('withdraw', h_curr)
+                                data, error_msg = trader.get_history('withdraw', api_curr)
                             elif "체결" in h_type:
-                                data = trader.get_history('order', h_curr)
+                                data, error_msg = trader.get_history('order', api_curr)
                         except Exception as e:
                             error_msg = str(e)
 
                         if error_msg:
                             st.error(f"API 오류: {error_msg}")
-                        elif data and len(data) > 0:
+                        if data and len(data) > 0:
                             df_hist = pd.DataFrame(data)
                             # 날짜 필터 적용
                             date_col = None
@@ -2313,14 +2363,14 @@ def main():
 
                             st.success(f"{len(df_hist)}건 조회됨")
                             st.dataframe(df_hist, use_container_width=True)
-                        else:
+                        elif not error_msg:
                             st.warning(f"조회 결과 없음. (유형: {h_type}, 화폐: {h_curr})")
                             st.caption("Upbit API는 최근 내역만 반환합니다. 조회 유형을 변경해보세요.")
 
             st.caption("Upbit API 제한: 최근 100건까지 조회 가능")
 
         with hist_tab3:
-            st.subheader("Slippage Analysis (실제 체결 vs 백테스트)")
+            st.subheader("슬리피지 분석 (실제 체결 vs 백테스트)")
 
             if not trader:
                 st.warning("API Key가 필요합니다.")
@@ -2330,7 +2380,7 @@ def main():
                 sa_ticker = sa_col1.selectbox("코인 선택", sa_ticker_list, key="sa_ticker")
                 sa_interval = sa_col2.selectbox("시간봉", list(INTERVAL_MAP.keys()), key="sa_interval")
 
-                if st.button("Analyze Slippage", key="sa_run"):
+                if st.button("슬리피지 분석", key="sa_run"):
                     with st.spinner("체결 데이터 조회 중..."):
                         # 1. 실제 체결 주문 조회
                         done_orders = trader.get_done_orders(sa_ticker)
@@ -2413,11 +2463,11 @@ def main():
                                     fig_slip.add_trace(go.Bar(
                                         x=df_slip['date'], y=df_slip['slippage_pct'],
                                         marker_color=['red' if s > 0 else 'green' for s in df_slip['slippage_pct']],
-                                        name='Slippage %'
+                                        name='슬리피지 %'
                                     ))
                                     fig_slip.add_hline(y=avg_slip, line_dash="dash", line_color="blue",
                                                        annotation_text=f"Avg: {avg_slip:.3f}%")
-                                    fig_slip.update_layout(title="Trade Slippage (+ = Unfavorable)", height=350,
+                                    fig_slip.update_layout(title="거래 슬리피지 (+ = 불리)", height=350, margin=dict(t=80),
                                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
                                     st.plotly_chart(fig_slip, use_container_width=True)
 

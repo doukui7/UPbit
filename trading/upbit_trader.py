@@ -54,8 +54,11 @@ class UpbitTrader:
             logger.error(f"Error getting orders: {e}")
             return None
 
-    def get_history(self, kind="deposit", currency="KRW"):
-        """입출금/체결 내역 조회. Upbit API 직접 호출로 안정성 확보."""
+    def get_history(self, kind="deposit", currency=None):
+        """입출금/체결 내역 조회. Upbit API 직접 호출로 안정성 확보.
+        currency=None이면 전체 화폐 조회.
+        Returns: (data_list, error_string_or_None)
+        """
         import jwt
         import uuid as _uuid
         import hashlib
@@ -70,7 +73,7 @@ class UpbitTrader:
                 'nonce': str(_uuid.uuid4()),
             }
             if query_params:
-                query_string = urlencode(query_params)
+                query_string = urlencode(query_params, doseq=True)
                 m = hashlib.sha512()
                 m.update(query_string.encode())
                 payload['query_hash'] = m.hexdigest()
@@ -80,32 +83,49 @@ class UpbitTrader:
 
         try:
             if kind == 'deposit':
-                params = {"currency": currency, "limit": 100, "order_by": "desc"}
+                params = {"limit": 100, "order_by": "desc"}
+                if currency:
+                    params["currency"] = currency
                 res = requests.get(f"{server_url}/v1/deposits", params=params, headers=_auth_header(params))
                 if res.status_code == 200:
-                    return res.json()
-                logger.error(f"Deposit API error: {res.status_code} {res.text}")
-                return []
+                    return res.json(), None
+                err = f"Deposit API {res.status_code}: {res.text}"
+                logger.error(err)
+                return [], err
+
             elif kind == 'withdraw':
-                params = {"currency": currency, "limit": 100, "order_by": "desc"}
+                params = {"limit": 100, "order_by": "desc"}
+                if currency:
+                    params["currency"] = currency
                 res = requests.get(f"{server_url}/v1/withdraws", params=params, headers=_auth_header(params))
                 if res.status_code == 200:
-                    return res.json()
-                logger.error(f"Withdraw API error: {res.status_code} {res.text}")
-                return []
+                    return res.json(), None
+                err = f"Withdraw API {res.status_code}: {res.text}"
+                logger.error(err)
+                return [], err
+
             elif kind == 'order':
-                # 체결 완료 주문 조회 (전체 마켓)
-                params = {"state": "done", "limit": 100, "order_by": "desc"}
-                res = requests.get(f"{server_url}/v1/orders", params=params, headers=_auth_header(params))
+                # 체결 완료 주문 조회 - states[] 배열 형식 사용 (Upbit API 필수)
+                params = {"states[]": ["done", "cancel"], "limit": 100, "order_by": "desc"}
+                if currency and currency != "KRW":
+                    params["market"] = f"KRW-{currency}"
+                res = requests.get(f"{server_url}/v1/orders/closed", params=params, headers=_auth_header(params))
                 if res.status_code == 200:
-                    return res.json()
-                logger.error(f"Order API error: {res.status_code} {res.text}")
-                return []
+                    return res.json(), None
+                # fallback: /v1/orders 엔드포인트
+                res2 = requests.get(f"{server_url}/v1/orders", params=params, headers=_auth_header(params))
+                if res2.status_code == 200:
+                    return res2.json(), None
+                err = f"Order API {res.status_code}: {res.text} / fallback {res2.status_code}: {res2.text}"
+                logger.error(err)
+                return [], err
+
             else:
-                return []
+                return [], f"Unknown kind: {kind}"
         except Exception as e:
-            logger.error(f"Error fetching {kind} history ({currency}): {e}")
-            return []
+            err = f"Error fetching {kind} history: {str(e)}"
+            logger.error(err)
+            return [], err
 
     def get_balance(self, ticker="KRW"):
         try:
