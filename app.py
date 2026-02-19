@@ -39,6 +39,9 @@ def save_config(config):
         
 config = load_config()
 
+# Cloud 환경 감지 (Streamlit Cloud에서는 HOSTNAME이 *.streamlit.app 또는 /mount/src 경로)
+IS_CLOUD = os.path.exists("/mount/src") or "streamlit.app" in os.getenv("HOSTNAME", "")
+
 st.set_page_config(page_title="Upbit SMA Trader", layout="wide")
 
 # --- Custom CSS for Better Readability ---
@@ -202,13 +205,17 @@ def main():
         env_access = os.getenv("UPBIT_ACCESS_KEY")
         env_secret = os.getenv("UPBIT_SECRET_KEY")
     
-    with st.sidebar.expander("API Keys", expanded=False):
-        ak_input = st.text_input("Access Key", value=env_access if env_access else "", type="password")
-        sk_input = st.text_input("Secret Key", value=env_secret if env_secret else "", type="password")
-        
-        # dynamic update if user inputs
-        current_ak = ak_input if ak_input else env_access
-        current_sk = sk_input if sk_input else env_secret
+    if IS_CLOUD:
+        # Cloud: secrets에서 자동 로드, 편집 불가
+        current_ak = env_access
+        current_sk = env_secret
+        st.sidebar.info("📱 조회 전용 모드 (Cloud)")
+    else:
+        with st.sidebar.expander("API Keys", expanded=False):
+            ak_input = st.text_input("Access Key", value=env_access if env_access else "", type="password")
+            sk_input = st.text_input("Secret Key", value=env_secret if env_secret else "", type="password")
+            current_ak = ak_input if ak_input else env_access
+            current_sk = sk_input if sk_input else env_secret
 
     # Portfolio Management
     st.sidebar.subheader("포트폴리오 관리")
@@ -281,15 +288,20 @@ def main():
     interval_options = list(INTERVAL_MAP.keys())
     strategy_options = ["SMA", "Donchian"]
 
-    edited_portfolio = st.sidebar.data_editor(df_portfolio, num_rows="dynamic", use_container_width=True, hide_index=True,
-                                              column_config={
-                                                  "coin": st.column_config.TextColumn("코인", required=True),
-                                                  "strategy": st.column_config.SelectboxColumn("전략", options=strategy_options, required=True, default="SMA"),
-                                                  "parameter": st.column_config.NumberColumn("매수", min_value=5, max_value=300, step=1, required=True),
-                                                  "sell_parameter": st.column_config.NumberColumn("매도", min_value=0, max_value=300, step=1, required=False, default=0, help="돈치안 매도 채널 (0=매수의 절반)"),
-                                                  "weight": st.column_config.NumberColumn("비중", min_value=0, max_value=100, step=1, required=True, format="%d%%"),
-                                                  "interval": st.column_config.SelectboxColumn("시간봉", options=interval_options, required=True, default="일봉")
-                                              })
+    if IS_CLOUD:
+        # Cloud: 읽기 전용 테이블
+        st.sidebar.dataframe(df_portfolio, use_container_width=True, hide_index=True)
+        edited_portfolio = df_portfolio
+    else:
+        edited_portfolio = st.sidebar.data_editor(df_portfolio, num_rows="dynamic", use_container_width=True, hide_index=True,
+                                                  column_config={
+                                                      "coin": st.column_config.TextColumn("코인", required=True),
+                                                      "strategy": st.column_config.SelectboxColumn("전략", options=strategy_options, required=True, default="SMA"),
+                                                      "parameter": st.column_config.NumberColumn("매수", min_value=5, max_value=300, step=1, required=True),
+                                                      "sell_parameter": st.column_config.NumberColumn("매도", min_value=0, max_value=300, step=1, required=False, default=0, help="돈치안 매도 채널 (0=매수의 절반)"),
+                                                      "weight": st.column_config.NumberColumn("비중", min_value=0, max_value=100, step=1, required=True, format="%d%%"),
+                                                      "interval": st.column_config.SelectboxColumn("시간봉", options=interval_options, required=True, default="일봉")
+                                                  })
     
     # Calculate Total Weight & Cash
     total_weight = edited_portfolio["weight"].sum()
@@ -343,39 +355,41 @@ def main():
     # Strategy Selection REMOVED (Moved to Per-Coin)
 
     PORTFOLIO_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
-    save_col1, save_col2 = st.sidebar.columns(2)
 
-    if save_col1.button("💾 저장"):
-        new_config = {
-            "portfolio": portfolio_list,
-            "start_date": str(start_date),
-            "initial_cap": initial_cap
-        }
-        save_config(new_config)
-        with open(PORTFOLIO_JSON, "w", encoding="utf-8") as f:
-            json.dump(portfolio_list, f, indent=2, ensure_ascii=False)
-        st.sidebar.success("저장 완료!")
+    if not IS_CLOUD:
+        save_col1, save_col2 = st.sidebar.columns(2)
 
-    if save_col2.button("📂 불러오기"):
-        if os.path.exists(PORTFOLIO_JSON):
-            try:
-                with open(PORTFOLIO_JSON, "r", encoding="utf-8") as f:
-                    imported = json.load(f)
-                if isinstance(imported, list) and len(imported) > 0:
-                    new_config = {
-                        "portfolio": imported,
-                        "start_date": str(start_date),
-                        "initial_cap": initial_cap
-                    }
-                    save_config(new_config)
-                    st.sidebar.success(f"{len(imported)}개 자산 불러오기 완료!")
-                    st.rerun()
-                else:
-                    st.sidebar.error("올바른 포트폴리오 JSON 형식이 아닙니다.")
-            except json.JSONDecodeError:
-                st.sidebar.error("JSON 파싱 오류. 파일을 확인해주세요.")
-        else:
-            st.sidebar.warning("portfolio.json 파일이 없습니다.")
+        if save_col1.button("💾 저장"):
+            new_config = {
+                "portfolio": portfolio_list,
+                "start_date": str(start_date),
+                "initial_cap": initial_cap
+            }
+            save_config(new_config)
+            with open(PORTFOLIO_JSON, "w", encoding="utf-8") as f:
+                json.dump(portfolio_list, f, indent=2, ensure_ascii=False)
+            st.sidebar.success("저장 완료!")
+
+        if save_col2.button("📂 불러오기"):
+            if os.path.exists(PORTFOLIO_JSON):
+                try:
+                    with open(PORTFOLIO_JSON, "r", encoding="utf-8") as f:
+                        imported = json.load(f)
+                    if isinstance(imported, list) and len(imported) > 0:
+                        new_config = {
+                            "portfolio": imported,
+                            "start_date": str(start_date),
+                            "initial_cap": initial_cap
+                        }
+                        save_config(new_config)
+                        st.sidebar.success(f"{len(imported)}개 자산 불러오기 완료!")
+                        st.rerun()
+                    else:
+                        st.sidebar.error("올바른 포트폴리오 JSON 형식이 아닙니다.")
+                except json.JSONDecodeError:
+                    st.sidebar.error("JSON 파싱 오류. 파일을 확인해주세요.")
+            else:
+                st.sidebar.warning("portfolio.json 파일이 없습니다.")
 
     # --- data_manager Import ---
     from data_manager import MarketDataWorker
