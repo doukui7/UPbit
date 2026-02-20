@@ -1649,6 +1649,139 @@ def main():
                 with st.expander(f"💰 전체 자산 현황 (Total: {total_real_summary:,.0f} KRW)", expanded=True):
                     st.dataframe(pd.DataFrame(asset_summary_rows), use_container_width=True, hide_index=True)
 
+                    # ── 포트폴리오 리밸런싱 (자산현황 내 통합) ──
+                    st.divider()
+                    st.markdown("**⚖️ 포트폴리오 리밸런싱**")
+                    krw_balance = krw_bal
+
+                    asset_states = []
+                    for rb_idx, rb_item in enumerate(portfolio_list):
+                        rb_ticker = f"{rb_item['market']}-{rb_item['coin'].upper()}"
+                        rb_coin = rb_item['coin'].upper()
+                        rb_weight = rb_item.get('weight', 0)
+                        rb_interval = rb_item.get('interval', 'day')
+                        rb_strategy = rb_item.get('strategy', 'SMA Strategy')
+                        rb_param = rb_item.get('parameter', 20)
+                        rb_sell_param = rb_item.get('sell_parameter', 0)
+
+                        rb_coin_bal = all_balances.get(rb_coin, 0)
+                        rb_price = all_prices.get(rb_ticker, 0) or 0
+                        rb_coin_val = rb_coin_bal * rb_price
+                        rb_status = "HOLD" if rb_coin_val > 5000 else "CASH"
+
+                        rb_signal = "N/A"
+                        try:
+                            rb_df = worker.get_data(rb_ticker, rb_interval)
+                            if rb_df is not None and len(rb_df) >= rb_param:
+                                if rb_strategy == "Donchian":
+                                    rb_eng = DonchianStrategy()
+                                    rb_sp = rb_sell_param or max(5, rb_param // 2)
+                                    rb_df = rb_eng.create_features(rb_df, buy_period=rb_param, sell_period=rb_sp)
+                                    rb_signal = rb_eng.get_signal(rb_df.iloc[-2], buy_period=rb_param, sell_period=rb_sp)
+                                else:
+                                    rb_eng = SMAStrategy()
+                                    rb_df = rb_eng.create_features(rb_df, periods=[rb_param])
+                                    rb_signal = rb_eng.get_signal(rb_df.iloc[-2], strategy_type='SMA_CROSS', ma_period=rb_param)
+                        except Exception:
+                            pass
+
+                        rb_target_krw = total_real_summary * (rb_weight / 100.0)
+
+                        asset_states.append({
+                            "ticker": rb_ticker, "coin": rb_coin, "weight": rb_weight,
+                            "interval": rb_interval, "strategy": rb_strategy,
+                            "param": rb_param, "sell_param": rb_sell_param,
+                            "status": rb_status, "signal": rb_signal,
+                            "coin_bal": rb_coin_bal, "coin_val": rb_coin_val,
+                            "price": rb_price, "target_krw": rb_target_krw,
+                        })
+
+                    cash_assets = [a for a in asset_states if a['status'] == 'CASH']
+                    hold_assets = [a for a in asset_states if a['status'] == 'HOLD']
+                    buy_signal_assets = [a for a in asset_states if a['signal'] == 'BUY']
+
+                    rc1, rc2, rc3 = st.columns(3)
+                    rc1.metric("보유 현금 (KRW)", f"{krw_balance:,.0f}")
+                    rc2.metric("CASH 자산", f"{len(cash_assets)} / {len(asset_states)}")
+                    rc3.metric("BUY 시그널", f"{len(buy_signal_assets)} / {len(asset_states)}")
+
+                    rebal_data = []
+                    for a in asset_states:
+                        action = ""
+                        if a['status'] == 'CASH' and a['signal'] == 'BUY':
+                            action = "BUY"
+                        elif a['status'] == 'CASH' and a['signal'] != 'BUY':
+                            action = "대기 (시그널 없음)"
+                        elif a['status'] == 'HOLD':
+                            action = "보유 중"
+                        rebal_data.append({
+                            "종목": a['ticker'],
+                            "전략": f"{a['strategy']} {a['param']}",
+                            "비중": f"{a['weight']}%",
+                            "시간봉": a['interval'],
+                            "상태": a['status'],
+                            "시그널": a['signal'],
+                            "현재가치(KRW)": f"{a['coin_val']:,.0f}",
+                            "목표(KRW)": f"{a['target_krw']:,.0f}",
+                            "액션": action,
+                        })
+                    st.dataframe(pd.DataFrame(rebal_data), use_container_width=True, hide_index=True)
+
+                    buyable = [a for a in asset_states if a['status'] == 'CASH' and a['signal'] == 'BUY']
+                    if not buyable:
+                        if len(cash_assets) == 0:
+                            st.success("모든 자산이 이미 보유 중입니다.")
+                        else:
+                            st.info(f"현금 자산 {len(cash_assets)}개가 있지만 BUY 시그널이 없습니다. 시그널 발생 시 매수 가능합니다.")
+                    else:
+                        st.warning(f"**{len(buyable)}개 자산**에 BUY 시그널이 있습니다. 리밸런싱 매수를 실행할 수 있습니다.")
+                        total_buy_weight = sum(a['weight'] for a in buyable)
+                        available_krw = krw_balance * 0.999
+
+                        buy_plan = []
+                        for a in buyable:
+                            alloc_krw = available_krw * (a['weight'] / total_buy_weight) if total_buy_weight > 0 else 0
+                            alloc_krw = min(alloc_krw, available_krw)
+                            buy_plan.append({
+                                "종목": a['ticker'], "비중": f"{a['weight']}%",
+                                "배분 금액(KRW)": f"{alloc_krw:,.0f}",
+                                "시간봉": a['interval'], "현재가": f"{a['price']:,.0f}",
+                                "_ticker": a['ticker'], "_krw": alloc_krw, "_interval": a['interval'],
+                            })
+                        plan_df = pd.DataFrame(buy_plan)
+                        st.dataframe(plan_df[["종목", "비중", "배분 금액(KRW)", "시간봉", "현재가"]], use_container_width=True, hide_index=True)
+                        st.caption(f"총 배분 금액: {sum(p['_krw'] for p in buy_plan):,.0f} KRW / 보유 현금: {krw_balance:,.0f} KRW")
+
+                        if st.button("🚀 리밸런싱 매수 실행", key="btn_rebalance_exec", type="primary"):
+                            rebal_results = []
+                            rebal_progress = st.progress(0)
+                            rebal_log = st.empty()
+                            for pi, plan in enumerate(buy_plan):
+                                p_ticker = plan['_ticker']
+                                p_krw = plan['_krw']
+                                p_interval = plan['_interval']
+                                if p_krw < 5000:
+                                    rebal_results.append({"종목": p_ticker, "결과": "금액 부족 (5,000원 미만)"})
+                                    continue
+                                rebal_log.text(f"매수 중: {p_ticker} ({p_krw:,.0f} KRW)...")
+                                try:
+                                    exec_res = trader.smart_buy(p_ticker, p_krw, interval=p_interval)
+                                    avg_p = exec_res.get('avg_price', 0)
+                                    vol = exec_res.get('filled_volume', 0)
+                                    rebal_results.append({
+                                        "종목": p_ticker,
+                                        "결과": f"체결 완료: {vol:.6f} @ {avg_p:,.0f}",
+                                        "금액": f"{exec_res.get('total_krw', 0):,.0f} KRW"
+                                    })
+                                except Exception as e:
+                                    rebal_results.append({"종목": p_ticker, "결과": f"오류: {e}"})
+                                rebal_progress.progress((pi + 1) / len(buy_plan))
+                                time.sleep(0.5)
+                            rebal_progress.progress(1.0)
+                            rebal_log.empty()
+                            st.success("리밸런싱 완료!")
+                            st.dataframe(pd.DataFrame(rebal_results), use_container_width=True, hide_index=True)
+
                 # --- 단기 모니터링 차트 (60봉) ---
                 with st.expander("📊 단기 시그널 모니터링 (60봉)", expanded=True):
                     signal_rows = []
@@ -1963,8 +2096,8 @@ def main():
                             st.divider()
                             
                             # --- Tabs for Charts & Orders ---
-                            p_tab1, p_tab2 = st.tabs(["📈 분석 & 벤치마크", "🛒 주문 & 체결"])
-                            
+                            p_tab1, p_tab2 = st.tabs(["📈 분석 & 벤치마크", "📋 체결 내역"])
+
                             with p_tab1:
                                 if "error" not in bt_res:
                                     hist_df = bt_res['df']
@@ -2010,27 +2143,74 @@ def main():
                                         st.dataframe(ys.style.format("{:.2f}"), use_container_width=True)
                             
                             with p_tab2:
-                                o_col1, o_col2 = st.columns([1, 1])
-                                with o_col1:
-                                    st.write("**호가창**")
-                                    try:
-                                        ob = _ttl_cache(f"ob_t1_{ticker}", lambda t=ticker: pyupbit.get_orderbook(t), ttl=5)
-                                        if isinstance(ob, list): ob = ob[0]
-                                        if ob:
-                                            asks = ob['orderbook_units'][:5]
-                                            for a in reversed(asks):
-                                                st.markdown(f"<div style='color:red; text-align:right'>{a['ask_price']:,.0f} | {a['ask_size']:.3f}</div>", unsafe_allow_html=True)
-                                            st.divider()
-                                            for b in asks: # Use same count
-                                                 st.markdown(f"<div style='color:green; text-align:right'>{b['bid_price']:,.0f} | {b['bid_size']:.3f}</div>", unsafe_allow_html=True)
-                                    except:
-                                        st.write("호가 없음")
-                                
-                                with o_col2:
-                                    st.write("**수동 실행**")
-                                    if st.button(f"매매 로직 확인 ({item['coin']})", key=f"btn_{ticker}_{asset_idx}"):
-                                        res = trader.check_and_trade(ticker, interval=interval, sma_period=param_val)
-                                        st.info(res)
+                                # ── 가상(백테스트) 체결 내역 ──
+                                st.markdown("**가상 체결 (백테스트)**")
+                                if "error" not in bt_res and perf.get('trades'):
+                                    vt_rows = []
+                                    for t in perf['trades']:
+                                        t_date = t.get('date', '')
+                                        if hasattr(t_date, 'strftime'):
+                                            t_date = t_date.strftime('%Y-%m-%d')
+                                        t_type = t.get('type', '')
+                                        t_side = "매수" if t_type == 'buy' else ("매도" if t_type == 'sell' else t_type)
+                                        t_price = t.get('price', 0)
+                                        t_amount = t.get('amount', 0)
+                                        t_equity = t.get('equity', 0)
+                                        vt_rows.append({
+                                            "일시": t_date,
+                                            "구분": f"🔴 {t_side}" if t_type == 'buy' else f"🔵 {t_side}",
+                                            "체결가": f"{t_price:,.0f}",
+                                            "수량": f"{t_amount:.6f}" if t_amount < 1 else f"{t_amount:,.4f}",
+                                            "자산(KRW)": f"{t_equity:,.0f}",
+                                        })
+                                    if vt_rows:
+                                        st.dataframe(pd.DataFrame(vt_rows[-20:]), use_container_width=True, hide_index=True)
+                                        st.caption(f"최근 {min(20, len(vt_rows))}건 / 총 {len(vt_rows)}건")
+                                    else:
+                                        st.info("백테스트 체결 기록 없음")
+                                else:
+                                    st.info("백테스트 데이터 없음")
+
+                                # ── 실제 체결 내역 (거래소) ──
+                                st.markdown("**실제 체결 (거래소)**")
+                                try:
+                                    done = _ttl_cache(
+                                        f"done_{ticker}",
+                                        lambda t=ticker: trader.get_done_orders(t),
+                                        ttl=30
+                                    )
+                                    if done:
+                                        rt_rows = []
+                                        for r in done[:20]:
+                                            side = r.get('side', '')
+                                            side_kr = "매수" if side == 'bid' else ("매도" if side == 'ask' else side)
+                                            price_r = float(r.get('price', 0) or 0)
+                                            exec_vol = float(r.get('executed_volume', 0) or 0)
+                                            if price_r > 0 and exec_vol > 0:
+                                                total_k = price_r * exec_vol
+                                            elif 'trades' in r and r['trades']:
+                                                total_k = sum(float(tr.get('funds', 0)) for tr in r['trades'])
+                                            else:
+                                                total_k = price_r
+                                            created = r.get('created_at', '')
+                                            if pd.notna(created):
+                                                try: created = pd.to_datetime(created).strftime('%Y-%m-%d %H:%M')
+                                                except: pass
+                                            rt_rows.append({
+                                                "일시": created,
+                                                "구분": f"🔴 {side_kr}" if side == 'bid' else f"🔵 {side_kr}",
+                                                "체결가": f"{price_r:,.0f}" if price_r > 0 else "-",
+                                                "수량": f"{exec_vol:.6f}" if exec_vol < 1 else f"{exec_vol:,.4f}",
+                                                "금액(KRW)": f"{total_k:,.0f}",
+                                            })
+                                        if rt_rows:
+                                            st.dataframe(pd.DataFrame(rt_rows), use_container_width=True, hide_index=True)
+                                        else:
+                                            st.info("체결 완료 주문 없음")
+                                    else:
+                                        st.info("체결 완료 주문 없음")
+                                except Exception:
+                                    st.info("체결 내역 조회 불가 (API 권한 확인)")
 
                         except Exception as e:
                             st.error(f"{ticker} 처리 오류: {e}")
@@ -2278,172 +2458,6 @@ def main():
                                 })
                             st.dataframe(pd.DataFrame(yearly_rows), use_container_width=True, hide_index=True)
 
-                # --- Portfolio Rebalancing Section ---
-                st.divider()
-                with st.expander("⚖️ 포트폴리오 리밸런싱 (Rebalancing)", expanded=False):
-                    krw_balance = krw_bal  # 캐시된 KRW 잔고 재사용
-
-                    # 각 자산의 실제 보유 상태 확인
-                    asset_states = []
-                    for rb_idx, rb_item in enumerate(portfolio_list):
-                        rb_ticker = f"{rb_item['market']}-{rb_item['coin'].upper()}"
-                        rb_coin = rb_item['coin'].upper()
-                        rb_weight = rb_item.get('weight', 0)
-                        rb_interval = rb_item.get('interval', 'day')
-                        rb_strategy = rb_item.get('strategy', 'SMA Strategy')
-                        rb_param = rb_item.get('parameter', 20)
-                        rb_sell_param = rb_item.get('sell_parameter', 0)
-
-                        rb_coin_bal = all_balances.get(rb_coin, 0)
-                        rb_price = all_prices.get(rb_ticker, 0) or 0
-                        rb_coin_val = rb_coin_bal * rb_price
-                        rb_status = "HOLD" if rb_coin_val > 5000 else "CASH"
-
-                        # 전략 시그널 확인
-                        rb_signal = "N/A"
-                        try:
-                            rb_df = worker.get_data(rb_ticker, rb_interval)
-                            if rb_df is not None and len(rb_df) >= rb_param:
-                                if rb_strategy == "Donchian":
-                                    rb_eng = DonchianStrategy()
-                                    rb_sp = rb_sell_param or max(5, rb_param // 2)
-                                    rb_df = rb_eng.create_features(rb_df, buy_period=rb_param, sell_period=rb_sp)
-                                    rb_signal = rb_eng.get_signal(rb_df.iloc[-2], buy_period=rb_param, sell_period=rb_sp)
-                                else:
-                                    rb_eng = SMAStrategy()
-                                    rb_df = rb_eng.create_features(rb_df, periods=[rb_param])
-                                    rb_signal = rb_eng.get_signal(rb_df.iloc[-2], strategy_type='SMA_CROSS', ma_period=rb_param)
-                        except Exception:
-                            pass
-
-                        # 목표 배분 금액 (현재 총 실제자산 기준)
-                        rb_target_krw = total_real_val * (rb_weight / 100.0)
-
-                        asset_states.append({
-                            "ticker": rb_ticker,
-                            "coin": rb_coin,
-                            "weight": rb_weight,
-                            "interval": rb_interval,
-                            "strategy": rb_strategy,
-                            "param": rb_param,
-                            "sell_param": rb_sell_param,
-                            "status": rb_status,
-                            "signal": rb_signal,
-                            "coin_bal": rb_coin_bal,
-                            "coin_val": rb_coin_val,
-                            "price": rb_price,
-                            "target_krw": rb_target_krw,
-                        })
-
-                    # 상태 요약
-                    cash_assets = [a for a in asset_states if a['status'] == 'CASH']
-                    hold_assets = [a for a in asset_states if a['status'] == 'HOLD']
-                    buy_signal_assets = [a for a in asset_states if a['signal'] == 'BUY']
-
-                    rc1, rc2, rc3 = st.columns(3)
-                    rc1.metric("보유 현금 (KRW)", f"{krw_balance:,.0f}")
-                    rc2.metric("CASH 자산", f"{len(cash_assets)} / {len(asset_states)}")
-                    rc3.metric("BUY 시그널", f"{len(buy_signal_assets)} / {len(asset_states)}")
-
-                    # 리밸런싱 테이블
-                    rebal_data = []
-                    for a in asset_states:
-                        diff_krw = a['target_krw'] - a['coin_val']
-                        action = ""
-                        if a['status'] == 'CASH' and a['signal'] == 'BUY':
-                            action = "BUY"
-                        elif a['status'] == 'CASH' and a['signal'] != 'BUY':
-                            action = "대기 (시그널 없음)"
-                        elif a['status'] == 'HOLD':
-                            action = "보유 중"
-
-                        rebal_data.append({
-                            "종목": a['ticker'],
-                            "전략": f"{a['strategy']} {a['param']}",
-                            "비중": f"{a['weight']}%",
-                            "시간봉": a['interval'],
-                            "상태": a['status'],
-                            "시그널": a['signal'],
-                            "현재가치(KRW)": f"{a['coin_val']:,.0f}",
-                            "목표(KRW)": f"{a['target_krw']:,.0f}",
-                            "액션": action,
-                        })
-
-                    st.dataframe(pd.DataFrame(rebal_data), use_container_width=True, hide_index=True)
-
-                    # BUY 시그널이 있는 CASH 자산만 매수 대상
-                    buyable = [a for a in asset_states if a['status'] == 'CASH' and a['signal'] == 'BUY']
-
-                    if not buyable:
-                        if len(cash_assets) == 0:
-                            st.success("모든 자산이 이미 보유 중입니다.")
-                        else:
-                            st.info(f"현금 자산 {len(cash_assets)}개가 있지만 BUY 시그널이 없습니다. 시그널 발생 시 매수 가능합니다.")
-                    else:
-                        # 매수 가능 자산 표시
-                        st.warning(f"**{len(buyable)}개 자산**에 BUY 시그널이 있습니다. 리밸런싱 매수를 실행할 수 있습니다.")
-
-                        # 배분 금액 계산
-                        total_buy_weight = sum(a['weight'] for a in buyable)
-                        available_krw = krw_balance * 0.999  # 수수료 여유분
-
-                        buy_plan = []
-                        for a in buyable:
-                            # 비중 비례 배분
-                            alloc_krw = available_krw * (a['weight'] / total_buy_weight) if total_buy_weight > 0 else 0
-                            alloc_krw = min(alloc_krw, available_krw)
-                            buy_plan.append({
-                                "종목": a['ticker'],
-                                "비중": f"{a['weight']}%",
-                                "배분 금액(KRW)": f"{alloc_krw:,.0f}",
-                                "시간봉": a['interval'],
-                                "현재가": f"{a['price']:,.0f}",
-                                "_ticker": a['ticker'],
-                                "_krw": alloc_krw,
-                                "_interval": a['interval'],
-                            })
-
-                        plan_df = pd.DataFrame(buy_plan)
-                        st.dataframe(plan_df[["종목", "비중", "배분 금액(KRW)", "시간봉", "현재가"]], use_container_width=True, hide_index=True)
-
-                        st.caption(f"총 배분 금액: {sum(p['_krw'] for p in buy_plan):,.0f} KRW / 보유 현금: {krw_balance:,.0f} KRW")
-
-                        # 실행 버튼
-                        if st.button("🚀 리밸런싱 매수 실행", key="btn_rebalance_exec", type="primary"):
-                            rebal_results = []
-                            rebal_progress = st.progress(0)
-                            rebal_log = st.empty()
-
-                            for pi, plan in enumerate(buy_plan):
-                                p_ticker = plan['_ticker']
-                                p_krw = plan['_krw']
-                                p_interval = plan['_interval']
-
-                                if p_krw < 5000:
-                                    rebal_results.append({"종목": p_ticker, "결과": "금액 부족 (5,000원 미만)"})
-                                    continue
-
-                                rebal_log.text(f"매수 중: {p_ticker} ({p_krw:,.0f} KRW)...")
-                                try:
-                                    exec_res = trader.smart_buy(p_ticker, p_krw, interval=p_interval)
-                                    avg_p = exec_res.get('avg_price', 0)
-                                    vol = exec_res.get('filled_volume', 0)
-                                    rebal_results.append({
-                                        "종목": p_ticker,
-                                        "결과": f"체결 완료: {vol:.6f} @ {avg_p:,.0f}",
-                                        "금액": f"{exec_res.get('total_krw', 0):,.0f} KRW"
-                                    })
-                                except Exception as e:
-                                    rebal_results.append({"종목": p_ticker, "결과": f"오류: {e}"})
-
-                                rebal_progress.progress((pi + 1) / len(buy_plan))
-                                time.sleep(0.5)
-
-                            rebal_progress.progress(1.0)
-                            rebal_log.empty()
-                            st.success("리밸런싱 완료!")
-                            st.dataframe(pd.DataFrame(rebal_results), use_container_width=True, hide_index=True)
-
     # --- Tab 5: Manual Trade (거래소 스타일) ---
     with tab5:
         st.header("수동 주문")
@@ -2520,8 +2534,8 @@ def main():
 
                 st.divider()
 
-                # ═══ 메인 레이아웃: 호가창(좌) + 주문(우) ═══
-                ob_col, order_col = st.columns([2, 3])
+                # ═══ 메인 레이아웃: 호가창(좌) + 주문(중) + 30분봉(우) ═══
+                ob_col, order_col, chart_col = st.columns([2, 3, 4])
 
                 # ── 좌: 호가창 (HTML 렌더링 — 더블클릭 편집 없음) ──
                 with ob_col:
@@ -2799,6 +2813,43 @@ def main():
                                     else:
                                         st.toast(f"주문 실패: {result}", icon="🔴")
 
+                # ── 우: 30분봉 차트 ──
+                with chart_col:
+                    st.markdown("**30분봉 차트**")
+                    df_30m = _ttl_cache(f"m30_{mt_ticker}", lambda: pyupbit.get_ohlcv(mt_ticker, interval="minute30", count=48), ttl=30)
+                    if df_30m is not None and len(df_30m) > 0:
+                        fig_30m = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                                row_heights=[0.8, 0.2], vertical_spacing=0.02)
+                        fig_30m.add_trace(go.Candlestick(
+                            x=df_30m.index, open=df_30m['open'], high=df_30m['high'],
+                            low=df_30m['low'], close=df_30m['close'], name='30분봉',
+                            increasing_line_color='#26a69a', decreasing_line_color='#ef5350',
+                        ), row=1, col=1)
+                        # 이동평균선
+                        ma5 = df_30m['close'].rolling(5).mean()
+                        ma20 = df_30m['close'].rolling(20).mean()
+                        fig_30m.add_trace(go.Scatter(x=df_30m.index, y=ma5, name='MA5',
+                                                     line=dict(color='#FF9800', width=1)), row=1, col=1)
+                        fig_30m.add_trace(go.Scatter(x=df_30m.index, y=ma20, name='MA20',
+                                                     line=dict(color='#2196F3', width=1)), row=1, col=1)
+                        # 거래량
+                        colors_vol = ['#26a69a' if c >= o else '#ef5350'
+                                      for c, o in zip(df_30m['close'], df_30m['open'])]
+                        fig_30m.add_trace(go.Bar(x=df_30m.index, y=df_30m['volume'],
+                                                 marker_color=colors_vol, name='거래량', showlegend=False),
+                                          row=2, col=1)
+                        fig_30m.update_layout(
+                            height=520, margin=dict(l=0, r=0, t=10, b=30),
+                            xaxis_rangeslider_visible=False, showlegend=True,
+                            legend=dict(orientation="h", y=1.02, x=0),
+                            xaxis2=dict(showticklabels=True, tickformat='%H:%M', tickangle=-45),
+                            yaxis=dict(title="", side="right"),
+                            yaxis2=dict(title="", side="right"),
+                        )
+                        st.plotly_chart(fig_30m, use_container_width=True, key=f"chart30m_{mt_ticker}")
+                    else:
+                        st.info("차트 데이터 로딩 중...")
+
                 # ── 미체결 주문 ──
                 st.divider()
                 st.subheader("미체결 주문")
@@ -2846,7 +2897,7 @@ def main():
                 st.warning("사이드바에서 API 키를 설정해주세요.")
             else:
                 c_h1, c_h2 = st.columns(2)
-                h_type = c_h1.selectbox("조회 유형", ["입금", "출금", "체결 주문"])
+                h_type = c_h1.selectbox("조회 유형", ["전체", "입금", "출금", "체결 주문"])
                 h_curr = c_h2.selectbox("화폐", ["전체", "KRW", "BTC", "ETH", "XRP", "SOL", "USDT", "DOGE", "ADA", "AVAX", "LINK"])
 
                 d_h1, d_h2 = st.columns(2)
@@ -2857,127 +2908,132 @@ def main():
                     with st.spinner("Upbit API 조회 중..."):
                         api_curr = None if h_curr == "전체" else h_curr
 
-                        data = []
-                        error_msg = None
-                        try:
-                            if "입금" in h_type:
-                                data, error_msg = trader.get_history('deposit', api_curr)
-                            elif "출금" in h_type:
-                                data, error_msg = trader.get_history('withdraw', api_curr)
-                            elif "체결" in h_type:
-                                data, error_msg = trader.get_history('order', api_curr)
-                        except Exception as e:
-                            error_msg = str(e)
+                        # ── 조회 유형별 데이터 수집 ──
+                        def _parse_deposit_withdraw(raw, type_label):
+                            """입금/출금 데이터를 통합 포맷으로 변환"""
+                            rows = []
+                            for r in raw:
+                                done = r.get('done_at', r.get('created_at', ''))
+                                if pd.notna(done):
+                                    try: done = pd.to_datetime(done).strftime('%Y-%m-%d %H:%M')
+                                    except: pass
+                                amount = float(r.get('amount', 0))
+                                fee_val = float(r.get('fee', 0))
+                                state = r.get('state', '')
+                                state_kr = {"ACCEPTED": "완료", "REJECTED": "거부", "CANCELLED": "취소", "PROCESSING": "처리중", "WAITING": "대기중"}.get(state, state)
+                                rows.append({
+                                    "거래일시": done, "유형": type_label,
+                                    "화폐/코인": r.get('currency', ''),
+                                    "구분": type_label,
+                                    "금액/수량": f"{amount:,.4f}" if amount < 100 else f"{amount:,.0f}",
+                                    "체결금액(KRW)": "-",
+                                    "수수료": f"{fee_val:,.4f}" if fee_val > 0 else "-",
+                                    "상태": state_kr,
+                                    "_sort_dt": done,
+                                })
+                            return rows
 
-                        if error_msg:
-                            if "out_of_scope" in error_msg or "권한" in error_msg:
-                                st.error("API 키에 해당 조회 권한이 없습니다.")
-                                st.info("[업비트 > 마이페이지 > Open API 관리]에서 **자산조회**, **입출금 조회** 권한을 활성화해주세요.")
-                            else:
-                                st.error(f"API 오류: {error_msg}")
-                        if data and len(data) > 0:
-                            df_hist = pd.DataFrame(data)
-
-                            # --- 입금/출금 내역 정리 ---
-                            if "입금" in h_type or "출금" in h_type:
-                                date_col = 'done_at' if 'done_at' in df_hist.columns else ('created_at' if 'created_at' in df_hist.columns else None)
-                                if date_col:
-                                    df_hist[date_col] = pd.to_datetime(df_hist[date_col])
-                                    mask = (df_hist[date_col].dt.date >= h_date_start) & (df_hist[date_col].dt.date <= h_date_end)
-                                    df_hist = df_hist[mask]
-                                    df_hist = df_hist.sort_values(date_col, ascending=False)
-
-                                display_rows = []
-                                for _, row in df_hist.iterrows():
-                                    currency = row.get('currency', '')
-                                    amount = float(row.get('amount', 0))
-                                    fee_val = float(row.get('fee', 0))
-                                    state = row.get('state', '')
-                                    state_kr = {"ACCEPTED": "완료", "REJECTED": "거부", "CANCELLED": "취소", "PROCESSING": "처리중", "WAITING": "대기중"}.get(state, state)
-                                    done = row.get('done_at', row.get('created_at', ''))
-                                    if pd.notna(done):
-                                        try:
-                                            done = pd.to_datetime(done).strftime('%Y-%m-%d %H:%M')
-                                        except:
-                                            pass
-                                    display_rows.append({
-                                        "거래일시": done,
-                                        "유형": "입금" if "입금" in h_type else "출금",
-                                        "화폐": currency,
-                                        "금액": f"{amount:,.4f}" if amount < 100 else f"{amount:,.0f}",
-                                        "수수료": f"{fee_val:,.4f}" if fee_val > 0 else "-",
-                                        "상태": state_kr,
-                                    })
-                                if display_rows:
-                                    st.success(f"{len(display_rows)}건 조회됨")
-                                    st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+                        def _parse_orders(raw):
+                            """체결 주문 데이터를 통합 포맷으로 변환"""
+                            rows = []
+                            for r in raw:
+                                market = r.get('market', '')
+                                coin = market.split('-')[1] if '-' in str(market) else market
+                                side = r.get('side', '')
+                                side_kr = "매수" if side == 'bid' else ("매도" if side == 'ask' else side)
+                                state = r.get('state', '')
+                                state_kr = {"done": "체결완료", "cancel": "취소", "wait": "대기"}.get(state, state)
+                                price = float(r.get('price', 0) or 0)
+                                executed_vol = float(r.get('executed_volume', 0) or 0)
+                                paid_fee = float(r.get('paid_fee', 0) or 0)
+                                if price > 0 and executed_vol > 0:
+                                    total_krw = price * executed_vol
+                                elif 'trades' in r and r['trades']:
+                                    total_krw = sum(float(t.get('funds', 0)) for t in r['trades'])
                                 else:
-                                    st.warning("해당 기간에 내역이 없습니다.")
+                                    total_krw = price
+                                ord_type = r.get('ord_type', '')
+                                type_kr = {"limit": "지정가", "price": "시장가(매수)", "market": "시장가(매도)"}.get(ord_type, ord_type)
+                                created = r.get('created_at', '')
+                                if pd.notna(created):
+                                    try: created = pd.to_datetime(created).strftime('%Y-%m-%d %H:%M')
+                                    except: pass
+                                rows.append({
+                                    "거래일시": created, "유형": f"체결({type_kr})",
+                                    "화폐/코인": coin,
+                                    "구분": side_kr,
+                                    "금액/수량": f"{executed_vol:,.8f}" if executed_vol < 1 else f"{executed_vol:,.4f}",
+                                    "체결금액(KRW)": f"{total_krw:,.0f}",
+                                    "수수료": f"{paid_fee:,.2f}",
+                                    "상태": state_kr,
+                                    "_sort_dt": created,
+                                })
+                            return rows
 
-                            # --- 체결 주문 내역 정리 ---
-                            elif "체결" in h_type:
-                                date_col = 'created_at' if 'created_at' in df_hist.columns else None
-                                if date_col:
-                                    df_hist[date_col] = pd.to_datetime(df_hist[date_col])
-                                    mask = (df_hist[date_col].dt.date >= h_date_start) & (df_hist[date_col].dt.date <= h_date_end)
-                                    df_hist = df_hist[mask]
-                                    df_hist = df_hist.sort_values(date_col, ascending=False)
+                        api_curr = None if h_curr == "전체" else h_curr
+                        all_rows = []
+                        error_msgs = []
 
-                                display_rows = []
-                                for _, row in df_hist.iterrows():
-                                    market = row.get('market', '')
-                                    coin = market.split('-')[1] if '-' in str(market) else market
-                                    side = row.get('side', '')
-                                    side_kr = "매수" if side == 'bid' else ("매도" if side == 'ask' else side)
-                                    state = row.get('state', '')
-                                    state_kr = {"done": "체결완료", "cancel": "취소", "wait": "대기"}.get(state, state)
-                                    price = float(row.get('price', 0) or 0)
-                                    volume = float(row.get('volume', 0) or 0)
-                                    executed_vol = float(row.get('executed_volume', 0) or 0)
-                                    paid_fee = float(row.get('paid_fee', 0) or 0)
-                                    # 체결 금액 계산
-                                    if price > 0 and executed_vol > 0:
-                                        total_krw = price * executed_vol
-                                    elif 'trades' in row and row['trades']:
-                                        total_krw = sum(float(t.get('funds', 0)) for t in row['trades'])
+                        # 조회 대상 결정
+                        query_types = []
+                        if h_type == "전체":
+                            query_types = [("deposit", "입금"), ("withdraw", "출금"), ("order", "체결")]
+                        elif "입금" in h_type:
+                            query_types = [("deposit", "입금")]
+                        elif "출금" in h_type:
+                            query_types = [("withdraw", "출금")]
+                        elif "체결" in h_type:
+                            query_types = [("order", "체결")]
+
+                        for api_type, label in query_types:
+                            try:
+                                data, err = trader.get_history(api_type, api_curr)
+                                if err:
+                                    error_msgs.append(f"{label}: {err}")
+                                if data:
+                                    if api_type in ("deposit", "withdraw"):
+                                        all_rows.extend(_parse_deposit_withdraw(data, label))
                                     else:
-                                        total_krw = price  # 시장가 주문은 price가 총액
-                                    ord_type = row.get('ord_type', '')
-                                    type_kr = {"limit": "지정가", "price": "시장가(매수)", "market": "시장가(매도)"}.get(ord_type, ord_type)
-                                    created = row.get('created_at', '')
-                                    if pd.notna(created):
-                                        try:
-                                            created = pd.to_datetime(created).strftime('%Y-%m-%d %H:%M')
-                                        except:
-                                            pass
-                                    display_rows.append({
-                                        "거래일시": created,
-                                        "코인": coin,
-                                        "구분": side_kr,
-                                        "주문유형": type_kr,
-                                        "체결수량": f"{executed_vol:,.8f}" if executed_vol < 1 else f"{executed_vol:,.4f}",
-                                        "체결금액(KRW)": f"{total_krw:,.0f}",
-                                        "수수료": f"{paid_fee:,.2f}",
-                                        "상태": state_kr,
-                                    })
-                                if display_rows:
-                                    st.success(f"{len(display_rows)}건 조회됨")
-                                    order_df = pd.DataFrame(display_rows)
-                                    # 매수/매도 색상 구분
-                                    def _color_side(val):
-                                        if val == "매수":
-                                            return "color: #e74c3c"
-                                        elif val == "매도":
-                                            return "color: #2980b9"
-                                        return ""
-                                    st.dataframe(
-                                        order_df.style.map(_color_side, subset=["구분"]),
-                                        use_container_width=True, hide_index=True
-                                    )
-                                else:
-                                    st.warning("해당 기간에 체결 내역이 없습니다.")
+                                        all_rows.extend(_parse_orders(data))
+                            except Exception as e:
+                                error_msgs.append(f"{label}: {e}")
 
-                        elif not error_msg:
+                        # 에러 표시
+                        for em in error_msgs:
+                            if "out_of_scope" in em or "권한" in em:
+                                st.error(f"API 권한 부족 ({em.split(':')[0]})")
+                            else:
+                                st.error(f"API 오류: {em}")
+                        if error_msgs and not all_rows:
+                            st.info("[업비트 > 마이페이지 > Open API 관리]에서 **자산조회**, **입출금 조회** 권한을 활성화해주세요.")
+
+                        # 날짜 필터 + 표시
+                        if all_rows:
+                            result_df = pd.DataFrame(all_rows)
+                            # 날짜 필터링
+                            try:
+                                result_df['_dt'] = pd.to_datetime(result_df['_sort_dt'], errors='coerce')
+                                mask = (result_df['_dt'].dt.date >= h_date_start) & (result_df['_dt'].dt.date <= h_date_end)
+                                result_df = result_df[mask].sort_values('_dt', ascending=False)
+                            except Exception:
+                                pass
+                            result_df = result_df.drop(columns=['_sort_dt', '_dt'], errors='ignore')
+
+                            if len(result_df) > 0:
+                                st.success(f"{len(result_df)}건 조회됨")
+                                def _color_side(val):
+                                    if val == "매수": return "color: #e74c3c"
+                                    elif val == "매도": return "color: #2980b9"
+                                    elif val == "입금": return "color: #27ae60"
+                                    elif val == "출금": return "color: #8e44ad"
+                                    return ""
+                                st.dataframe(
+                                    result_df.style.map(_color_side, subset=["구분"]),
+                                    use_container_width=True, hide_index=True
+                                )
+                            else:
+                                st.warning("해당 기간에 내역이 없습니다.")
+                        elif not error_msgs:
                             st.warning(f"조회 결과 없음. (유형: {h_type}, 화폐: {h_curr})")
                             st.caption("Upbit API는 최근 내역만 반환합니다. 조회 유형을 변경해보세요.")
 
