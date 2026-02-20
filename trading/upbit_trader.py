@@ -134,6 +134,21 @@ class UpbitTrader:
             logger.error(f"Error getting balance: {e}")
             return 0
 
+    def get_all_balances(self):
+        """모든 잔고를 한 번의 API 호출로 조회. Returns: {currency: balance}"""
+        try:
+            balances = self.upbit.get_balances()
+            result = {}
+            if balances:
+                for b in balances:
+                    currency = b.get('currency', '')
+                    balance = float(b.get('balance', 0)) + float(b.get('locked', 0))
+                    result[currency] = balance
+            return result
+        except Exception as e:
+            logger.error(f"Error getting all balances: {e}")
+            return {}
+
     def get_current_price(self, ticker):
         try:
             return pyupbit.get_current_price(ticker)

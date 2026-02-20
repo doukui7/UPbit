@@ -274,25 +274,40 @@ def render_gold_mode():
             save_config(new_gold_cfg)
             st.sidebar.success("저장 완료!")
 
-    # ── 트레이더 초기화 ────────────────────────────────────
-    gold_trader = None
-    if kiwoom_ak and kiwoom_sk:
-        gold_trader = KiwoomGoldTrader(is_mock=False)
-        gold_trader.app_key    = kiwoom_ak
-        gold_trader.app_secret = kiwoom_sk
-        gold_trader.account_no = kiwoom_account
+    # ── 트레이더 + 백그라운드 워커 초기화 ────────────────────
+    from data_manager import GoldDataWorker
 
-    # ── 데이터 로드 헬퍼 (API → CSV 폴백) ─────────────────
-    @st.cache_data(ttl=300)
+    @st.cache_resource
+    def _get_gold_trader(ak, sk, acct):
+        t = KiwoomGoldTrader(is_mock=False)
+        t.app_key = ak
+        t.app_secret = sk
+        t.account_no = acct
+        return t
+
+    @st.cache_resource
+    def _get_gold_worker(_trader):
+        """백그라운드 워커: 잔고/시세/호가를 3초마다 병렬 갱신"""
+        w = GoldDataWorker()
+        w.configure(_trader)
+        w.start()
+        return w
+
+    gold_trader = None
+    gold_worker = None
+    if kiwoom_ak and kiwoom_sk:
+        gold_trader = _get_gold_trader(kiwoom_ak, kiwoom_sk, kiwoom_account)
+        gold_worker = _get_gold_worker(gold_trader)
+
+    # ── 데이터 로드 헬퍼 (워커 차트 → CSV 폴백, 블로킹 없음) ──
     def load_gold_data(buy_p: int) -> pd.DataFrame | None:
-        """일봉 데이터: API → CSV 폴백."""
-        if gold_trader and gold_trader.app_key:
-            auth_ok = gold_trader.auth()
-            if auth_ok:
-                df_api = gold_trader.get_daily_chart(code=GOLD_CODE_1KG, count=max(buy_p + 60, 300))
-                if df_api is not None and len(df_api) >= buy_p + 5:
-                    return df_api
-        # CSV 폴백
+        """일봉 데이터: 워커 캐시 → CSV 폴백 (API 직접 호출 없음)."""
+        # 1순위: 백그라운드 워커가 갱신한 차트 데이터
+        if gold_worker:
+            df_w = gold_worker.get_chart()
+            if df_w is not None and len(df_w) >= buy_p + 5:
+                return df_w
+        # 2순위: CSV 파일 (오프라인 폴백)
         csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "krx_gold_daily.csv")
         if os.path.exists(csv_path):
             df_csv = pd.read_csv(csv_path, index_col="Date", parse_dates=True)
@@ -302,22 +317,6 @@ def render_gold_mode():
             if "low"  not in df_csv.columns: df_csv["low"]  = df_csv["close"]
             return df_csv
         return None
-
-    # TTL 캐시 헬퍼 (세션)
-    def _ttl_gold(key, fn, ttl=10):
-        now = time.time()
-        ck, tk = f"__gc_{key}", f"__gt_{key}"
-        if ck in st.session_state and (now - st.session_state.get(tk, 0)) < ttl:
-            return st.session_state[ck]
-        val = fn()
-        st.session_state[ck] = val
-        st.session_state[tk] = now
-        return val
-
-    def _clear_gold_cache(*keys):
-        for k in keys:
-            st.session_state.pop(f"__gc_{k}", None)
-            st.session_state.pop(f"__gt_{k}", None)
 
     # ── 탭 구성 ───────────────────────────────────────────
     tab_g1, tab_g2, tab_g3, tab_g4 = st.tabs(
@@ -341,12 +340,12 @@ def render_gold_mode():
                 st.cache_data.clear()
                 st.rerun()
 
-        # 계좌 잔고
+        # 계좌 잔고 (워커에서 읽기 — 블로킹 없음)
         with st.expander("💰 계좌 현황", expanded=True):
-            if not gold_trader:
+            if not gold_worker:
                 st.warning("사이드바에서 키움 API Key를 입력해주세요.")
             else:
-                bal = _ttl_gold("balance", lambda: gold_trader.get_balance() if gold_trader.auth() else None, ttl=15)
+                bal = gold_worker.get('balance')
                 if bal:
                     b1, b2, b3, b4 = st.columns(4)
                     b1.metric("예수금", f"{bal['cash_krw']:,.0f}원")
@@ -356,8 +355,12 @@ def render_gold_mode():
                     pnl = total_asset - gold_initial_cap
                     b4.metric("총 평가", f"{total_asset:,.0f}원", delta=f"{pnl:+,.0f}원")
                     is_holding = bal['gold_qty'] > 0
+                elif not gold_worker.is_ready():
+                    st.info("데이터 로딩 중... (백그라운드 갱신)")
+                    bal = None
+                    is_holding = False
                 else:
-                    st.error("잔고 조회 실패 (API 인증 확인)")
+                    st.warning("잔고 조회 실패 (API 인증 확인)")
                     bal = None
                     is_holding = False
 
@@ -472,26 +475,16 @@ def render_gold_mode():
                 except (IndexError, ValueError):
                     pass
 
-            # ═══ 트레이딩 패널 (2초 자동갱신) ═══
-            @st.fragment(run_every=2)
+            # ═══ 트레이딩 패널 (3초 자동갱신, 워커에서 읽기만 → 블로킹 없음) ═══
+            @st.fragment(run_every=3)
             def gold_trading_panel():
-                # ── 캐시 API 호출 ──
-                def _auth_and_get_balance():
-                    if gold_trader.auth():
-                        return gold_trader.get_balance()
-                    return None
+                # ── 워커에서 즉시 읽기 (API 호출 없음) ──
+                g_bal = gold_worker.get('balance') if gold_worker else None
+                g_price = gold_worker.get('price', 0) if gold_worker else 0
 
-                g_bal = _ttl_gold("g_bal", _auth_and_get_balance, ttl=5)
                 g_cash = g_bal['cash_krw'] if g_bal else 0.0
                 g_qty  = g_bal['gold_qty'] if g_bal else 0.0
                 g_eval = g_bal['gold_eval'] if g_bal else 0.0
-
-                def _auth_and_get_price():
-                    if gold_trader.auth():
-                        return gold_trader.get_current_price(GOLD_CODE_1KG) or 0
-                    return 0
-
-                g_price = _ttl_gold("g_price", _auth_and_get_price, ttl=2)
                 g_hold_val = g_qty * g_price if g_price > 0 else g_eval
 
                 # ── 상단 정보 바 ──
@@ -530,12 +523,7 @@ def render_gold_mode():
                 with ob_col:
                     price_labels = []
 
-                    def _auth_and_get_ob():
-                        if gold_trader.auth():
-                            return gold_trader.get_orderbook(GOLD_CODE_1KG)
-                        return None
-
-                    ob = _ttl_gold("g_ob", _auth_and_get_ob, ttl=2)
+                    ob = gold_worker.get('orderbook') if gold_worker else None
 
                     if ob and ob.get('asks') and ob.get('bids'):
                         asks = ob['asks']  # 매도호가 (낮→높)
@@ -669,7 +657,7 @@ def render_gold_mode():
                                             result = gold_trader.send_order("BUY", GOLD_CODE_1KG, qty=buy_qty, ord_tp="3")
                                         else:
                                             result = None
-                                    _clear_gold_cache("g_bal")
+                                    pass  # 워커가 자동 갱신
                                     if result and result.get("success"):
                                         st.toast(f"✅ 시장가 매수! {gb_amount:,.0f}원 ≈ {buy_qty:.2f}g", icon="🟢")
                                         st.session_state['_gold_last_trade'] = {
@@ -719,7 +707,7 @@ def render_gold_mode():
                                             result = gold_trader.send_order("BUY", GOLD_CODE_1KG, qty=gb_qty, price=gb_price, ord_tp="1")
                                         else:
                                             result = None
-                                    _clear_gold_cache("g_bal")
+                                    pass  # 워커가 자동 갱신
                                     if result and result.get("success"):
                                         st.toast(f"✅ 지정가 매수 등록! {gb_price:,.0f}원 × {gb_qty:.2f}g", icon="🟢")
                                         st.session_state['_gold_last_trade'] = {
@@ -766,7 +754,7 @@ def render_gold_mode():
                                             result = gold_trader.send_order("SELL", GOLD_CODE_1KG, qty=gs_qty, ord_tp="3")
                                         else:
                                             result = None
-                                    _clear_gold_cache("g_bal")
+                                    pass  # 워커가 자동 갱신
                                     if result and result.get("success"):
                                         st.toast(f"✅ 시장가 매도! {gs_qty:.2f}g", icon="🔴")
                                         st.session_state['_gold_last_trade'] = {
@@ -817,7 +805,7 @@ def render_gold_mode():
                                             result = gold_trader.send_order("SELL", GOLD_CODE_1KG, qty=gs_lqty, price=gs_price, ord_tp="1")
                                         else:
                                             result = None
-                                    _clear_gold_cache("g_bal")
+                                    pass  # 워커가 자동 갱신
                                     if result and result.get("success"):
                                         st.toast(f"✅ 지정가 매도 등록! {gs_price:,.0f}원 × {gs_lqty:.2f}g", icon="🔴")
                                         st.session_state['_gold_last_trade'] = {
@@ -1460,6 +1448,19 @@ def main():
     
     # Initialize Objects
     backtest_engine = BacktestEngine()
+
+    @st.cache_data(ttl=300)
+    def _cached_backtest(ticker, period, interval, count, start_date_str, initial_balance, strategy_mode, sell_period_ratio, _df_hash):
+        """백테스트 결과를 5분간 캐싱 (동일 파라미터 재계산 방지)"""
+        df_bt_local = data_cache.load_cached(ticker, interval)
+        if df_bt_local is None or len(df_bt_local) < period:
+            return None
+        return backtest_engine.run_backtest(
+            ticker, period=period, interval=interval, count=count,
+            start_date=start_date_str, initial_balance=initial_balance,
+            df=df_bt_local, strategy_mode=strategy_mode,
+            sell_period_ratio=sell_period_ratio
+        )
     
     trader = None
     if current_ak and current_sk:
@@ -1469,11 +1470,20 @@ def main():
         trader = get_trader(current_ak, current_sk)
 
     # --- Background Worker Setup ---
+    from data_manager import MarketDataWorker, CoinTradingWorker
+
     @st.cache_resource
     def get_worker():
         return MarketDataWorker()
-    
+
+    @st.cache_resource
+    def get_coin_trading_worker():
+        w = CoinTradingWorker()
+        w.start()
+        return w
+
     worker = get_worker()
+    coin_tw = get_coin_trading_worker()
 
     # 업비트 KRW 마켓 호가 단위 (Tick Size)
     def get_tick_size(price):
@@ -1579,7 +1589,11 @@ def main():
                 all_prices = _ttl_cache("prices_t1", _fetch_all_prices, ttl=5)
 
                 def _fetch_all_balances():
-                    """모든 코인 잔고를 한번에 가져옴"""
+                    """모든 코인 잔고를 1회 API 호출로 가져옴"""
+                    if hasattr(trader, 'get_all_balances'):
+                        raw = trader.get_all_balances()
+                        return {c: raw.get(c, 0) for c in unique_coins}
+                    # 폴백: 개별 호출
                     return {c: (trader.get_balance(c) or 0) for c in unique_coins}
 
                 all_balances = _ttl_cache("balances_t1", _fetch_all_balances, ttl=10)
@@ -1875,16 +1889,29 @@ def main():
                             coin_sym = item['coin'].upper()
                             coin_bal = all_balances.get(coin_sym, 0)
 
-                            # 3. Theo Backtest (Sync Check) - 캐시 우선 (다운로드 없음)
+                            # 3. Theo Backtest (Sync Check) - 캐시된 백테스트 사용
                             sell_ratio = (item.get('sell_parameter', 0) or max(5, param_val // 2)) / param_val if param_val > 0 else 0.5
-                            # 캐시 로드 (API 호출 없이 로컬 파일만)
                             df_bt = data_cache.load_cached(ticker, interval)
                             if df_bt is not None and len(df_bt) >= param_val:
                                 req_count = len(df_bt)
+                                df_hash = f"{len(df_bt)}_{df_bt.index[-1]}"
                             else:
-                                df_bt = df_curr  # 캐시 없으면 Worker 데이터 사용
+                                df_bt = df_curr
                                 req_count = len(df_bt)
-                            bt_res = backtest_engine.run_backtest(ticker, period=param_val, interval=interval, count=req_count, start_date=start_date, initial_balance=per_coin_cap, df=df_bt, strategy_mode=strategy_mode, sell_period_ratio=sell_ratio)
+                                df_hash = f"{len(df_bt)}_{df_bt.index[-1]}"
+                            bt_res = _cached_backtest(
+                                ticker, param_val, interval, req_count,
+                                str(start_date), per_coin_cap, strategy_mode,
+                                sell_ratio, df_hash
+                            )
+                            if bt_res is None:
+                                bt_res = backtest_engine.run_backtest(
+                                    ticker, period=param_val, interval=interval,
+                                    count=req_count, start_date=start_date,
+                                    initial_balance=per_coin_cap, df=df_bt,
+                                    strategy_mode=strategy_mode,
+                                    sell_period_ratio=sell_ratio
+                                )
                             
                             expected_eq = 0
                             theo_status = "UNKNOWN"
@@ -2438,13 +2465,25 @@ def main():
 
             mt_coin = mt_ticker.split("-")[1] if "-" in mt_ticker else mt_ticker
 
-            # ═══ 트레이딩 패널 (fragment → 2초마다 자동 갱신) ═══
-            @st.fragment(run_every=2)
+            # ── 코인 트레이딩 워커 시작 (백그라운드 갱신) ──
+            from data_manager import CoinTradingWorker
+
+            @st.cache_resource
+            def _get_coin_worker(_trader):
+                w = CoinTradingWorker()
+                return w
+
+            coin_worker = _get_coin_worker(trader)
+            coin_worker.configure(trader, mt_ticker)
+            coin_worker.start()
+
+            # ═══ 트레이딩 패널 (fragment → 3초마다 자동갱신, 워커에서 읽기만) ═══
+            @st.fragment(run_every=3)
             def trading_panel():
-                # ── TTL 캐시 API 호출 (대부분의 갱신은 캐시 히트 → 즉시 렌더) ──
-                mt_price = _ttl_cache(f"price_{mt_ticker}", lambda: pyupbit.get_current_price(mt_ticker) or 0, ttl=2)
-                krw_avail = _ttl_cache("krw_bal", lambda: trader.get_balance("KRW") or 0, ttl=5)
-                mt_coin_bal = _ttl_cache(f"bal_{mt_coin}", lambda: trader.get_balance(mt_coin) or 0, ttl=5)
+                # ── 워커에서 즉시 읽기 (API 호출 없음 → 블로킹 없음) ──
+                mt_price = coin_worker.get('price', 0)
+                krw_avail = coin_worker.get('krw_bal', 0)
+                mt_coin_bal = coin_worker.get('coin_bal', 0)
                 mt_coin_val = mt_coin_bal * mt_price
                 mt_tick = get_tick_size(mt_price) if mt_price > 0 else 1
                 mt_min_qty = round(5000 / mt_price, 8) if mt_price > 0 else 0.00000001
@@ -2488,7 +2527,7 @@ def main():
                 with ob_col:
                     raw_prices = []
                     try:
-                        ob_data = _ttl_cache(f"ob_{mt_ticker}", lambda: pyupbit.get_orderbook(mt_ticker), ttl=2)
+                        ob_data = coin_worker.get('orderbook')
                         if ob_data and len(ob_data) > 0:
                             ob = ob_data[0] if isinstance(ob_data, list) else ob_data
                             units = ob.get('orderbook_units', [])[:10]
@@ -2625,7 +2664,7 @@ def main():
                                 else:
                                     with st.spinner("매수 주문 중..."):
                                         result = trader.buy_market(mt_ticker, buy_amount)
-                                    _clear_cache("krw_bal", f"bal_{mt_coin}")
+                                    coin_worker.invalidate('krw_bal', 'coin_bal')
                                     if result and "error" not in result:
                                         st.toast(f"✅ 시장가 매수 체결! {buy_amount:,.0f} KRW", icon="🟢")
                                         st.session_state['_last_trade'] = {"type": "시장가 매수", "ticker": mt_ticker, "amount": f"{buy_amount:,.0f} KRW", "result": result, "time": time.strftime('%H:%M:%S')}
@@ -2667,7 +2706,7 @@ def main():
                                 else:
                                     with st.spinner("지정가 매수 주문 중..."):
                                         result = trader.buy_limit(mt_ticker, buy_price, buy_qty)
-                                    _clear_cache("krw_bal", f"bal_{mt_coin}")
+                                    coin_worker.invalidate('krw_bal', 'coin_bal')
                                     if result and "error" not in result:
                                         st.toast(f"✅ 지정가 매수 등록! {buy_price:,.0f} × {buy_qty:.8f}", icon="🟢")
                                         st.session_state['_last_trade'] = {"type": "지정가 매수", "ticker": mt_ticker, "price": f"{buy_price:,.0f}", "qty": f"{buy_qty:.8f}", "result": result, "time": time.strftime('%H:%M:%S')}
@@ -2710,7 +2749,7 @@ def main():
                                 else:
                                     with st.spinner("매도 주문 중..."):
                                         result = trader.sell_market(mt_ticker, sell_qty)
-                                    _clear_cache("krw_bal", f"bal_{mt_coin}")
+                                    coin_worker.invalidate('krw_bal', 'coin_bal')
                                     if result and "error" not in result:
                                         st.toast(f"✅ 시장가 매도 체결! {sell_qty:.8f} {mt_coin}", icon="🔴")
                                         st.session_state['_last_trade'] = {"type": "시장가 매도", "ticker": mt_ticker, "qty": f"{sell_qty:.8f}", "result": result, "time": time.strftime('%H:%M:%S')}
@@ -2753,7 +2792,7 @@ def main():
                                 else:
                                     with st.spinner("지정가 매도 주문 중..."):
                                         result = trader.sell_limit(mt_ticker, sell_price, sell_limit_qty)
-                                    _clear_cache("krw_bal", f"bal_{mt_coin}")
+                                    coin_worker.invalidate('krw_bal', 'coin_bal')
                                     if result and "error" not in result:
                                         st.toast(f"✅ 지정가 매도 등록! {sell_price:,.0f} × {sell_limit_qty:.8f}", icon="🔴")
                                         st.session_state['_last_trade'] = {"type": "지정가 매도", "ticker": mt_ticker, "price": f"{sell_price:,.0f}", "qty": f"{sell_limit_qty:.8f}", "result": result, "time": time.strftime('%H:%M:%S')}
@@ -2785,7 +2824,7 @@ def main():
                                 cancel_result = trader.cancel_order(order.get('uuid'))
                                 if cancel_result and "error" not in cancel_result:
                                     st.toast("주문 취소 완료", icon="✅")
-                                    _clear_cache("krw_bal", f"bal_{mt_coin}")
+                                    coin_worker.invalidate('krw_bal', 'coin_bal')
                                     st.rerun()
                                 else:
                                     st.toast(f"취소 실패: {cancel_result}", icon="🔴")

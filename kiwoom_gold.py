@@ -24,7 +24,7 @@ GOLD_CODE_MINI  = "M04020100"
 class KiwoomGoldTrader:
     """
     키움증권 금현물(KRX) REST API 트레이더
-    
+
     API 문서 TR 목록:
       ka50081 : 금현물 일봉차트 조회
       kt50000 : 금현물 매수주문
@@ -45,6 +45,10 @@ class KiwoomGoldTrader:
 
         self.access_token  = None
         self.token_expiry  = 0.0  # unix timestamp
+
+        # HTTP 커넥션 풀링 (매 요청마다 TCP 핸드셰이크 방지)
+        self._session = requests.Session()
+        self._session.headers.update({"Content-Type": "application/json;charset=UTF-8"})
 
         if not (self.app_key and self.app_secret):
             logger.warning("Kiwoom_App_Key 또는 Kiwoom_Secret_Key 가 .env에 없습니다.")
@@ -87,7 +91,7 @@ class KiwoomGoldTrader:
             "secretkey":  self.app_secret,
         }
         try:
-            res  = requests.post(url, json=payload, headers={"Content-Type": "application/json;charset=UTF-8"}, timeout=10)
+            res  = self._session.post(url, json=payload, timeout=10)
             res.raise_for_status()
             data = res.json()
 
@@ -114,18 +118,35 @@ class KiwoomGoldTrader:
     def get_current_price(self, code: str = GOLD_CODE_1KG) -> float | None:
         """
         금현물 현재가 조회.
-        1순위: 현재가 API (ka50070)
+        1순위: 세션 캐시 (5초 TTL)
         2순위: 일봉 최신 데이터
+        3순위: 현재가 API (ka50070)
         """
-        # 현재가 API 시도
-        price_data = self.get_price_info(code)
-        if price_data and price_data.get('cur_prc', 0) > 0:
-            return price_data['cur_prc']
+        # 세션 캐시 확인 (5초 TTL)
+        now = time.time()
+        cache_key = f"_price_{code}"
+        if hasattr(self, '_price_cache') and cache_key in self._price_cache:
+            cached_price, cached_time = self._price_cache[cache_key]
+            if (now - cached_time) < 5 and cached_price > 0:
+                return cached_price
 
-        # 일봉 폴백
+        if not hasattr(self, '_price_cache'):
+            self._price_cache = {}
+
+        # 일봉 (가장 안정적)
         df = self.get_daily_chart(code=code, count=1)
         if df is not None and not df.empty:
-            return float(df.iloc[-1]["close"])
+            price = float(df.iloc[-1]["close"])
+            self._price_cache[cache_key] = (price, now)
+            return price
+
+        # 현재가 API 폴백
+        price_data = self.get_price_info(code)
+        if price_data and price_data.get('cur_prc', 0) > 0:
+            price = price_data['cur_prc']
+            self._price_cache[cache_key] = (price, now)
+            return price
+
         return None
 
     def get_market_price(self, code: str = GOLD_CODE_1KG) -> float | None:
@@ -144,7 +165,7 @@ class KiwoomGoldTrader:
         body = {"stk_cd": code}
 
         try:
-            res  = requests.post(url, json=body, headers=self._headers("ka50070"), timeout=5)
+            res  = self._session.post(url, json=body, headers=self._headers("ka50070"), timeout=5)
             res.raise_for_status()
             data = res.json()
 
@@ -180,7 +201,7 @@ class KiwoomGoldTrader:
         body = {"stk_cd": code}
 
         try:
-            res  = requests.post(url, json=body, headers=self._headers("ka50072"), timeout=5)
+            res  = self._session.post(url, json=body, headers=self._headers("ka50072"), timeout=5)
             res.raise_for_status()
             data = res.json()
 
@@ -259,7 +280,7 @@ class KiwoomGoldTrader:
                 extra["next-key"] = next_key
 
             try:
-                res  = requests.post(url, json=body, headers=self._headers("ka50081", extra), timeout=10)
+                res  = self._session.post(url, json=body, headers=self._headers("ka50081", extra), timeout=10)
                 data = res.json()
                 logger.debug(f"일봉 응답 키: {list(data.keys())}")
             except Exception as e:
@@ -317,7 +338,7 @@ class KiwoomGoldTrader:
         body = {"acnt_no": self.account_no}
 
         try:
-            res  = requests.post(url, json=body, headers=self._headers("kt50020"), timeout=10)
+            res  = self._session.post(url, json=body, headers=self._headers("kt50020"), timeout=10)
             res.raise_for_status()
             data = res.json()
             logger.debug(f"잔고 응답: {data}")
@@ -371,7 +392,7 @@ class KiwoomGoldTrader:
         }
 
         try:
-            res  = requests.post(url, json=body, headers=self._headers(api_id), timeout=10)
+            res  = self._session.post(url, json=body, headers=self._headers(api_id), timeout=10)
             res.raise_for_status()
             data = res.json()
             rc   = data.get("return_code", -1)
@@ -401,7 +422,7 @@ class KiwoomGoldTrader:
             "cncl_ord_qty": str(qty),
         }
         try:
-            res  = requests.post(url, json=body, headers=self._headers("kt50003"), timeout=10)
+            res  = self._session.post(url, json=body, headers=self._headers("kt50003"), timeout=10)
             data = res.json()
             logger.info(f"취소 결과: {data}")
             return data
