@@ -8,7 +8,7 @@ class BacktestEngine:
     def __init__(self):
         self.strategy = SMAStrategy()
 
-    def run_backtest(self, ticker, period=20, interval="day", count=200, fee=0.0005, start_date=None, initial_balance=1000000, df=None, strategy_mode="SMA Strategy", sell_period_ratio=0.5, slippage=0.0):
+    def run_backtest(self, ticker, period=20, interval="day", count=200, fee=0.0005, start_date=None, initial_balance=1000000, df=None, strategy_mode="SMA Strategy", sell_period_ratio=0.5, slippage=0.0, sell_mode="lower"):
         """
         Run backtest for a given ticker and parameters.
         Execution Logic: Signal on Close(t) -> Trade on Open(t+1)
@@ -32,7 +32,10 @@ class BacktestEngine:
             buy_p = period
             sell_p = max(5, int(buy_p * sell_period_ratio))
             df = self.strategy.create_features(df, buy_period=buy_p, sell_period=sell_p)
-            df['signal'] = df.apply(lambda row: self.strategy.get_signal(row, buy_period=buy_p, sell_period=sell_p), axis=1)
+            df['signal'] = df.apply(
+                lambda row: self.strategy.get_signal(row, buy_period=buy_p, sell_period=sell_p, sell_mode=sell_mode),
+                axis=1
+            )
 
         else: # Default SMA
             self.strategy = SMAStrategy()
@@ -285,7 +288,8 @@ class BacktestEngine:
         }
 
     def optimize_donchian(self, df, buy_range, sell_range, fee=0.0005, slippage=0.0,
-                          start_date=None, initial_balance=1000000, progress_callback=None):
+                          start_date=None, initial_balance=1000000, progress_callback=None,
+                          sell_mode="lower"):
         """
         돈치안 고속 최적화: 모든 rolling을 사전계산.
         Returns: list of result dicts
@@ -332,7 +336,11 @@ class BacktestEngine:
                 # 벡터화 시그널 생성
                 signal_arr = np.zeros(len(close_arr_full), dtype=np.int8)
                 buy_mask = close_arr_full > upper
-                sell_mask = close_arr_full < lower
+                if sell_mode == "midline":
+                    midline = (upper + lower) / 2
+                    sell_mask = close_arr_full < midline
+                else:  # "lower" (기본)
+                    sell_mask = close_arr_full < lower
                 signal_arr[buy_mask] = 1
                 signal_arr[sell_mask] = -1
 

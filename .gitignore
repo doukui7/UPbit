@@ -1,33 +1,27 @@
-# Secrets
+# 환경 변수 / 비밀키
 .env
-.streamlit/secrets.toml
+user_config.json
 
 # Python
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
-*.egg-info/
-
-# Config (contains API keys locally)
-user_config.json
-
-# Logs & exports
-*.csv
-*.log
+venv/
+.venv/
 
 # IDE
 .vscode/
 .idea/
 
+# 임시파일
+*.log
+*__bt_temp*
+*.tmp
+
 # OS
-.DS_Store
 Thumbs.db
-
-# Reference
-GoldenToilet_ref/
-.ipynb_checkpoints/
-
-# Cache & temp
-cache/
+.DS_Store
 *.tmp.*
+cache/
 nul
+GoldenToilet_ref/

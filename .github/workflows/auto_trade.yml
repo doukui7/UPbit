@@ -2,14 +2,16 @@ name: Auto Trade
 
 on:
   schedule:
-    # 매 4시간마다 실행 (UTC 기준 0,4,8,12,16,20시 5분) -> KST 9,13,17,21,1,5시
+    # 업비트: 매 4시간마다 실행 (UTC 0,4,8,12,16,20시 5분) -> KST 9,13,17,21,1,5시
     - cron: '5 0,4,8,12,16,20 * * *'
+    # 키움 금현물: KST 09:05 (UTC 00:05) 평일만 (GitHub Actions는 cron에 요일 필터가 없어 코드에서 처리)
+    - cron: '5 0 * * 1-5'
   workflow_dispatch:  # 수동 실행 가능
 
 jobs:
+  # ── 업비트 BTC 자동매매 ─────────────────────────────────
   trade:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,9 +24,35 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Auto Trade
+      - name: Run Auto Trade (Upbit)
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
           PORTFOLIO: ${{ secrets.PORTFOLIO }}
+          TRADING_MODE: upbit
+        run: python github_action_trade.py
+
+  # ── 키움 금현물 자동매매 ─────────────────────────────────
+  kiwoom_gold:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Auto Trade (Kiwoom Gold)
+        env:
+          Kiwoom_App_Key: ${{ secrets.KIWOOM_APP_KEY }}
+          Kiwoom_Secret_Key: ${{ secrets.KIWOOM_SECRET_KEY }}
+          KIWOOM_ACCOUNT: ${{ secrets.KIWOOM_ACCOUNT }}
+          GOLD_BUY_PERIOD: '90'
+          GOLD_SELL_PERIOD: '55'
+          TRADING_MODE: kiwoom_gold
         run: python github_action_trade.py
