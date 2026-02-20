@@ -230,6 +230,7 @@ class GoldDataWorker:
         self._thread = None
         self._chart_df = None  # 일봉 캐시
         self._chart_updated = 0.0
+        self._first_run = True
         self.status_msg = "Not started"
 
     def configure(self, trader):
@@ -240,6 +241,12 @@ class GoldDataWorker:
         """워커 시작 (이미 실행 중이면 무시)"""
         with self._lock:
             if not self._running and self._trader:
+                # 첫 시작 시 parquet 캐시에서 즉시 로드 (API 없이)
+                if self._first_run:
+                    cached = data_cache.load_cached_gold()
+                    if cached is not None and len(cached) > 10:
+                        self._chart_df = cached
+                        self._chart_updated = time.time()
                 self._running = True
                 self._thread = threading.Thread(target=self._loop, daemon=True)
                 self._thread.start()
@@ -261,7 +268,7 @@ class GoldDataWorker:
                     time.sleep(5)
                     continue
 
-                # 잔고 + 현재가 + 호가를 병렬 조회 (최대 3초 타임아웃)
+                # 잔고 + 현재가 + 호가를 병렬 조회 (최대 5초 타임아웃)
                 with ThreadPoolExecutor(max_workers=3) as pool:
                     f_bal = pool.submit(self._trader.get_balance)
                     f_price = pool.submit(self._trader.get_current_price)
@@ -283,16 +290,19 @@ class GoldDataWorker:
                 self._data['last_update'] = time.time()
                 self.status_msg = f"OK ({datetime.datetime.now().strftime('%H:%M:%S')})"
 
-                # 일봉 차트: 5분마다 갱신
+                # 일봉 차트: 5분마다 갱신 + parquet 캐시 저장
                 now = time.time()
                 if (now - self._chart_updated) > 300:
                     try:
-                        df = self._trader.get_daily_chart(count=400)
+                        df = self._trader.get_daily_chart(count=5000)
                         if df is not None and len(df) > 10:
                             self._chart_df = df
                             self._chart_updated = now
+                            data_cache.save_cache_gold("M04020000", "day", df)
                     except Exception:
                         pass
+
+                self._first_run = False
 
             except Exception as e:
                 self.status_msg = f"Error: {e}"

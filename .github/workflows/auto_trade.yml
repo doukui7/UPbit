@@ -52,6 +52,7 @@ jobs:
           Kiwoom_App_Key: ${{ secrets.KIWOOM_APP_KEY }}
           Kiwoom_Secret_Key: ${{ secrets.KIWOOM_SECRET_KEY }}
           KIWOOM_ACCOUNT: ${{ secrets.KIWOOM_ACCOUNT }}
+          GOLD_PORTFOLIO: ${{ secrets.GOLD_PORTFOLIO }}
           GOLD_BUY_PERIOD: '90'
           GOLD_SELL_PERIOD: '55'
           TRADING_MODE: kiwoom_gold

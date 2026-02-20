@@ -266,6 +266,101 @@ def batch_download(tickers, intervals=None, count=10000, progress_callback=None)
     return results
 
 
+# ═══════════════════════════════════════════════════════
+# Gold 캐시 (KRX 금현물 일봉)
+# ═══════════════════════════════════════════════════════
+
+def _gold_cache_path(code, interval="day"):
+    safe = code.replace("/", "_").replace("-", "_")
+    return os.path.join(CACHE_DIR, f"GOLD_{safe}_{interval}.parquet")
+
+
+def load_cached_gold(code="M04020000", interval="day"):
+    """Gold 캐시 로드. 없으면 None"""
+    path = _gold_cache_path(code, interval)
+    if os.path.exists(path):
+        try:
+            return pd.read_parquet(path)
+        except Exception:
+            return None
+    return None
+
+
+def save_cache_gold(code, interval, df):
+    """Gold 데이터를 parquet으로 저장"""
+    _ensure_cache_dir()
+    path = _gold_cache_path(code, interval)
+    df.to_parquet(path)
+
+
+def fetch_and_cache_gold(trader, code="M04020000", count=2000, progress_callback=None):
+    """
+    Gold 일봉 API 다운로드 + 캐시 저장.
+    - 캐시 있으면 증분 갭필 (최근 날짜 이후만)
+    - 캐시 없으면 전체 다운로드
+    progress_callback(fetched, total, status_msg)
+    """
+    cached = load_cached_gold(code)
+
+    if cached is not None and len(cached) > 0:
+        # 증분: 캐시 마지막 날짜 이후 갭필
+        gap = _estimate_gap_count(cached.index[-1], "day")
+        if gap <= 2:
+            if progress_callback:
+                progress_callback(0, 0, "캐시 최신 상태")
+            return cached
+
+        if progress_callback:
+            progress_callback(0, gap, "증분 다운로드 중...")
+
+        df_new = trader.get_daily_chart(code=code, count=gap + 10)
+        if df_new is not None and len(df_new) > 0:
+            merged = pd.concat([cached, df_new])
+            merged = merged[~merged.index.duplicated(keep='last')]
+            merged = merged.sort_index()
+            if len(merged) > len(cached):
+                save_cache_gold(code, "day", merged)
+            if progress_callback:
+                progress_callback(len(merged), len(merged), f"완료 ({len(merged)}개)")
+            return merged
+
+        if progress_callback:
+            progress_callback(len(cached), len(cached), "갭필 실패, 기존 캐시 사용")
+        return cached
+    else:
+        # 전체 다운로드
+        if progress_callback:
+            progress_callback(0, count, "전체 다운로드 중...")
+
+        df_new = trader.get_daily_chart(code=code, count=count)
+        if df_new is not None and len(df_new) > 0:
+            save_cache_gold(code, "day", df_new)
+            if progress_callback:
+                progress_callback(len(df_new), len(df_new), f"완료 ({len(df_new)}개)")
+            return df_new
+
+        if progress_callback:
+            progress_callback(0, 0, "다운로드 실패")
+        return None
+
+
+def gold_cache_info(code="M04020000"):
+    """Gold 캐시 정보 반환"""
+    path = _gold_cache_path(code, "day")
+    if os.path.exists(path):
+        try:
+            df = pd.read_parquet(path)
+            return {
+                "exists": True,
+                "rows": len(df),
+                "start": df.index[0],
+                "end": df.index[-1],
+            }
+        except Exception:
+            return {"exists": False}
+    return {"exists": False}
+
+
 def list_cache():
     """캐시 목록 반환"""
     _ensure_cache_dir()

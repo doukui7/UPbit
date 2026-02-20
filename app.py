@@ -223,9 +223,9 @@ def render_gold_mode():
             kiwoom_sk      = st.text_input("Secret Key", value=kiwoom_sk,      type="password", key="kiwoom_sk")
             kiwoom_account = st.text_input("계좌번호",    value=kiwoom_account, key="kiwoom_acc")
 
-    # 전략 설정 (코인 탭과 동일하게 data_editor 사용)
+    # 전략 설정 (코인 포트폴리오와 동일하게 다중 전략 지원)
     st.sidebar.subheader("전략 설정")
-    st.sidebar.caption("Donchian 채널 기간을 설정합니다. (백테스트 최적: Buy 90, Sell 55)")
+    st.sidebar.caption("여러 전략을 추가하여 포트폴리오를 구성할 수 있습니다.")
 
     _gold_cfg_default = [{"strategy": "Donchian", "buy": 90, "sell": 55, "weight": 100}]
     _gold_cfg = config.get("gold_strategy", _gold_cfg_default)
@@ -236,20 +236,48 @@ def render_gold_mode():
         edited_gold_strat = df_gold_strat
     else:
         edited_gold_strat = st.sidebar.data_editor(
-            df_gold_strat, num_rows="fixed", use_container_width=True, hide_index=True,
+            df_gold_strat, num_rows="dynamic", use_container_width=True, hide_index=True,
             key="gold_strat_editor",
             column_config={
                 "strategy": st.column_config.SelectboxColumn("전략", options=["Donchian", "SMA"], required=True),
-                "buy":      st.column_config.NumberColumn("매수 기간", min_value=5, max_value=300, step=1, required=True),
-                "sell":     st.column_config.NumberColumn("매도 기간", min_value=5, max_value=300, step=1, required=True, help="Donchian 매도 채널 (SMA는 무시됨)"),
+                "buy":      st.column_config.NumberColumn("매수", min_value=5, max_value=300, step=1, required=True),
+                "sell":     st.column_config.NumberColumn("매도", min_value=0, max_value=300, step=1, required=True, help="Donchian 매도 채널 (SMA는 무시됨, 0=매수의 절반)"),
                 "weight":   st.column_config.NumberColumn("비중 %", min_value=1, max_value=100, step=1, required=True),
             },
         )
 
-    strat_row    = edited_gold_strat.iloc[0]
-    gold_strategy = str(strat_row.get("strategy", "Donchian"))
-    buy_period   = int(strat_row.get("buy", 90))
-    sell_period  = int(strat_row.get("sell", 55))
+    # 비중 검증
+    gold_total_weight = int(edited_gold_strat["weight"].sum())
+    if gold_total_weight > 100:
+        st.sidebar.error(f"총 비중이 {gold_total_weight}% 입니다. (100% 이하로 설정해주세요)")
+    else:
+        gold_cash_weight = 100 - gold_total_weight
+        st.sidebar.info(f"투자 비중: {gold_total_weight}% | 현금: {gold_cash_weight}%")
+
+    # 골드 포트폴리오 리스트 생성
+    gold_portfolio_list = []
+    for _, row in edited_gold_strat.iterrows():
+        bp = int(row.get("buy", 90))
+        sp = int(row.get("sell", 0) or 0)
+        if sp == 0:
+            sp = max(5, bp // 2)
+        gold_portfolio_list.append({
+            "strategy": str(row.get("strategy", "Donchian")),
+            "buy_period": bp,
+            "sell_period": sp,
+            "weight": int(row.get("weight", 100)),
+        })
+
+    # 첫 번째 전략 (기본값)
+    if gold_portfolio_list:
+        _g_first = gold_portfolio_list[0]
+        gold_strategy = _g_first["strategy"]
+        buy_period = _g_first["buy_period"]
+        sell_period = _g_first["sell_period"]
+    else:
+        gold_strategy = "Donchian"
+        buy_period = 90
+        sell_period = 55
 
     # 공통 설정
     st.sidebar.subheader("공통 설정")
@@ -299,15 +327,20 @@ def render_gold_mode():
         gold_trader = _get_gold_trader(kiwoom_ak, kiwoom_sk, kiwoom_account)
         gold_worker = _get_gold_worker(gold_trader)
 
-    # ── 데이터 로드 헬퍼 (워커 차트 → CSV 폴백, 블로킹 없음) ──
+    # ── 데이터 로드 헬퍼 (parquet 캐시 → 워커 → CSV 폴백) ──
     def load_gold_data(buy_p: int) -> pd.DataFrame | None:
-        """일봉 데이터: 워커 캐시 → CSV 폴백 (API 직접 호출 없음)."""
-        # 1순위: 백그라운드 워커가 갱신한 차트 데이터
+        """일봉 데이터: parquet 캐시 → 워커 차트 → CSV 폴백."""
+        import data_cache
+        # 1순위: parquet 캐시 (사전 다운로드된 대량 데이터)
+        cached = data_cache.load_cached_gold()
+        if cached is not None and len(cached) >= buy_p + 5:
+            return cached
+        # 2순위: 백그라운드 워커 차트 데이터
         if gold_worker:
             df_w = gold_worker.get_chart()
             if df_w is not None and len(df_w) >= buy_p + 5:
                 return df_w
-        # 2순위: CSV 파일 (오프라인 폴백)
+        # 3순위: CSV 파일 (오프라인 폴백)
         csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "krx_gold_daily.csv")
         if os.path.exists(csv_path):
             df_csv = pd.read_csv(csv_path, index_col="Date", parse_dates=True)
@@ -328,7 +361,8 @@ def render_gold_mode():
     # ══════════════════════════════════════════════════════
     with tab_g1:
         st.header("실시간 금 모니터링")
-        st.caption(f"전략: {gold_strategy} (매수:{buy_period}, 매도:{sell_period}) | 초기자본: {gold_initial_cap:,.0f}원")
+        _strat_labels = [f"{g['strategy']}({g['buy_period']}/{g['sell_period']}) {g['weight']}%" for g in gold_portfolio_list]
+        st.caption(f"전략: {', '.join(_strat_labels)} | 초기자본: {gold_initial_cap:,.0f}원")
 
         # 새로고침
         col_r1, col_r2 = st.columns([1, 5])
@@ -364,90 +398,115 @@ def render_gold_mode():
                     bal = None
                     is_holding = False
 
-        # 시그널 차트 (코인 탭1 단기 모니터링 차트와 동일 구조)
+        # 시그널 차트 (다중 전략 지원)
         with st.expander("📊 시그널 모니터링", expanded=True):
-            df_gold = load_gold_data(buy_period)
+            # 가장 큰 buy_period로 데이터 로드
+            max_buy_p = max((g['buy_period'] for g in gold_portfolio_list), default=90)
+            df_gold = load_gold_data(max_buy_p)
 
-            if df_gold is None or len(df_gold) < buy_period + 5:
+            if df_gold is None or len(df_gold) < max_buy_p + 5:
                 st.warning("일봉 데이터 부족. API 연결 또는 krx_gold_daily.csv를 확인하세요.")
             else:
                 close_now = float(df_gold['close'].iloc[-1])
+                gold_signal_rows = []
 
-                if gold_strategy == "Donchian":
-                    upper_vals = df_gold['high'].rolling(window=buy_period).max().shift(1)
-                    lower_vals = df_gold['low'].rolling(window=sell_period).min().shift(1)
-                    buy_target  = float(upper_vals.iloc[-1])
-                    sell_target = float(lower_vals.iloc[-1])
-                    buy_dist    = (close_now - buy_target)  / buy_target  * 100 if buy_target  else 0
-                    sell_dist   = (close_now - sell_target) / sell_target * 100 if sell_target else 0
-                    # 포지션 시뮬레이션
-                    in_position = False
-                    for i in range(len(df_gold)):
-                        u = upper_vals.iloc[i]; l = lower_vals.iloc[i]; c = float(df_gold['close'].iloc[i])
-                        if not pd.isna(u) and c > u:  in_position = True
-                        elif not pd.isna(l) and c < l: in_position = False
-                    signal = ("SELL" if close_now < sell_target else "HOLD") if in_position else \
-                             ("BUY"  if close_now > buy_target  else "WAIT")
-                    position_label = "보유" if in_position else "현금"
-                else:
-                    sma_vals    = df_gold['close'].rolling(window=buy_period).mean()
-                    buy_target  = float(sma_vals.iloc[-1])
-                    sell_target = buy_target
-                    buy_dist    = (close_now - buy_target) / buy_target * 100 if buy_target else 0
-                    sell_dist   = buy_dist
-                    signal = "BUY" if close_now > buy_target else "SELL"
-                    position_label = "보유" if close_now > buy_target else "현금"
+                # 전략별 차트 렌더링
+                n_strats = len(gold_portfolio_list)
+                if n_strats > 0:
+                    chart_cols = st.columns(n_strats)
 
-                # 지표 행
-                sig_color = "green" if signal == "BUY" else ("red" if signal == "SELL" else ("blue" if signal == "WAIT" else "gray"))
-                m1, m2, m3, m4, m5 = st.columns(5)
-                m1.metric("현재가 (1g)", f"{close_now:,.0f}원")
-                m2.metric("매수 목표", f"{buy_target:,.0f}원", delta=f"{buy_dist:+.2f}%")
-                m3.metric("매도 목표", f"{sell_target:,.0f}원", delta=f"{sell_dist:+.2f}%")
-                m4.metric("포지션", position_label)
-                m5.metric("시그널", signal)
+                for gi, gp in enumerate(gold_portfolio_list):
+                    g_strat = gp['strategy']
+                    g_bp = gp['buy_period']
+                    g_sp = gp['sell_period']
+                    g_wt = gp['weight']
 
-                # 캔들 차트 (최근 120봉)
-                df_chart = df_gold.iloc[-120:]
-                fig_gold = go.Figure()
-                fig_gold.add_trace(go.Candlestick(
-                    x=df_chart.index, open=df_chart['open'],
-                    high=df_chart['high'], low=df_chart['low'],
-                    close=df_chart['close'], name='금 일봉',
-                    increasing_line_color='#26a69a', decreasing_line_color='#ef5350',
-                ))
-                if gold_strategy == "Donchian":
-                    fig_gold.add_trace(go.Scatter(
-                        x=df_chart.index, y=upper_vals.loc[df_chart.index],
-                        name=f'상단({buy_period})', line=dict(color='green', width=1.5, dash='dot')))
-                    fig_gold.add_trace(go.Scatter(
-                        x=df_chart.index, y=lower_vals.loc[df_chart.index],
-                        name=f'하단({sell_period})', line=dict(color='red', width=1.5, dash='dot')))
-                else:
-                    fig_gold.add_trace(go.Scatter(
-                        x=df_chart.index, y=sma_vals.loc[df_chart.index],
-                        name=f'SMA({buy_period})', line=dict(color='orange', width=2)))
-                fig_gold.update_layout(
-                    title=f"KRX 금현물 {gold_strategy}({buy_period}/{sell_period}) [{position_label}] [{buy_dist:+.1f}%]",
-                    title_font_color=sig_color,
-                    height=400, margin=dict(l=0, r=0, t=40, b=30),
-                    xaxis_rangeslider_visible=False, showlegend=True,
-                    xaxis=dict(showticklabels=True, tickformat='%Y/%m/%d', tickangle=-45, nticks=10),
-                    yaxis_title="가격 (원/g)",
-                )
-                st.plotly_chart(fig_gold, use_container_width=True)
+                    if g_strat == "Donchian":
+                        g_upper = df_gold['high'].rolling(window=g_bp).max().shift(1)
+                        g_lower = df_gold['low'].rolling(window=g_sp).min().shift(1)
+                        g_buy_target = float(g_upper.iloc[-1])
+                        g_sell_target = float(g_lower.iloc[-1])
+                        g_buy_dist = (close_now - g_buy_target) / g_buy_target * 100 if g_buy_target else 0
+                        g_sell_dist = (close_now - g_sell_target) / g_sell_target * 100 if g_sell_target else 0
+                        in_pos = False
+                        for i in range(len(df_gold)):
+                            u = g_upper.iloc[i]; l = g_lower.iloc[i]; c = float(df_gold['close'].iloc[i])
+                            if not pd.isna(u) and c > u: in_pos = True
+                            elif not pd.isna(l) and c < l: in_pos = False
+                        g_signal = ("SELL" if close_now < g_sell_target else "HOLD") if in_pos else \
+                                   ("BUY" if close_now > g_buy_target else "WAIT")
+                        g_pos_label = "보유" if in_pos else "현금"
+                    else:
+                        g_sma = df_gold['close'].rolling(window=g_bp).mean()
+                        g_buy_target = float(g_sma.iloc[-1])
+                        g_sell_target = g_buy_target
+                        g_buy_dist = (close_now - g_buy_target) / g_buy_target * 100 if g_buy_target else 0
+                        g_sell_dist = g_buy_dist
+                        g_signal = "BUY" if close_now > g_buy_target else "SELL"
+                        g_pos_label = "보유" if close_now > g_buy_target else "현금"
 
-        # 리밸런싱 규칙
+                    gold_signal_rows.append({
+                        "전략": f"{g_strat} {g_bp}/{g_sp}",
+                        "비중": f"{g_wt}%",
+                        "현재가": f"{close_now:,.0f}",
+                        "매수목표": f"{g_buy_target:,.0f}",
+                        "매도목표": f"{g_sell_target:,.0f}",
+                        "매수이격도": f"{g_buy_dist:+.2f}%",
+                        "매도이격도": f"{g_sell_dist:+.2f}%",
+                        "포지션": g_pos_label,
+                        "시그널": g_signal,
+                    })
+
+                    # 차트 렌더링
+                    g_sig_color = "green" if g_signal == "BUY" else ("red" if g_signal == "SELL" else ("blue" if g_signal == "WAIT" else "gray"))
+                    df_chart = df_gold.iloc[-120:]
+                    fig_g = go.Figure()
+                    fig_g.add_trace(go.Candlestick(
+                        x=df_chart.index, open=df_chart['open'],
+                        high=df_chart['high'], low=df_chart['low'],
+                        close=df_chart['close'], name='금 일봉',
+                        increasing_line_color='#26a69a', decreasing_line_color='#ef5350',
+                    ))
+                    if g_strat == "Donchian":
+                        fig_g.add_trace(go.Scatter(
+                            x=df_chart.index, y=g_upper.loc[df_chart.index],
+                            name=f'상단({g_bp})', line=dict(color='green', width=1.5, dash='dot')))
+                        fig_g.add_trace(go.Scatter(
+                            x=df_chart.index, y=g_lower.loc[df_chart.index],
+                            name=f'하단({g_sp})', line=dict(color='red', width=1.5, dash='dot')))
+                    else:
+                        fig_g.add_trace(go.Scatter(
+                            x=df_chart.index, y=g_sma.loc[df_chart.index],
+                            name=f'SMA({g_bp})', line=dict(color='orange', width=2)))
+                    fig_g.update_layout(
+                        title=f"KRX 금현물 {g_strat}({g_bp}/{g_sp}) [{g_pos_label}] [{g_buy_dist:+.1f}%]",
+                        title_font_color=g_sig_color,
+                        height=400, margin=dict(l=0, r=0, t=40, b=30),
+                        xaxis_rangeslider_visible=False, showlegend=True,
+                        xaxis=dict(showticklabels=True, tickformat='%Y/%m/%d', tickangle=-45, nticks=10),
+                        yaxis_title="가격 (원/g)",
+                    )
+                    with chart_cols[gi]:
+                        st.plotly_chart(fig_g, use_container_width=True)
+
+                # 시그널 요약 테이블
+                if gold_signal_rows:
+                    st.dataframe(pd.DataFrame(gold_signal_rows), use_container_width=True, hide_index=True)
+
+        # 자동매매 규칙
         with st.expander("⚖️ 자동매매 규칙", expanded=False):
-            st.markdown(f"""
-**실행 시점**: GitHub Actions - 매 평일 KST 09:05
-
-**전략**: {gold_strategy} (매수채널:{buy_period}일, 매도채널:{sell_period}일)
-- **매수**: 종가가 {buy_period}일 최고가 돌파 시 전액 시장가 매수
-- **매도**: 종가가 {sell_period}일 최저가 이탈 시 전량 시장가 매도
-
-**수수료**: 키움증권 0.165% (왕복 ~0.34%)
-""")
+            rules_lines = ["**실행 시점**: GitHub Actions - 매 평일 KST 09:05\n"]
+            for gp in gold_portfolio_list:
+                if gp['strategy'] == "Donchian":
+                    rules_lines.append(f"**{gp['strategy']}({gp['buy_period']}/{gp['sell_period']})** 비중 {gp['weight']}%")
+                    rules_lines.append(f"- 매수: 종가 > {gp['buy_period']}일 최고가 → 시장가 매수")
+                    rules_lines.append(f"- 매도: 종가 < {gp['sell_period']}일 최저가 → 시장가 매도\n")
+                else:
+                    rules_lines.append(f"**{gp['strategy']}({gp['buy_period']})** 비중 {gp['weight']}%")
+                    rules_lines.append(f"- 매수: 종가 > SMA({gp['buy_period']}) → 시장가 매수")
+                    rules_lines.append(f"- 매도: 종가 < SMA({gp['buy_period']}) → 시장가 매도\n")
+            rules_lines.append("**수수료**: 키움증권 0.165% (왕복 ~0.34%)")
+            st.markdown("\n".join(rules_lines))
 
     # ══════════════════════════════════════════════════════
     # Tab 2: 수동 주문 — HTS 스타일 (코인 트레이딩 패널과 동일 구조)
@@ -826,7 +885,35 @@ def render_gold_mode():
         # ── 서브탭1: 단일 백테스트 ──────────────────────────
         with gbt1:
             st.header("금현물 단일 백테스트")
-            st.caption("krx_gold_daily.csv 데이터 기반 | 수수료 0.3% 적용")
+
+            # ── 데이터 가용 범위 + 사전 다운로드 ──
+            import data_cache as _dc_gold
+            _gold_info = _dc_gold.gold_cache_info()
+            if _gold_info["exists"]:
+                _gi_start = _gold_info["start"]
+                _gi_end = _gold_info["end"]
+                _gi_start_str = _gi_start.strftime('%Y-%m-%d') if hasattr(_gi_start, 'strftime') else str(_gi_start)[:10]
+                _gi_end_str = _gi_end.strftime('%Y-%m-%d') if hasattr(_gi_end, 'strftime') else str(_gi_end)[:10]
+                st.info(f"사용 가능 데이터: **{_gold_info['rows']:,}**개 캔들 ({_gi_start_str} ~ {_gi_end_str})")
+            else:
+                st.warning("캐시된 Gold 데이터가 없습니다. 아래 버튼으로 사전 다운로드하세요.")
+
+            if gold_trader and st.button("Gold 일봉 전체 다운로드 (2014~ 전체)", key="gold_predownload"):
+                with st.status("Gold 일봉 다운로드 중...", expanded=True) as dl_status:
+                    prog_dl = st.progress(0)
+                    log_dl = st.empty()
+                    def _dl_progress(fetched, total, msg):
+                        pct = min(fetched / total, 1.0) if total > 0 else 1.0
+                        prog_dl.progress(pct)
+                        log_dl.text(msg)
+                    df_dl = _dc_gold.fetch_and_cache_gold(gold_trader, count=5000, progress_callback=_dl_progress)
+                    if df_dl is not None and len(df_dl) > 0:
+                        dl_status.update(label=f"완료! {len(df_dl):,}개 캔들 다운로드됨", state="complete")
+                        st.rerun()
+                    else:
+                        dl_status.update(label="다운로드 실패", state="error")
+
+            st.divider()
 
             bt_col1, bt_col2, bt_col3 = st.columns(3)
             with bt_col1:
@@ -843,8 +930,9 @@ def render_gold_mode():
             if st.button("🚀 백테스트 실행", key="gold_bt_run", type="primary"):
                 df_bt = load_gold_data(bt_buy_p)
                 if df_bt is None or len(df_bt) < bt_buy_p + 5:
-                    st.error("데이터 부족. krx_gold_daily.csv가 없거나 기간이 짧습니다.")
+                    st.error("데이터 부족. 사전 다운로드를 실행하세요.")
                 else:
+                    st.caption(f"조회된 캔들: {len(df_bt):,}개 ({df_bt.index[0].strftime('%Y-%m-%d')} ~ {df_bt.index[-1].strftime('%Y-%m-%d')})")
                     with st.spinner("백테스트 실행 중..."):
                         engine = BacktestEngine()
                         result = engine.run_backtest(
@@ -948,7 +1036,17 @@ def render_gold_mode():
         # ── 서브탭2: 파라미터 최적화 ────────────────────────
         with gbt2:
             st.header("파라미터 최적화")
-            st.caption("krx_gold_daily.csv 기반 Grid Search / Optuna 최적화")
+
+            # 데이터 가용 범위 표시
+            _gold_info_opt = _dc_gold.gold_cache_info()
+            if _gold_info_opt["exists"]:
+                _gio_s = _gold_info_opt["start"]
+                _gio_e = _gold_info_opt["end"]
+                _gio_s_str = _gio_s.strftime('%Y-%m-%d') if hasattr(_gio_s, 'strftime') else str(_gio_s)[:10]
+                _gio_e_str = _gio_e.strftime('%Y-%m-%d') if hasattr(_gio_e, 'strftime') else str(_gio_e)[:10]
+                st.info(f"사용 가능 데이터: **{_gold_info_opt['rows']:,}**개 캔들 ({_gio_s_str} ~ {_gio_e_str})")
+            else:
+                st.warning("캐시된 Gold 데이터가 없습니다. 백테스트 탭에서 사전 다운로드를 실행하세요.")
 
             opt_strat_g = st.selectbox("전략", ["Donchian", "SMA"], key="gold_opt_strat")
 
@@ -994,8 +1092,9 @@ def render_gold_mode():
                     g_buy_end if opt_strat_g == "Donchian" else g_sma_end, 300
                 ))
                 if df_opt_src is None or df_opt_src.empty:
-                    st.error("데이터 로드 실패. krx_gold_daily.csv를 확인하세요.")
+                    st.error("데이터 로드 실패. 백테스트 탭에서 사전 다운로드를 실행하세요.")
                 else:
+                    st.caption(f"조회된 캔들: {len(df_opt_src):,}개 ({df_opt_src.index[0].strftime('%Y-%m-%d')} ~ {df_opt_src.index[-1].strftime('%Y-%m-%d')})")
                     with st.status("최적화 진행 중...", expanded=True) as gopt_status:
                         prog_bar_g  = st.progress(0)
                         log_area_g  = st.empty()
