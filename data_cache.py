@@ -361,6 +361,129 @@ def gold_cache_info(code="M04020000"):
     return {"exists": False}
 
 
+# ═══════════════════════════════════════════════════════
+# 번들 CSV 데이터 (오프라인 fallback용)
+# ═══════════════════════════════════════════════════════
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+
+
+def load_bundled_csv(ticker):
+    """data/ 디렉토리의 번들 CSV 파일 로드 (API 실패 시 fallback).
+    예: ticker='133690' → data/133690_daily.csv
+    """
+    csv_path = os.path.join(DATA_DIR, f"{ticker}_daily.csv")
+    if not os.path.exists(csv_path):
+        return None
+    try:
+        df = pd.read_csv(csv_path, parse_dates=["date"], index_col="date")
+        df.columns = [c.lower() for c in df.columns]
+        return df
+    except Exception:
+        return None
+
+
+# ═══════════════════════════════════════════════════════
+# KIS 캐시 (한국투자증권 국내/해외 OHLCV)
+# ═══════════════════════════════════════════════════════
+
+def _kis_cache_path(ticker, is_overseas=False):
+    prefix = "KIS_OS" if is_overseas else "KIS_DOM"
+    safe = ticker.replace("/", "_").replace("-", "_")
+    return os.path.join(CACHE_DIR, f"{prefix}_{safe}.parquet")
+
+
+def load_cached_kis(ticker, is_overseas=False):
+    path = _kis_cache_path(ticker, is_overseas)
+    if os.path.exists(path):
+        try:
+            return pd.read_parquet(path)
+        except Exception:
+            return None
+    return None
+
+
+def save_cache_kis(ticker, is_overseas=False, df=None):
+    if df is None or df.empty: return
+    _ensure_cache_dir()
+    path = _kis_cache_path(ticker, is_overseas)
+    df.to_parquet(path)
+
+
+def fetch_and_cache_kis_domestic(trader, ticker, count=1500, progress_callback=None):
+    """KIS 국내주식 일봉 캐시 업데이트.
+    - 증분 로드: 최근 데이터(Forward) 및 과거 데이터(Backward) 갭필 지원
+    - API 실패 시 번들 CSV fallback
+    """
+    cached = load_cached_kis(ticker, is_overseas=False)
+
+    if cached is not None and len(cached) > 0:
+        # 1. Forward Gap 필 (최근 데이터)
+        gap_forward = _estimate_gap_count(cached.index[-1], "day")
+        if gap_forward > 1:
+            if progress_callback: progress_callback(0, gap_forward, "최근 데이터 로드...")
+            df_new = trader.get_daily_chart(ticker, count=gap_forward + 5) if trader else None
+            if df_new is not None and not df_new.empty:
+                cached = pd.concat([cached, df_new])
+                cached = cached[~cached.index.duplicated(keep='last')].sort_index()
+
+        # 2. Backward Gap 필 (과거 데이터)
+        # 만약 요청한 count보다 캐시된 데이터가 적고, 상장일이 더 과거라면 과거 데이터 추가 로드
+        if len(cached) < count:
+            needed_backward = count - len(cached)
+            # 가장 오래된 캐시 날짜 전날부터 backward로 가져옴
+            oldest_date = cached.index[0].strftime("%Y%m%d")
+            # get_daily_chart는 end_date 기준 count만큼 가져오므로 oldest_date를 end_date로 설정
+            if progress_callback: progress_callback(0, needed_backward, "과거 데이터 로드...")
+            df_old = trader.get_daily_chart(ticker, end_date=oldest_date, count=needed_backward + 20) if trader else None
+            
+            if df_old is not None and not df_old.empty:
+                cached = pd.concat([df_old, cached])
+                cached = cached[~cached.index.duplicated(keep='first')].sort_index()
+        
+        save_cache_kis(ticker, is_overseas=False, df=cached)
+        return cached
+    else:
+        # 전체 로드
+        if progress_callback: progress_callback(0, count, "전체 로드...")
+        df_new = trader.get_daily_chart(ticker, count=count) if trader else None
+        if df_new is not None and not df_new.empty:
+            save_cache_kis(ticker, is_overseas=False, df=df_new)
+            return df_new
+        
+        # API 실패 → 번들 CSV fallback
+        bundled = load_bundled_csv(ticker)
+        if bundled is not None:
+            save_cache_kis(ticker, is_overseas=False, df=bundled)
+        return bundled
+
+
+def fetch_and_cache_kis_overseas(trader, symbol, exchange="NAS", count=1500, progress_callback=None):
+    """KIS 해외주식 일봉 캐시 업데이트"""
+    cached = load_cached_kis(symbol, is_overseas=True)
+    
+    if cached is not None and len(cached) > 0:
+        gap = _estimate_gap_count(cached.index[-1], "day")
+        if gap <= 1:
+            if progress_callback: progress_callback(0, 0, "최신")
+            return cached
+        
+        if progress_callback: progress_callback(0, gap, "증분 로드...")
+        df_new = trader.get_overseas_daily_chart(symbol, exchange=exchange, count=gap + 10)
+        if df_new is not None and len(df_new) > 0:
+            merged = pd.concat([cached, df_new])
+            merged = merged[~merged.index.duplicated(keep='last')].sort_index()
+            save_cache_kis(symbol, is_overseas=True, df=merged)
+            return merged
+        return cached
+    else:
+        if progress_callback: progress_callback(0, count, "전체 로드...")
+        df_new = trader.get_overseas_daily_chart(symbol, exchange=exchange, count=count)
+        if df_new is not None and len(df_new) > 0:
+            save_cache_kis(symbol, is_overseas=True, df=df_new)
+            return df_new
+        return None
+
+
 def list_cache():
     """캐시 목록 반환"""
     _ensure_cache_dir()
@@ -375,8 +498,8 @@ def list_cache():
                     "file": f,
                     "size_kb": round(size / 1024, 1),
                     "rows": len(df),
-                    "start": str(df.index[0])[:10],
-                    "end": str(df.index[-1])[:10],
+                    "start": str(df.index[0])[:10] if not df.empty else "-",
+                    "end": str(df.index[-1])[:10] if not df.empty else "-",
                 })
             except Exception:
                 result.append({"file": f, "size_kb": round(size / 1024, 1), "rows": 0})

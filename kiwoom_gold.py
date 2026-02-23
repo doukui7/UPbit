@@ -430,6 +430,64 @@ class KiwoomGoldTrader:
             logger.error(f"취소 오류: {e}")
             return None
 
+    def get_pending_orders(self, code: str = GOLD_CODE_1KG) -> list:
+        """
+        금현물 미체결 주문 조회 (kt50075).
+        Returns: list of dicts with keys: ord_no, side, price, qty, remaining_qty, ord_time
+        """
+        if not self._ensure_token():
+            return []
+        url  = f"{self.base_url}/api/dostk/acnt"
+        body = {
+            "acnt_no": self.account_no,
+            "stk_cd":  code,
+        }
+        try:
+            res  = self._session.post(url, json=body, headers=self._headers("kt50075"), timeout=10)
+            data = res.json()
+            rc   = data.get("return_code", -1)
+            if str(rc) != "0":
+                logger.debug(f"미체결조회: rc={rc}, msg={data.get('return_msg', '')}")
+                return []
+
+            # 응답 키 후보 탐색
+            rows = (data.get("gds_unfilled_qry")
+                    or data.get("gds_ncls_ord_qry")
+                    or data.get("output")
+                    or [])
+
+            result = []
+            for r in rows:
+                try:
+                    ord_no = r.get("ord_no", "")
+                    buy_sell = r.get("buy_sell", "")
+                    side = "BUY" if buy_sell == "1" else "SELL"
+                    side_kr = "매수" if side == "BUY" else "매도"
+                    price = float(r.get("ord_uv", 0) or r.get("ord_prc", 0))
+                    qty = float(r.get("ord_qty", 0))
+                    remaining = float(r.get("ncls_qty", 0) or r.get("rmn_qty", 0) or qty)
+                    ord_time = r.get("ord_tm", "") or r.get("ord_time", "")
+
+                    result.append({
+                        "ord_no": ord_no,
+                        "side": side,
+                        "side_kr": side_kr,
+                        "price": price,
+                        "qty": qty,
+                        "remaining_qty": remaining,
+                        "ord_time": ord_time,
+                        "code": code,
+                    })
+                except (ValueError, TypeError):
+                    continue
+
+            logger.info(f"미체결 주문: {len(result)}건")
+            return result
+
+        except Exception as e:
+            logger.error(f"미체결조회 오류: {e}")
+            return []
+
     # ─────────────────────────────────────────────────────
     # 스마트 매수 / 매도 (간단 래퍼)
     # ─────────────────────────────────────────────────────
@@ -458,6 +516,140 @@ class KiwoomGoldTrader:
         qty = bal["gold_qty"]
         logger.info(f"전량 매도: {qty}g")
         return self.send_order("SELL", code, qty, ord_tp="3")
+
+    # ─────────────────────────────────────────────────────
+    # 장마감 동시호가 + 미체결 처리
+    # ─────────────────────────────────────────────────────
+    def _get_limit_price(self, code: str, order_type: str) -> int:
+        """동시호가 체결 보장을 위한 상한가(BUY)/하한가(SELL) 계산. 금 호가단위: 10원."""
+        price = self.get_current_price(code)
+        if not price or price <= 0:
+            return 0
+        tick = 10
+        if order_type == "BUY":
+            raw = int(price * 1.30)
+            return (raw // tick) * tick
+        else:
+            raw = int(price * 0.70)
+            return ((raw + tick - 1) // tick) * tick
+
+    def execute_closing_auction_buy(self, code: str, qty: float) -> dict:
+        """
+        장마감 동시호가 매수 (금현물).
+        1. 상한가 지정가 주문 (ord_tp="1") → 동시호가 참여
+        2. 90초 대기 후 미체결 확인
+        3. 미체결 → 취소 + 로그 (금현물은 시간외 미지원)
+        """
+        import time as _time
+
+        if qty <= 0:
+            return {"success": False, "msg": "수량 0"}
+
+        limit_price = self._get_limit_price(code, "BUY")
+        if limit_price <= 0:
+            return {"success": False, "msg": "현재가 조회 실패"}
+
+        logger.info(f"[동시호가 매수] {code} {qty}g @ 상한가 {limit_price:,}원")
+        phase1 = self.send_order("BUY", code, qty, price=limit_price, ord_tp="1")
+
+        if not phase1 or not phase1.get("success"):
+            logger.error(f"[동시호가 매수] 주문 실패: {phase1}")
+            return {"success": False, "phase1_result": phase1, "filled_qty": 0,
+                    "remaining_qty": qty, "method": "closing_auction_failed"}
+
+        ord_no = phase1.get("ord_no", "")
+        logger.info(f"[동시호가 매수] 주문 접수. 주문번호={ord_no}. 체결 대기 90초...")
+        _time.sleep(90)
+
+        pending = self.get_pending_orders(code)
+        unfilled = [p for p in pending if p["ord_no"] == ord_no and p["remaining_qty"] > 0]
+
+        if not unfilled:
+            logger.info(f"[동시호가 매수] 전량 체결 완료: {qty}g")
+            return {"success": True, "phase1_result": phase1,
+                    "filled_qty": qty, "remaining_qty": 0, "method": "closing_auction"}
+
+        remaining = unfilled[0]["remaining_qty"]
+        filled = qty - remaining
+        logger.warning(f"[동시호가 매수] 미체결 {remaining}g (체결 {filled}g). "
+                       f"금현물은 시간외 미지원 → 취소")
+        self.cancel_order(ord_no, code, remaining)
+        _time.sleep(3)
+
+        return {"success": filled > 0, "phase1_result": phase1,
+                "filled_qty": filled, "remaining_qty": remaining,
+                "method": "closing_auction_partial",
+                "note": "금현물 시간외 매매 미지원. 미체결분은 다음 거래일 처리 필요."}
+
+    def execute_closing_auction_sell(self, code: str, qty: float) -> dict:
+        """
+        장마감 동시호가 매도 (금현물).
+        1. 하한가 지정가 주문 (ord_tp="1") → 동시호가 참여
+        2. 90초 대기 후 미체결 확인
+        3. 미체결 → 취소 + 로그
+        """
+        import time as _time
+
+        if qty <= 0:
+            return {"success": False, "msg": "수량 0"}
+
+        limit_price = self._get_limit_price(code, "SELL")
+        if limit_price <= 0:
+            return {"success": False, "msg": "현재가 조회 실패"}
+
+        logger.info(f"[동시호가 매도] {code} {qty}g @ 하한가 {limit_price:,}원")
+        phase1 = self.send_order("SELL", code, qty, price=limit_price, ord_tp="1")
+
+        if not phase1 or not phase1.get("success"):
+            logger.error(f"[동시호가 매도] 주문 실패: {phase1}")
+            return {"success": False, "phase1_result": phase1, "filled_qty": 0,
+                    "remaining_qty": qty, "method": "closing_auction_failed"}
+
+        ord_no = phase1.get("ord_no", "")
+        logger.info(f"[동시호가 매도] 주문 접수. 주문번호={ord_no}. 체결 대기 90초...")
+        _time.sleep(90)
+
+        pending = self.get_pending_orders(code)
+        unfilled = [p for p in pending if p["ord_no"] == ord_no and p["remaining_qty"] > 0]
+
+        if not unfilled:
+            logger.info(f"[동시호가 매도] 전량 체결 완료: {qty}g")
+            return {"success": True, "phase1_result": phase1,
+                    "filled_qty": qty, "remaining_qty": 0, "method": "closing_auction"}
+
+        remaining = unfilled[0]["remaining_qty"]
+        filled = qty - remaining
+        logger.warning(f"[동시호가 매도] 미체결 {remaining}g (체결 {filled}g). "
+                       f"금현물은 시간외 미지원 → 취소")
+        self.cancel_order(ord_no, code, remaining)
+        _time.sleep(3)
+
+        return {"success": filled > 0, "phase1_result": phase1,
+                "filled_qty": filled, "remaining_qty": remaining,
+                "method": "closing_auction_partial",
+                "note": "금현물 시간외 매매 미지원. 미체결분은 다음 거래일 처리 필요."}
+
+    # ─────────────────────────────────────────────────────
+    # 동시호가 스마트 래퍼
+    # ─────────────────────────────────────────────────────
+    def smart_buy_krw_closing(self, code: str = GOLD_CODE_1KG, krw_amount: float = 0) -> dict | None:
+        """KRW 금액 기준 동시호가 매수."""
+        price = self.get_current_price(code)
+        if not price or price <= 0:
+            logger.error("현재가 조회 실패로 동시호가 매수 취소.")
+            return None
+        qty = round(krw_amount / price, 2)
+        if qty <= 0:
+            return None
+        return self.execute_closing_auction_buy(code, qty)
+
+    def smart_sell_all_closing(self, code: str = GOLD_CODE_1KG) -> dict | None:
+        """전량 동시호가 매도."""
+        bal = self.get_balance()
+        if not bal or bal["gold_qty"] <= 0:
+            logger.warning("동시호가 매도 실패: 보유 금 없음.")
+            return None
+        return self.execute_closing_auction_sell(code, bal["gold_qty"])
 
 
 # ─────────────────────────────────────────────────────────

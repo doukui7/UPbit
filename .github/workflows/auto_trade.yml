@@ -4,13 +4,24 @@ on:
   schedule:
     # 업비트: 매 4시간마다 실행 (UTC 0,4,8,12,16,20시 5분) -> KST 9,13,17,21,1,5시
     - cron: '5 0,4,8,12,16,20 * * *'
-    # 키움 금현물: KST 09:05 (UTC 00:05) 평일만 (GitHub Actions는 cron에 요일 필터가 없어 코드에서 처리)
-    - cron: '5 0 * * 1-5'
+    # 키움 금현물: KST 15:15 (UTC 06:15) 평일만 - 장마감 동시호가
+    - cron: '15 6 * * 1-5'
+    # KIS ISA 위대리: 매주 금요일 KST 15:20 (UTC 06:20) - 장마감 동시호가
+    - cron: '20 6 * * 5'
+    # KIS 연금저축 듀얼모멘텀: 매월 마지막 영업일 근처 KST 15:20 (UTC 06:20) - 매월 25~31일 평일
+    - cron: '20 6 25-31 * 1-5'
+    # 일일 헬스체크: KST 15:10 (UTC 06:10) 평일 매일 - 가상주문 점검
+    - cron: '10 6 * * 1-5'
+    # 업비트 헬스체크: 매 4시간마다 (매매 5분 전) KST 9,13,17,21,1,5시
+    - cron: '0 0,4,8,12,16,20 * * *'
+    # ?? ??/?? ???: KST 09:10 (UTC 00:10)
+    - cron: '10 0 * * *'
   workflow_dispatch:  # 수동 실행 가능
 
 jobs:
   # ── 업비트 BTC 자동매매 ─────────────────────────────────
   trade:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '5 0,4,8,12,16,20 * * *'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -30,10 +41,13 @@ jobs:
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
           PORTFOLIO: ${{ secrets.PORTFOLIO }}
           TRADING_MODE: upbit
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python github_action_trade.py
 
   # ── 키움 금현물 자동매매 ─────────────────────────────────
   kiwoom_gold:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '15 6 * * 1-5'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -56,4 +70,181 @@ jobs:
           GOLD_BUY_PERIOD: '90'
           GOLD_SELL_PERIOD: '55'
           TRADING_MODE: kiwoom_gold
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python github_action_trade.py
+
+  # ── KIS ISA 위대리(WDR) 자동매매 ───────────────────────
+  kis_isa:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '20 6 * * 5'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Auto Trade (KIS ISA - WDR)
+        env:
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+          KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
+          KIS_ISA_ETF_CODE: ${{ secrets.KIS_ISA_ETF_CODE }}
+          TRADING_MODE: kis_isa
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python github_action_trade.py
+
+  # ── KIS 연금저축 듀얼모멘텀(GEM) 자동매매 ─────────────
+  kis_pension:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '20 6 25-31 * 1-5'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Auto Trade (KIS Pension - Dual Momentum)
+        env:
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
+          KIS_PENSION_ACNT_PRDT_CD: ${{ secrets.KIS_PENSION_ACNT_PRDT_CD }}
+          KR_ETF_SPY: ${{ secrets.KR_ETF_SPY }}
+          KR_ETF_EFA: ${{ secrets.KR_ETF_EFA }}
+          KR_ETF_AGG: ${{ secrets.KR_ETF_AGG }}
+          TRADING_MODE: kis_pension
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python github_action_trade.py
+
+  # ── 일일 헬스체크 (가상주문 점검) ─────────────────────
+  health_check:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '10 6 * * 1-5'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Daily Health Check
+        env:
+          # 업비트
+          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
+          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
+          PORTFOLIO: ${{ secrets.PORTFOLIO }}
+          # 키움 금현물
+          Kiwoom_App_Key: ${{ secrets.KIWOOM_APP_KEY }}
+          Kiwoom_Secret_Key: ${{ secrets.KIWOOM_SECRET_KEY }}
+          KIWOOM_ACCOUNT: ${{ secrets.KIWOOM_ACCOUNT }}
+          GOLD_PORTFOLIO: ${{ secrets.GOLD_PORTFOLIO }}
+          GOLD_BUY_PERIOD: '90'
+          GOLD_SELL_PERIOD: '55'
+          # KIS ISA
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+          KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
+          KIS_ISA_ETF_CODE: ${{ secrets.KIS_ISA_ETF_CODE }}
+          # KIS 연금저축
+          KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
+          KIS_PENSION_ACNT_PRDT_CD: ${{ secrets.KIS_PENSION_ACNT_PRDT_CD }}
+          KR_ETF_SPY: ${{ secrets.KR_ETF_SPY }}
+          KR_ETF_EFA: ${{ secrets.KR_ETF_EFA }}
+          KR_ETF_AGG: ${{ secrets.KR_ETF_AGG }}
+          TRADING_MODE: health_check
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python github_action_trade.py
+
+  # ── 업비트 헬스체크 (4시간마다 가상주문 점검) ────────────
+  health_check_upbit:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 0,4,8,12,16,20 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Upbit Health Check
+        env:
+          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
+          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
+          PORTFOLIO: ${{ secrets.PORTFOLIO }}
+          TRADING_MODE: health_check_upbit
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python github_action_trade.py
+
+  daily_status:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '10 0 * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Daily Status Report
+        env:
+          # Upbit
+          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
+          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
+          PORTFOLIO: ${{ secrets.PORTFOLIO }}
+          # Kiwoom Gold
+          Kiwoom_App_Key: ${{ secrets.KIWOOM_APP_KEY }}
+          Kiwoom_Secret_Key: ${{ secrets.KIWOOM_SECRET_KEY }}
+          KIWOOM_ACCOUNT: ${{ secrets.KIWOOM_ACCOUNT }}
+          # KIS ISA
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
+          KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
+          KIS_ISA_ETF_CODE: ${{ secrets.KIS_ISA_ETF_CODE }}
+          # KIS Pension
+          KIS_PENSION_APP_KEY: ${{ secrets.KIS_PENSION_APP_KEY }}
+          KIS_PENSION_APP_SECRET: ${{ secrets.KIS_PENSION_APP_SECRET }}
+          KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
+          KIS_PENSION_ACNT_PRDT_CD: ${{ secrets.KIS_PENSION_ACNT_PRDT_CD }}
+          KR_ETF_SPY: ${{ secrets.KR_ETF_SPY }}
+          KR_ETF_EFA: ${{ secrets.KR_ETF_EFA }}
+          KR_ETF_AGG: ${{ secrets.KR_ETF_AGG }}
+          TRADING_MODE: daily_status
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python github_action_trade.py
+

@@ -8,12 +8,21 @@ class BacktestEngine:
     def __init__(self):
         self.strategy = SMAStrategy()
 
-    def run_backtest(self, ticker, period=20, interval="day", count=200, fee=0.0005, start_date=None, initial_balance=1000000, df=None, strategy_mode="SMA Strategy", sell_period_ratio=0.5, slippage=0.0, sell_mode="lower"):
+    def run_backtest(self, ticker, period=20, interval="day", count=200, fee=0.0005, start_date=None, initial_balance=1000000, df=None, strategy_mode="SMA Strategy", sell_period_ratio=0.5, slippage=0.0, sell_mode="lower", progress_callback=None):
         """
         Run backtest for a given ticker and parameters.
         Execution Logic: Signal on Close(t) -> Trade on Open(t+1)
         slippage: percentage (e.g. 0.1 = 0.1%). Buy price increases, Sell price decreases.
         """
+        def _emit(unit, msg):
+            if progress_callback:
+                try:
+                    progress_callback(int(unit), 100, msg)
+                except Exception:
+                    pass
+
+        _emit(2, "데이터 준비")
+
         # 1. Fetch Data
         try:
             if df is None:
@@ -25,6 +34,8 @@ class BacktestEngine:
                 df = df.copy()
         except Exception as e:
             return {"error": str(e)}
+
+        _emit(12, "지표 계산")
 
         # 2. Apply Strategy FIRST (on ALL data for proper warmup)
         if strategy_mode == "Donchian" or strategy_mode == "Donchian Trend":
@@ -42,6 +53,8 @@ class BacktestEngine:
             calc_periods = [period]
             df = self.strategy.create_features(df, periods=calc_periods)
             df['signal'] = df.apply(lambda row: self.strategy.get_signal(row, strategy_type='SMA_CROSS', ma_period=period), axis=1)
+
+        _emit(20, "기간 필터링")
 
         # 3. Filter by start_date AFTER features (preserves warmup data)
         if start_date:
@@ -65,8 +78,12 @@ class BacktestEngine:
         pending_action = None # 'BUY' or 'SELL' or None
         buy_price = 0
         
+        _emit(25, "시뮬레이션")
+
         # Iterate
-        for i in range(len(df)):
+        n_rows = len(df)
+        step = max(1, n_rows // 100)
+        for i in range(n_rows):
             date = df.index[i]
             row = df.iloc[i]
             
@@ -138,8 +155,11 @@ class BacktestEngine:
                 current_equity = balance
             
             equity_curve.append(current_equity)
+            if (i == n_rows - 1) or ((i + 1) % step == 0):
+                _emit(25 + int((i + 1) / n_rows * 65), "시뮬레이션")
 
         df['equity'] = equity_curve
+        _emit(92, "지표 계산")
         
         # 4. Calculate Metrics
         final_equity = equity_curve[-1]
@@ -163,6 +183,7 @@ class BacktestEngine:
         
         yearly_ret = df.groupby('year')['daily_return'].apply(lambda x: (1 + x).prod() - 1) * 100
         yearly_mdd = df.groupby('year')['drawdown'].min()
+        avg_yearly_mdd = yearly_mdd.mean() if len(yearly_mdd) > 0 else mdd
         yearly_df = pd.DataFrame({
             "Return (%)": yearly_ret,
             "MDD (%)": yearly_mdd
@@ -184,6 +205,7 @@ class BacktestEngine:
             "total_return": total_return,
             "cagr": cagr,
             "mdd": mdd,
+            "avg_yearly_mdd": avg_yearly_mdd,
             "win_rate": win_rate,
             "trade_count": len(total_sell_trades),
             "sharpe": sharpe,
@@ -192,7 +214,8 @@ class BacktestEngine:
             "final_status": position, # HOLD or CASH
             "next_action": pending_action # Action for TOMORROW Open
         }
-        
+        _emit(100, "완료")
+
         return {
             "performance": performance,
             "df": df
@@ -201,11 +224,12 @@ class BacktestEngine:
     # ================================================================
     # 고속 최적화 엔진: 사전계산 + numpy 벡터화
     # ================================================================
-    def _fast_simulate(self, open_arr, close_arr, signal_arr, fee, slippage, initial_balance):
+    def _fast_simulate(self, open_arr, close_arr, signal_arr, fee, slippage, initial_balance, year_arr=None):
         """
         numpy 배열 기반 고속 시뮬레이션.
         signal_arr: 1=BUY, -1=SELL, 0=HOLD
-        Returns: (final_equity, total_return, mdd, win_rate, trade_count, sharpe)
+        year_arr: 연도 배열 (연간 평균 MDD 계산용, optional)
+        Returns: dict with performance metrics
         """
         n = len(open_arr)
         balance = initial_balance
@@ -262,6 +286,14 @@ class BacktestEngine:
         dd = (equity - peak) / peak * 100
         mdd = dd.min()
 
+        # Avg Yearly MDD
+        avg_yearly_mdd = mdd
+        if year_arr is not None and len(year_arr) == n:
+            unique_years = np.unique(year_arr)
+            yearly_mdds = [dd[year_arr == yr].min() for yr in unique_years]
+            if yearly_mdds:
+                avg_yearly_mdd = float(np.mean(yearly_mdds))
+
         # Win rate
         win_rate = (wins / sells * 100) if sells > 0 else 0
 
@@ -281,6 +313,7 @@ class BacktestEngine:
             "total_return": total_ret,
             "cagr": cagr,
             "mdd": mdd,
+            "avg_yearly_mdd": avg_yearly_mdd,
             "win_rate": win_rate,
             "trade_count": sells,
             "sharpe": sharpe,
@@ -323,6 +356,10 @@ class BacktestEngine:
             mask = full_index >= start_ts
             start_idx = mask.argmax() if mask.any() else 0
 
+        # 연도 배열 (연간 평균 MDD 계산용)
+        year_arr_full = full_index.year.values
+        year_arr = year_arr_full[start_idx:]
+
         results = []
         total = len(list(buy_range)) * len(list(sell_range))
         idx = 0
@@ -352,7 +389,7 @@ class BacktestEngine:
                 if len(o) < 5:
                     continue
 
-                res = self._fast_simulate(o, c, s, fee, slippage, initial_balance)
+                res = self._fast_simulate(o, c, s, fee, slippage, initial_balance, year_arr=year_arr)
                 res["Buy Period"] = bp
                 res["Sell Period"] = sp
                 results.append(res)
@@ -389,6 +426,10 @@ class BacktestEngine:
             mask = full_index >= start_ts
             start_idx = mask.argmax() if mask.any() else 0
 
+        # 연도 배열 (연간 평균 MDD 계산용)
+        year_arr_full = full_index.year.values
+        year_arr = year_arr_full[start_idx:]
+
         results = []
         total = len(list(sma_range))
         idx = 0
@@ -410,7 +451,7 @@ class BacktestEngine:
             if len(o) < 5:
                 continue
 
-            res = self._fast_simulate(o, c, s, fee, slippage, initial_balance)
+            res = self._fast_simulate(o, c, s, fee, slippage, initial_balance, year_arr=year_arr)
             res["SMA Period"] = p
             results.append(res)
 
@@ -465,6 +506,10 @@ class BacktestEngine:
             for p in range(buy_range[0], buy_range[1] + 1):
                 sma_cache[p] = df['close'].rolling(window=p).mean().values
 
+        # 연도 배열 (연간 평균 MDD 계산용)
+        year_arr_full = full_index.year.values
+        year_arr = year_arr_full[start_idx:]
+
         trial_results = []
 
         def _metric_value(res, calmar):
@@ -502,13 +547,13 @@ class BacktestEngine:
             if len(o) < 5:
                 return float('-inf')
 
-            res = self._fast_simulate(o, c, s, fee, slippage, initial_balance)
+            res = self._fast_simulate(o, c, s, fee, slippage, initial_balance, year_arr=year_arr)
             calmar = abs(res['cagr'] / res['mdd']) if res['mdd'] != 0 else 0
 
             record = {**res, 'calmar': calmar}
             if is_donchian:
-                record['buy_period'] = bp
-                record['sell_period'] = sp
+                record['Buy Period'] = bp
+                record['Sell Period'] = sp
             else:
                 record['sma_period'] = p
             trial_results.append(record)
@@ -519,6 +564,269 @@ class BacktestEngine:
                                   f"Trial {len(trial_results)}: {objective_metric}={val:.2f}")
 
             return _metric_value(res, calmar)
+
+        study = optuna.create_study(
+            direction="maximize",
+            sampler=optuna.samplers.TPESampler(seed=42)
+        )
+        study.optimize(objective, n_trials=n_trials)
+
+        return {
+            "best_params": study.best_params,
+            "best_value": study.best_value,
+            "trials": trial_results,
+            "study": study,
+        }
+
+    # ================================================================
+    # 보조 전략: MA 이격도 역추세 분할매수 + 익절
+    # ================================================================
+
+    def run_aux_backtest(self, df, main_strategy="Donchian", main_buy_p=20,
+                         main_sell_p=10, ma_short=5, ma_long=20,
+                         oversold_threshold=-5.0, tp1_pct=5.0, tp2_pct=10.0,
+                         fee=0.0005, slippage=0.0, start_date=None,
+                         initial_balance=1000000, split_count=2,
+                         buy_seed_mode="equal", pyramid_ratio=1.0,
+                         progress_callback=None, main_df=None):
+        """보조 전략 단일 백테스트 실행."""
+        from strategy.aux_mean_reversion import (
+            compute_disparity, generate_main_position, fast_simulate_aux
+        )
+
+        def _emit(unit, msg):
+            if progress_callback:
+                try:
+                    progress_callback(int(unit), 100, msg)
+                except Exception:
+                    pass
+
+        _emit(5, "데이터 준비")
+
+        df = df.copy()
+        full_index = df.index
+        close_arr = df['close'].values
+        open_arr = df['open'].values
+        high_arr = df['high'].values
+        low_arr = df['low'].values
+
+        # 메인 전략 포지션 생성 (main_df 지정 시 메인 신호를 별도 시간봉에서 계산 후 정렬)
+        _emit(20, "메인 전략 신호 계산")
+        if main_df is None:
+            main_pos = generate_main_position(
+                close_arr, high_arr, low_arr,
+                main_strategy, main_buy_p, main_sell_p
+            )
+        else:
+            _m_df = main_df.copy()
+            _m_close = _m_df['close'].values
+            _m_high = _m_df['high'].values
+            _m_low = _m_df['low'].values
+            _m_pos = generate_main_position(
+                _m_close, _m_high, _m_low,
+                main_strategy, main_buy_p, main_sell_p
+            )
+
+            _exec_idx = pd.DatetimeIndex(full_index)
+            _main_idx = pd.DatetimeIndex(_m_df.index)
+            if _exec_idx.tz is not None:
+                _exec_idx = _exec_idx.tz_localize(None)
+            if _main_idx.tz is not None:
+                _main_idx = _main_idx.tz_localize(None)
+
+            _m_pos_s = pd.Series(_m_pos, index=_main_idx).sort_index()
+            main_pos = _m_pos_s.reindex(_exec_idx, method="ffill").fillna(0).astype(np.int8).values
+
+        # 이격도 계산
+        _emit(35, "이격도 계산")
+        disp_short = compute_disparity(close_arr, ma_short)
+        disp_long = compute_disparity(close_arr, ma_long)
+
+        # start_date 필터
+        start_idx = 0
+        if start_date:
+            start_ts = pd.to_datetime(start_date)
+            if full_index.tz is not None and start_ts.tz is None:
+                start_ts = start_ts.tz_localize(full_index.tz)
+            mask = full_index >= start_ts
+            start_idx = mask.argmax() if mask.any() else 0
+
+        year_arr = full_index.year.values[start_idx:]
+
+        _emit(55, "시뮬레이션")
+        res = fast_simulate_aux(
+            open_arr[start_idx:], close_arr[start_idx:],
+            high_arr[start_idx:], low_arr[start_idx:],
+            main_pos[start_idx:],
+            disp_short[start_idx:], disp_long[start_idx:],
+            oversold_threshold, tp1_pct, tp2_pct,
+            fee, slippage, initial_balance, year_arr,
+            split_count=split_count,
+            buy_seed_mode=buy_seed_mode,
+            pyramid_ratio=pyramid_ratio,
+            return_series=True,
+        )
+
+        # 차트용 시계열(전략 vs Buy&Hold, DD) 추가
+        _emit(85, "차트 데이터 정리")
+        _dates = full_index[start_idx:]
+        _bench_close = close_arr[start_idx:]
+        if len(_dates) > 0 and len(_bench_close) > 0 and _bench_close[0] > 0:
+            _bench_return = (_bench_close / _bench_close[0] - 1.0) * 100.0
+            _bench_peak = np.maximum.accumulate(_bench_close)
+            _bench_dd = (_bench_close - _bench_peak) / _bench_peak * 100.0
+        else:
+            _bench_return = np.array([])
+            _bench_dd = np.array([])
+
+        _equity = res.get("equity_curve")
+        if _equity is not None and len(_equity) > 0 and initial_balance > 0:
+            _strat_return = (_equity / initial_balance - 1.0) * 100.0
+        else:
+            _strat_return = np.array([])
+
+        res["dates"] = _dates
+        res["strategy_return_curve"] = _strat_return
+        res["benchmark_return_curve"] = _bench_return
+        res["benchmark_dd_curve"] = _bench_dd
+        _emit(100, "완료")
+        return res
+
+    def optimize_aux(self, df, main_strategy="Donchian", main_buy_p=20,
+                     main_sell_p=10, ma_short_range=(3, 30),
+                     ma_long_range=(10, 120), threshold_range=(-15.0, -1.0),
+                     tp1_range=(2.0, 10.0), tp2_range=(5.0, 20.0),
+                     split_count_range=(1, 5),
+                     fee=0.0005, slippage=0.0, start_date=None,
+                     initial_balance=1000000, n_trials=100,
+                     objective_metric="calmar", progress_callback=None,
+                     buy_seed_mode="equal", pyramid_ratio=1.0, main_df=None,
+                     min_trade_count=0):
+        """보조 전략 Optuna 최적화 (분할 매수 횟수 포함)."""
+        import optuna
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+        from strategy.aux_mean_reversion import (
+            compute_disparity, generate_main_position, fast_simulate_aux
+        )
+
+        df = df.copy()
+        full_index = df.index
+        close_arr = df['close'].values
+        open_arr = df['open'].values
+        high_arr = df['high'].values
+        low_arr = df['low'].values
+
+        # 메인 전략 포지션 사전계산 (main_df 지정 시 별도 시간봉 신호 정렬)
+        if main_df is None:
+            main_pos = generate_main_position(
+                close_arr, high_arr, low_arr,
+                main_strategy, main_buy_p, main_sell_p
+            )
+        else:
+            _m_df = main_df.copy()
+            _m_close = _m_df['close'].values
+            _m_high = _m_df['high'].values
+            _m_low = _m_df['low'].values
+            _m_pos = generate_main_position(
+                _m_close, _m_high, _m_low,
+                main_strategy, main_buy_p, main_sell_p
+            )
+            _exec_idx = pd.DatetimeIndex(full_index)
+            _main_idx = pd.DatetimeIndex(_m_df.index)
+            if _exec_idx.tz is not None:
+                _exec_idx = _exec_idx.tz_localize(None)
+            if _main_idx.tz is not None:
+                _main_idx = _main_idx.tz_localize(None)
+            _m_pos_s = pd.Series(_m_pos, index=_main_idx).sort_index()
+            main_pos = _m_pos_s.reindex(_exec_idx, method="ffill").fillna(0).astype(np.int8).values
+
+        # 이격도 사전계산 (모든 기간)
+        disp_cache = {}
+        all_periods = set(range(ma_short_range[0], ma_short_range[1] + 1)) | \
+                      set(range(ma_long_range[0], ma_long_range[1] + 1))
+        for p in all_periods:
+            disp_cache[p] = compute_disparity(close_arr, p)
+
+        # start_date 필터
+        start_idx = 0
+        if start_date:
+            start_ts = pd.to_datetime(start_date)
+            if full_index.tz is not None and start_ts.tz is None:
+                start_ts = start_ts.tz_localize(full_index.tz)
+            mask = full_index >= start_ts
+            start_idx = mask.argmax() if mask.any() else 0
+
+        year_arr = full_index.year.values[start_idx:]
+        o = open_arr[start_idx:]
+        c = close_arr[start_idx:]
+        h = high_arr[start_idx:]
+        l = low_arr[start_idx:]
+        mp = main_pos[start_idx:]
+
+        trial_results = []
+
+        def _metric(res, calmar):
+            if objective_metric == "calmar":
+                return calmar
+            elif objective_metric == "sharpe":
+                return res['sharpe']
+            elif objective_metric == "return":
+                return res['total_return']
+            elif objective_metric == "mdd":
+                return res['mdd']
+            return calmar
+
+        def objective(trial):
+            ms = trial.suggest_int("ma_short", ma_short_range[0], ma_short_range[1])
+            ml = trial.suggest_int("ma_long", ma_long_range[0], ma_long_range[1])
+            if ml <= ms:
+                ml = ms + 1
+                if ml > ma_long_range[1]:
+                    return float('-inf')
+            thr = trial.suggest_float("threshold", threshold_range[0], threshold_range[1], step=0.5)
+            t1 = trial.suggest_float("tp1_pct", tp1_range[0], tp1_range[1], step=0.5)
+            t2 = trial.suggest_float("tp2_pct", tp2_range[0], tp2_range[1], step=0.5)
+            if t2 <= t1:
+                t2 = t1 + 0.5
+            sc = trial.suggest_int("split_count", split_count_range[0], split_count_range[1])
+
+            ds = disp_cache[ms][start_idx:]
+            dl = disp_cache[ml][start_idx:]
+
+            if len(o) < 5:
+                return float('-inf')
+
+            res = fast_simulate_aux(o, c, h, l, mp, ds, dl,
+                                    thr, t1, t2, fee, slippage,
+                                    initial_balance, year_arr,
+                                    split_count=sc,
+                                    buy_seed_mode=buy_seed_mode,
+                                    pyramid_ratio=pyramid_ratio)
+
+            calmar = abs(res['cagr'] / res['mdd']) if res['mdd'] != 0 else 0
+            trade_count = int(res.get('trade_count', 0))
+            meets_trade_filter = trade_count >= int(min_trade_count)
+            score = _metric(res, calmar) if meets_trade_filter else -1e9
+            record = {
+                **res, 'calmar': calmar,
+                'MA Short': ms, 'MA Long': ml,
+                'Threshold': thr, 'TP1 %': t1, 'TP2 %': t2,
+                'Split': sc,
+                'Buy Seed Mode': buy_seed_mode,
+                'Pyramid Ratio': pyramid_ratio,
+                'Min Trades': int(min_trade_count),
+                'Trade Filter Pass': bool(meets_trade_filter),
+                'score': float(score),
+            }
+            trial_results.append(record)
+
+            if progress_callback:
+                val = score
+                progress_callback(len(trial_results), n_trials,
+                                  f"Trial {len(trial_results)}: {objective_metric}={val:.2f}, trades={trade_count}")
+
+            return score
 
         study = optuna.create_study(
             direction="maximize",
