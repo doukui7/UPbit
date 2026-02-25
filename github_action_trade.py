@@ -3,10 +3,10 @@ import sys
 import json
 import time
 import logging
-import pyupbit
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
+import data_cache
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -25,6 +25,19 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger()
 
 MIN_ORDER_KRW = 5000
+
+
+def _load_user_config():
+    """Load user_config.json from project root."""
+    cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_config.json")
+    if not os.path.exists(cfg_path):
+        return {}
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 
 def _get_env_any(*keys, default=""):
@@ -48,11 +61,73 @@ def _fetch_overseas_chart_any_exchange(trader: KISTrader, symbol: str, count: in
     return None, None
 
 
+def _get_upbit_ohlcv_local_first(ticker: str, interval: str, count: int):
+    return data_cache.get_ohlcv_local_first(
+        ticker,
+        interval=interval,
+        count=int(max(1, count)),
+        allow_api_fallback=True,
+    )
+
+
+def _get_upbit_price_local_first(ticker: str) -> float:
+    return float(data_cache.get_current_price_local_first(ticker, ttl_sec=5.0, allow_api_fallback=True) or 0.0)
+
+
+def _get_kis_daily_local_first(trader: KISTrader, code: str, count: int, end_date: str | None = None):
+    return data_cache.get_kis_domestic_local_first(
+        trader,
+        str(code).strip(),
+        count=int(max(1, count)),
+        end_date=end_date,
+        allow_api_fallback=True,
+    )
+
+
+def _get_kis_price_local_first(trader: KISTrader, code: str) -> float:
+    _df = _get_kis_daily_local_first(trader, code, count=3)
+    if _df is not None and not _df.empty:
+        if "close" in _df.columns:
+            return float(_df["close"].iloc[-1] or 0.0)
+        if "Close" in _df.columns:
+            return float(_df["Close"].iloc[-1] or 0.0)
+    try:
+        return float(trader.get_current_price(str(code).strip()) or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _get_gold_daily_local_first(trader: KiwoomGoldTrader, code: str, count: int):
+    return data_cache.get_gold_daily_local_first(
+        trader=trader,
+        code=code,
+        count=int(max(1, count)),
+        allow_api_fallback=True,
+    )
+
+
+def _get_gold_price_local_first(trader: KiwoomGoldTrader, code: str) -> float:
+    return float(
+        data_cache.get_gold_current_price_local_first(
+            trader=trader,
+            code=code,
+            allow_api_fallback=True,
+            ttl_sec=8.0,
+        )
+        or 0.0
+    )
+
+
 def _send_telegram(message: str):
     """텔레그램 봇으로 메시지 전송. 토큰/챗ID 없으면 무시."""
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    token = _get_env_any("TELEGRAM_BOT_TOKEN", "telegram_bot_token")
+    chat_id = _get_env_any("TELEGRAM_CHAT_ID", "telegram_chat_id")
     if not token or not chat_id:
+        cfg = _load_user_config()
+        token = token or str(cfg.get("telegram_bot_token", "")).strip()
+        chat_id = chat_id or str(cfg.get("telegram_chat_id", "")).strip()
+    if not token or not chat_id:
+        logger.warning("텔레그램 설정이 없어 알림 전송을 생략합니다. (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID)")
         return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
@@ -60,11 +135,25 @@ def _send_telegram(message: str):
         # 텔레그램 메시지 4096자 제한
         for i in range(0, len(message), 4000):
             chunk = message[i:i+4000]
-            requests.post(url, json={
+            resp = requests.post(url, json={
                 "chat_id": chat_id,
                 "text": chunk,
                 "parse_mode": "HTML",
             }, timeout=10)
+            ok = False
+            desc = ""
+            try:
+                body = resp.json()
+                ok = bool(resp.ok and body.get("ok", False))
+                desc = str(body.get("description", ""))
+            except Exception:
+                ok = bool(resp.ok)
+                desc = resp.text[:200] if getattr(resp, "text", "") else ""
+
+            if ok:
+                logger.info("텔레그램 전송 성공")
+            else:
+                logger.warning(f"텔레그램 전송 실패: HTTP {resp.status_code} {desc}")
     except Exception as e:
         logger.warning(f"텔레그램 전송 실패: {e}")
 
@@ -101,7 +190,7 @@ def analyze_asset(trader, item):
 
     # Fetch data
     count = max(200, param * 3)
-    df = pyupbit.get_ohlcv(ticker, interval=interval, count=count)
+    df = _get_upbit_ohlcv_local_first(ticker, interval=interval, count=count)
     if df is None or len(df) < param + 5:
         logger.error(f"[{ticker}] Insufficient data (got {len(df) if df is not None else 0}, need {param + 5})")
         return None
@@ -124,7 +213,7 @@ def analyze_asset(trader, item):
         signal = strat.get_signal(last_candle, strategy_type='SMA_CROSS', ma_period=param)
         indicator_info = f"SMA_{param}={last_candle.get(f'SMA_{param}', 'N/A')}"
 
-    current_price = pyupbit.get_current_price(ticker)
+    current_price = _get_upbit_price_local_first(ticker)
     coin_sym = item['coin'].upper()
     coin_balance = trader.get_balance(coin_sym)
     coin_value = coin_balance * current_price if current_price else 0
@@ -349,7 +438,7 @@ def run_kiwoom_gold_trade():
 
     # ── 1. 일봉 데이터 로드 (API 또는 CSV 폴백) ───────────
     max_period = max(g['buy_period'] for g in gold_portfolio)
-    df = trader.get_daily_chart(code=code, count=max(max_period + 10, 200))
+    df = _get_gold_daily_local_first(trader, code=code, count=max(max_period + 10, 200))
 
     # API 일봉이 없으면 CSV 폴백
     if df is None or len(df) < max_period + 5:
@@ -407,7 +496,7 @@ def run_kiwoom_gold_trade():
 
     cash_krw = bal["cash_krw"]
     gold_qty = bal["gold_qty"]
-    gold_price = trader.get_current_price(code) or 0
+    gold_price = _get_gold_price_local_first(trader, code) or 0
     gold_value = gold_qty * gold_price if gold_price > 0 else 0
     total_value = cash_krw + gold_value
 
@@ -530,12 +619,13 @@ def run_kis_isa_trade():
         wdr_settings['overvalue_threshold'] = float(os.getenv("WDR_OVERVALUE_THRESHOLD"))
     if os.getenv("WDR_UNDERVALUE_THRESHOLD"):
         wdr_settings['undervalue_threshold'] = float(os.getenv("WDR_UNDERVALUE_THRESHOLD"))
+    wdr_eval_mode = int(os.getenv("WDR_EVAL_MODE", "3"))
 
-    strategy = WDRStrategy(wdr_settings if wdr_settings else None)
+    strategy = WDRStrategy(wdr_settings if wdr_settings else None, evaluation_mode=wdr_eval_mode)
 
     # ── 1. 시그널 소스(TREND ETF) 일봉 데이터 조회 ──
     logger.info(f"시그널 소스 ETF({signal_etf_code}) 일봉 데이터 조회 중...")
-    signal_df = trader.get_daily_chart(signal_etf_code, count=1500)
+    signal_df = _get_kis_daily_local_first(trader, signal_etf_code, count=1500)
     if signal_df is None or len(signal_df) < 260 * 5:
         # API 실패 시 번들 CSV fallback
         logger.warning("API 데이터 부족 → 번들 CSV fallback 시도...")
@@ -574,7 +664,7 @@ def run_kis_isa_trade():
             break
 
     current_shares = etf_holding['qty'] if etf_holding else 0
-    current_price = trader.get_current_price(etf_code) or 0
+    current_price = _get_kis_price_local_first(trader, etf_code) or 0
 
     if current_price <= 0:
         logger.error(f"ETF({etf_code}) 현재가 조회 실패. 종료.")
@@ -587,7 +677,7 @@ def run_kis_isa_trade():
                 f"(≈{etf_value:,.0f}원), 총자산={total_value:,.0f}원")
 
     # ── 4. 주간 손익 계산 (ETF 일봉 5일 전 종가 기준) ──
-    etf_chart = trader.get_daily_chart(etf_code, count=10)
+    etf_chart = _get_kis_daily_local_first(trader, etf_code, count=10)
     weekly_pnl = 0.0
     if etf_chart is not None and len(etf_chart) >= 5 and current_shares > 0:
         price_5d_ago = float(etf_chart['close'].iloc[-5])
@@ -657,6 +747,7 @@ def run_kis_pension_trade():
       - BIL 절대 모멘텀 → 위험 자산 vs 안전 자산 결정
       - 모멘텀 약세 시 AGG(채권)로 전환
       - 월 1회 리밸런싱
+      - 시그널/집행 모두 국내 ETF 일봉 기반
 
     필요 환경변수:
       KIS_PENSION_APP_KEY, KIS_PENSION_APP_SECRET (또는 KIS_APP_KEY 공유)
@@ -694,23 +785,24 @@ def run_kis_pension_trade():
         'SPY': os.getenv("KR_ETF_SPY", "360750"),    # TIGER 미국S&P500
         'EFA': os.getenv("KR_ETF_EFA", "453850"),    # TIGER 선진국MSCI World
         'AGG': os.getenv("KR_ETF_AGG", "453540"),    # TIGER 미국채10년선물
+        'BIL': os.getenv("KR_ETF_BIL", os.getenv("KR_ETF_SHY", "114470")),  # 카나리아 대체
     }
 
-    strategy = DualMomentumStrategy(settings={'kr_etf_map': {**kr_etf_map, 'BIL': None}})
+    strategy = DualMomentumStrategy(settings={'kr_etf_map': kr_etf_map})
 
-    # ── 1. 해외 일봉 데이터 조회 (시그널용) ──
+    # ── 1. 국내 ETF 일봉 데이터 조회 (시그널용) ──
     tickers_to_fetch = ['SPY', 'EFA', 'BIL', 'AGG']
-    exchanges = {'SPY': 'NYS', 'EFA': 'NYS', 'BIL': 'NYS', 'AGG': 'NYS'}
     price_data = {}
 
     for ticker in tickers_to_fetch:
-        logger.info(f"{ticker} 일봉 데이터 조회 중...")
-        df = trader.get_overseas_daily_chart(ticker, exchange=exchanges[ticker], count=300)
+        code = kr_etf_map.get(ticker, "")
+        logger.info(f"{ticker}({code}) 일봉 데이터 조회 중...")
+        df = _get_kis_daily_local_first(trader, code, count=300)
         if df is not None and len(df) > 0:
             price_data[ticker] = df
-            logger.info(f"  {ticker}: {len(df)}일 로드 완료")
+            logger.info(f"  {ticker}({code}): {len(df)}일 로드 완료")
         else:
-            logger.error(f"  {ticker}: 데이터 조회 실패")
+            logger.error(f"  {ticker}({code}): 데이터 조회 실패")
 
         time.sleep(0.3)  # API 호출 간격
 
@@ -852,7 +944,7 @@ def _check_kiwoom_gold() -> dict:
         result['balance_msg'] = f"현금 {bal['cash_krw']:,.0f}원 / 금 {bal['gold_qty']}g"
 
         # 3. 시세 조회
-        price = trader.get_current_price(code)
+        price = _get_gold_price_local_first(trader, code)
         if not price or price <= 0:
             result['price_msg'] = 'FAIL - 시세 조회 실패'
             return result
@@ -863,7 +955,7 @@ def _check_kiwoom_gold() -> dict:
         gold_portfolio = get_gold_portfolio()
         total_weight = sum(g['weight'] for g in gold_portfolio)
         max_period = max(g['buy_period'] for g in gold_portfolio)
-        df = trader.get_daily_chart(code=code, count=max(max_period + 10, 200))
+        df = _get_gold_daily_local_first(trader, code=code, count=max(max_period + 10, 200))
 
         if df is None or len(df) < max_period + 5:
             csv_path = os.path.join(os.path.dirname(__file__), "krx_gold_daily.csv")
@@ -994,7 +1086,7 @@ def _check_kis_isa() -> dict:
         result['balance_msg'] = f"현금 {cash:,.0f}원 / {holding_str}"
 
         # 3. 시세 조회
-        price = trader.get_current_price(etf_code)
+        price = _get_kis_price_local_first(trader, etf_code)
         if not price or price <= 0:
             result['price_msg'] = 'FAIL - 시세 조회 실패'
             return result
@@ -1007,9 +1099,10 @@ def _check_kis_isa() -> dict:
             wdr_settings['overvalue_threshold'] = float(os.getenv("WDR_OVERVALUE_THRESHOLD"))
         if os.getenv("WDR_UNDERVALUE_THRESHOLD"):
             wdr_settings['undervalue_threshold'] = float(os.getenv("WDR_UNDERVALUE_THRESHOLD"))
-        strategy = WDRStrategy(wdr_settings if wdr_settings else None)
+        wdr_eval_mode = int(os.getenv("WDR_EVAL_MODE", "3"))
+        strategy = WDRStrategy(wdr_settings if wdr_settings else None, evaluation_mode=wdr_eval_mode)
 
-        signal_df = trader.get_daily_chart(signal_etf_code, count=1500)
+        signal_df = _get_kis_daily_local_first(trader, signal_etf_code, count=1500)
         if signal_df is None or len(signal_df) < 260 * 5:
             from data_cache import load_bundled_csv
             signal_df = load_bundled_csv(signal_etf_code)
@@ -1018,7 +1111,7 @@ def _check_kis_isa() -> dict:
             sig = strategy.analyze(signal_df)
             if sig:
                 # 주간 손익 계산
-                etf_chart = trader.get_daily_chart(etf_code, count=10)
+                etf_chart = _get_kis_daily_local_first(trader, etf_code, count=10)
                 weekly_pnl = 0.0
                 if etf_chart is not None and len(etf_chart) >= 5 and shares > 0:
                     price_5d = float(etf_chart['close'].iloc[-5])
@@ -1118,6 +1211,7 @@ def _check_kis_pension() -> dict:
             'SPY': os.getenv("KR_ETF_SPY", "360750"),
             'EFA': os.getenv("KR_ETF_EFA", "453850"),
             'AGG': os.getenv("KR_ETF_AGG", "453540"),
+            'BIL': os.getenv("KR_ETF_BIL", os.getenv("KR_ETF_SHY", "114470")),
         }
 
         # 2. 잔고 조회
@@ -1136,14 +1230,14 @@ def _check_kis_pension() -> dict:
             h_str = "미보유"
         result['balance_msg'] = f"현금 {cash:,.0f}원 / {h_str} / 총 {total_eval:,.0f}원"
 
-        # 3. 해외 시세 조회
+        # 3. 국내 시세 조회 (듀얼모멘텀 시그널용)
         tickers = ['SPY', 'EFA', 'BIL', 'AGG']
-        exchanges = {'SPY': 'NYS', 'EFA': 'NYS', 'BIL': 'NYS', 'AGG': 'NYS'}
         prices = {}
         price_data = {}
 
         for ticker in tickers:
-            df = trader.get_overseas_daily_chart(ticker, exchange=exchanges[ticker], count=300)
+            code = kr_etf_map.get(ticker, "")
+            df = _get_kis_daily_local_first(trader, code, count=300)
             if df is not None and len(df) > 0:
                 prices[ticker] = float(df['close'].iloc[-1])
                 price_data[ticker] = df
@@ -1160,7 +1254,7 @@ def _check_kis_pension() -> dict:
             return result
 
         # 4. 듀얼모멘텀 시그널 분석
-        strategy = DualMomentumStrategy(settings={'kr_etf_map': {**kr_etf_map, 'BIL': None}})
+        strategy = DualMomentumStrategy(settings={'kr_etf_map': kr_etf_map})
         sig = strategy.analyze(price_data)
         if sig:
             # 리밸런싱 필요 여부 판단
@@ -1197,7 +1291,7 @@ def _check_kis_pension() -> dict:
         # 5. 가상주문 왕복 테스트
         # 연금저축 계좌의 대표 종목으로 테스트
         test_code = kr_etf_map['SPY']  # TIGER 미국S&P500
-        test_price = trader.get_current_price(test_code)
+        test_price = _get_kis_price_local_first(trader, test_code)
         if not test_price or test_price <= 0:
             result['order_msg'] = 'FAIL - 테스트 종목 시세 조회 실패'
             return result
@@ -1285,11 +1379,8 @@ def _check_upbit() -> dict:
         # 3. 시세 조회
         portfolio = get_portfolio()
         tickers = list(set(f"{item['market']}-{item['coin'].upper()}" for item in portfolio))
-        prices = {}
-        for ticker in tickers:
-            p = pyupbit.get_current_price(ticker)
-            if p:
-                prices[ticker] = p
+        prices = data_cache.get_current_prices_local_first(tickers, ttl_sec=5.0, allow_api_fallback=True)
+        prices = {k: v for k, v in prices.items() if float(v or 0.0) > 0}
 
         if prices:
             result['price'] = True
@@ -1494,13 +1585,13 @@ def _format_holdings_brief(holdings, max_items=3):
 
 def run_daily_status_report():
     """
-    ?? ??? ???? ?? ??/??? ?????? ??.
-    ?? ?? ???? ??? ???? ???.
+    매일 아침 전체계좌 자산 잔고/보유현황 텔레그램으로 전송.
+    실제 주문 하지않고 시그널만 확인하여 보고함.
     """
     load_dotenv()
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
-    lines = [f"<b>?? ?? ???</b> ({now.strftime('%Y-%m-%d %H:%M')} KST)", ""]
+    lines = [f"<b>일일 자산 현황</b> ({now.strftime('%Y-%m-%d %H:%M')} KST)", ""]
 
     # Upbit
     if os.getenv("UPBIT_ACCESS_KEY") and os.getenv("UPBIT_SECRET_KEY"):
@@ -1511,20 +1602,20 @@ def run_daily_status_report():
             coins = {k: float(v) for k, v in all_bal.items() if k != "KRW" and float(v) > 0}
             est_coin_value = 0.0
             for sym, qty in coins.items():
-                p = pyupbit.get_current_price(f"KRW-{sym}")
+                p = _get_upbit_price_local_first(f"KRW-{sym}")
                 if p:
                     est_coin_value += qty * float(p)
             total = krw + est_coin_value
-            coin_text = ", ".join([f"{k} {v:.6f}" for k, v in list(coins.items())[:5]]) if coins else "??"
-            lines.append("<b>[???]</b>")
-            lines.append(f"??: {krw:,.0f} KRW")
-            lines.append(f"????(??): {est_coin_value:,.0f} KRW")
-            lines.append(f"???(??): {total:,.0f} KRW")
-            lines.append(f"????: {coin_text}")
+            coin_text = ", ".join([f"{k} {v:.6f}" for k, v in list(coins.items())[:5]]) if coins else "없음"
+            lines.append("<b>[업비트]</b>")
+            lines.append(f"현금: {krw:,.0f} KRW")
+            lines.append(f"코인평가(추정): {est_coin_value:,.0f} KRW")
+            lines.append(f"총자산(추정): {total:,.0f} KRW")
+            lines.append(f"보유코인: {coin_text}")
             lines.append("")
         except Exception as e:
-            lines.append("<b>[???]</b>")
-            lines.append(f"?? ??: {e}")
+            lines.append("<b>[업비트]</b>")
+            lines.append(f"조회 실패: {e}")
             lines.append("")
 
     # Kiwoom Gold
@@ -1537,22 +1628,22 @@ def run_daily_status_report():
                 qty = float(bal.get("gold_qty", 0.0))
                 eval_amt = float(bal.get("gold_eval", 0.0))
                 if eval_amt <= 0:
-                    p = trader.get_current_price(GOLD_CODE_1KG) or 0
+                    p = _get_gold_price_local_first(trader, GOLD_CODE_1KG) or 0
                     eval_amt = qty * float(p) if p else 0.0
                 total = cash + eval_amt
-                lines.append("<b>[?? ???]</b>")
-                lines.append(f"???: {cash:,.0f} KRW")
-                lines.append(f"???: {qty:.4f} g")
-                lines.append(f"???: {eval_amt:,.0f} KRW")
-                lines.append(f"???: {total:,.0f} KRW")
+                lines.append("<b>[키움 금현물]</b>")
+                lines.append(f"예수금: {cash:,.0f} KRW")
+                lines.append(f"금보유: {qty:.4f} g")
+                lines.append(f"금평가: {eval_amt:,.0f} KRW")
+                lines.append(f"총자산: {total:,.0f} KRW")
                 lines.append("")
             else:
-                lines.append("<b>[?? ???]</b>")
-                lines.append("?? ??")
+                lines.append("<b>[키움 금현물]</b>")
+                lines.append("인증 실패")
                 lines.append("")
         except Exception as e:
-            lines.append("<b>[?? ???]</b>")
-            lines.append(f"?? ??: {e}")
+            lines.append("<b>[키움 금현물]</b>")
+            lines.append(f"조회 실패: {e}")
             lines.append("")
 
     # KIS ISA
@@ -1573,17 +1664,17 @@ def run_daily_status_report():
                 holdings = bal.get("holdings", []) or []
                 total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
                 lines.append("<b>[KIS ISA]</b>")
-                lines.append(f"???: {cash:,.0f} KRW")
-                lines.append(f"???: {total_eval:,.0f} KRW")
-                lines.append(f"??: {_format_holdings_brief(holdings)}")
+                lines.append(f"예수금: {cash:,.0f} KRW")
+                lines.append(f"총평가: {total_eval:,.0f} KRW")
+                lines.append(f"보유: {_format_holdings_brief(holdings)}")
                 lines.append("")
             else:
                 lines.append("<b>[KIS ISA]</b>")
-                lines.append("?? ??")
+                lines.append("인증 실패")
                 lines.append("")
         except Exception as e:
             lines.append("<b>[KIS ISA]</b>")
-            lines.append(f"?? ??: {e}")
+            lines.append(f"조회 실패: {e}")
             lines.append("")
 
     # KIS Pension
@@ -1608,26 +1699,125 @@ def run_daily_status_report():
                 cash = float(bal.get("cash", 0.0))
                 holdings = bal.get("holdings", []) or []
                 total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
-                lines.append("<b>[KIS ????]</b>")
-                lines.append(f"???: {cash:,.0f} KRW")
-                lines.append(f"???: {total_eval:,.0f} KRW")
-                lines.append(f"??: {_format_holdings_brief(holdings)}")
+                lines.append("<b>[KIS 연금저축]</b>")
+                lines.append(f"예수금: {cash:,.0f} KRW")
+                lines.append(f"총평가: {total_eval:,.0f} KRW")
+                lines.append(f"보유: {_format_holdings_brief(holdings)}")
+
+                # LAA 전략 시그널 체크 (주문 없이 분석만)
+                try:
+                    kr_etf_map = {
+                        "SPY": _get_env_any("KR_ETF_LAA_SPY", "KR_ETF_SPY", default="360750"),
+                        "IWD": _get_env_any("KR_ETF_LAA_IWD", "KR_ETF_SPY", default="360750"),
+                        "GLD": _get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default="132030"),
+                        "IEF": _get_env_any("KR_ETF_LAA_IEF", "KR_ETF_AGG", default="453540"),
+                        "QQQ": _get_env_any("KR_ETF_LAA_QQQ", default="133690"),
+                        "SHY": _get_env_any("KR_ETF_LAA_SHY", default="114470"),
+                    }
+                    tickers = ["SPY", "IWD", "GLD", "IEF", "QQQ", "SHY"]
+                    price_data = {}
+                    price_ok = True
+                    for t in tickers:
+                        code = str(kr_etf_map.get(t, "")).strip()
+                        df = _get_kis_daily_local_first(trader, code, count=320) if code else None
+                        if df is None or len(df) == 0:
+                            price_ok = False
+                            break
+                        price_data[t] = df
+                        time.sleep(0.15)
+
+                    if price_ok:
+                        strategy = LAAStrategy(settings={"kr_etf_map": kr_etf_map})
+                        signal = strategy.analyze(price_data)
+                        if signal:
+                            risk_label = "공격(Risk-On)" if signal.get("risk_on") else "방어(Risk-Off)"
+                            risk_asset = signal.get("selected_risk_asset", "?")
+                            risk_kr = signal.get("selected_risk_kr_code", "?")
+                            lines.append("")
+                            lines.append(f"<b>LAA 시그널:</b> {risk_label}")
+                            lines.append(f"리스크 자산: {risk_asset} → {risk_kr}")
+
+                            # 목표 vs 현재 비교 → 예상 매매 내역
+                            target_weights_kr = signal.get("target_weights_kr", {})
+                            total_eval_safe = max(total_eval, 1.0)
+                            tracked = set(str(c) for c in target_weights_kr.keys())
+                            cur_vals = {c: 0.0 for c in tracked}
+                            cur_qtys = {c: 0 for c in tracked}
+                            for h in holdings:
+                                code = str(h.get("code", ""))
+                                if code in tracked:
+                                    cur_vals[code] += float(h.get("eval_amt", 0.0))
+                                    cur_qtys[code] += int(float(h.get("qty", 0)))
+
+                            max_gap = 0.0
+                            planned_orders = []
+                            for code, tw in target_weights_kr.items():
+                                code = str(code)
+                                cur_v = cur_vals.get(code, 0.0)
+                                cur_w = cur_v / total_eval_safe
+                                gap = abs(float(tw) - cur_w)
+                                max_gap = max(max_gap, gap)
+                                tgt_v = total_eval_safe * float(tw)
+                                price = _get_kis_price_local_first(trader, code) or 0.0
+                                if price <= 0:
+                                    continue
+                                tgt_qty = int(tgt_v / price)
+                                cur_q = cur_qtys.get(code, 0)
+                                delta = tgt_qty - cur_q
+                                if delta > 0:
+                                    planned_orders.append(f"매수 {code} {delta}주")
+                                elif delta < 0:
+                                    planned_orders.append(f"매도 {code} {abs(delta)}주")
+
+                            action = "HOLD" if max_gap <= 0.03 else "REBALANCE"
+                            lines.append(f"판정: <b>{action}</b> (최대괴리 {max_gap*100:.1f}%p)")
+                            if planned_orders:
+                                lines.append("예상 매매:")
+                                for po in planned_orders:
+                                    lines.append(f"  - {po}")
+                            else:
+                                lines.append("예상 매매: 없음")
+                        else:
+                            lines.append("LAA 분석 실패")
+                    else:
+                        lines.append("국내 ETF 조회 실패 (시그널 체크 생략)")
+                except Exception as sig_e:
+                    lines.append(f"시그널 체크 오류: {sig_e}")
+
                 lines.append("")
             else:
-                lines.append("<b>[KIS ????]</b>")
-                lines.append("?? ??")
+                lines.append("<b>[KIS 연금저축]</b>")
+                lines.append("인증 실패")
                 lines.append("")
         except Exception as e:
-            lines.append("<b>[KIS ????]</b>")
-            lines.append(f"?? ??: {e}")
+            lines.append("<b>[KIS 연금저축]</b>")
+            lines.append(f"조회 실패: {e}")
             lines.append("")
 
     if len(lines) <= 2:
-        lines.append("?? ??? ??? ????. API ?/?? ????? ?????.")
+        lines.append("조회 가능한 계좌가 없습니다. API 키/계좌 설정을 확인하세요.")
 
     report = "\n".join(lines)
     logger.info(report.replace("<b>", "").replace("</b>", ""))
     _send_telegram(report)
+
+
+def run_telegram_test_ping():
+    """
+    텔레그램 알림 경로 점검용: 매 정각 실행 가능한 경량 핑 메시지 전송.
+    주문/시세 조회 없이 단순 알림만 보낸다.
+    """
+    load_dotenv()
+    kst = timezone(timedelta(hours=9))
+    now = datetime.now(kst)
+    msg = (
+        f"<b>텔레그램 알림 테스트</b>\n"
+        f"시각: {now.strftime('%Y-%m-%d %H:%M:%S')} KST\n"
+        f"모드: telegram_test_ping\n"
+        f"상태: 정상"
+    )
+    logger.info("텔레그램 테스트 핑 전송")
+    _send_telegram(msg)
 
 
 # ----------------------------------------------------------------------
@@ -1668,6 +1858,7 @@ def run_kis_pension_trade():
         return
 
     kr_etf_map = {
+        "SPY": _get_env_any("KR_ETF_LAA_SPY", "KR_ETF_SPY", default="360750"),
         "IWD": _get_env_any("KR_ETF_LAA_IWD", "KR_ETF_SPY", default="360750"),
         "GLD": _get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default="132030"),
         "IEF": _get_env_any("KR_ETF_LAA_IEF", "KR_ETF_AGG", default="453540"),
@@ -1678,12 +1869,13 @@ def run_kis_pension_trade():
     tickers = ["SPY", "IWD", "GLD", "IEF", "QQQ", "SHY"]
     price_data = {}
     for ticker in tickers:
-        df, ex = _fetch_overseas_chart_any_exchange(trader, ticker, 420)
-        if df is None:
-            logger.error(f"{ticker} 해외 데이터 조회 실패. 종료.")
+        code = str(kr_etf_map.get(ticker, "")).strip()
+        df = _get_kis_daily_local_first(trader, code, count=420) if code else None
+        if df is None or len(df) == 0:
+            logger.error(f"{ticker}({code}) 국내 데이터 조회 실패. 종료.")
             return
         price_data[ticker] = df
-        logger.info(f"{ticker}: {len(df)}건 로드 ({ex})")
+        logger.info(f"{ticker}({code}): {len(df)}건 로드")
         time.sleep(0.2)
 
     strategy = LAAStrategy(settings={"kr_etf_map": kr_etf_map})
@@ -1726,7 +1918,7 @@ def run_kis_pension_trade():
         excess = cur_v - tgt_v
         if excess < min_order:
             continue
-        price = trader.get_current_price(code) or 0.0
+        price = _get_kis_price_local_first(trader, code) or 0.0
         if price <= 0:
             continue
         qty = int(excess / price)
@@ -1829,24 +2021,29 @@ def _check_kis_pension() -> dict:
         result["balance_msg"] = f"예수금 {cash:,.0f} / 총평가 {total_eval:,.0f}"
 
         tickers = ["SPY", "IWD", "GLD", "IEF", "QQQ", "SHY"]
-        price_data = {}
-        for t in tickers:
-            df, ex = _fetch_overseas_chart_any_exchange(trader, t, 320)
-            if df is None:
-                result["price_msg"] = f"FAIL - {t} 조회 실패"
-                return result
-            price_data[t] = df
-            time.sleep(0.1)
-        result["price"] = True
-        result["price_msg"] = "PASS - SPY/IWD/GLD/IEF/QQQ/SHY"
-
         kr_etf_map = {
+            "SPY": _get_env_any("KR_ETF_LAA_SPY", "KR_ETF_SPY", default="360750"),
             "IWD": _get_env_any("KR_ETF_LAA_IWD", "KR_ETF_SPY", default="360750"),
             "GLD": _get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default="132030"),
             "IEF": _get_env_any("KR_ETF_LAA_IEF", "KR_ETF_AGG", default="453540"),
             "QQQ": _get_env_any("KR_ETF_LAA_QQQ", default="133690"),
             "SHY": _get_env_any("KR_ETF_LAA_SHY", default="114470"),
         }
+        price_data = {}
+        for t in tickers:
+            code = str(kr_etf_map.get(t, "")).strip()
+            if not code:
+                result["price_msg"] = f"FAIL - {t} 국내 ETF 코드 미설정"
+                return result
+            df = _get_kis_daily_local_first(trader, code, count=320)
+            if df is None or len(df) == 0:
+                result["price_msg"] = f"FAIL - {t}({code}) 국내 데이터 조회 실패"
+                return result
+            price_data[t] = df
+            time.sleep(0.1)
+        result["price"] = True
+        result["price_msg"] = "PASS - 국내 ETF SPY/IWD/GLD/IEF/QQQ/SHY"
+
         strategy = LAAStrategy(settings={"kr_etf_map": kr_etf_map})
         sig = strategy.analyze(price_data)
         if not sig:
@@ -1913,5 +2110,7 @@ if __name__ == "__main__":
         run_upbit_health_check()
     elif mode == "daily_status":
         run_daily_status_report()
+    elif mode == "telegram_test_ping":
+        run_telegram_test_ping()
     else:
         run_auto_trade()
