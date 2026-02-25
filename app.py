@@ -867,6 +867,19 @@ def _render_analysis_title(title: str):
     )
 
 
+def _apply_dd_hover_format(fig):
+    """DD/낙폭 계열 trace hover를 소수점 2자리 + % 형식으로 통일."""
+    try:
+        for tr in getattr(fig, "data", []):
+            _name = str(getattr(tr, "name", "") or "")
+            _name_u = _name.upper()
+            if ("DD" in _name_u) or ("DRAWDOWN" in _name_u) or ("낙폭" in _name):
+                tr.hovertemplate = "%{y:.2f}%<extra>%{fullData.name}</extra>"
+    except Exception:
+        pass
+    return fig
+
+
 def _render_performance_analysis(
     equity_series,
     benchmark_series=None,
@@ -2261,6 +2274,7 @@ def render_gold_mode():
                                     margin=dict(l=0, r=0, t=70, b=30),
                                     legend=dict(orientation="h", yanchor="bottom", y=1.06, xanchor="left", x=0)
                                 )
+                                fig_dd = _apply_dd_hover_format(fig_dd)
                                 st.plotly_chart(fig_dd, use_container_width=True)
 
                         # ── 거래 내역 ─────────────────────────────────
@@ -2588,6 +2602,7 @@ def render_gold_mode():
                                             margin=dict(l=0, r=0, t=70, b=30),
                                             legend=dict(orientation="h", yanchor="bottom", y=1.06, xanchor="left", x=0)
                                         )
+                                        fig_best_dd = _apply_dd_hover_format(fig_best_dd)
                                         st.plotly_chart(fig_best_dd, use_container_width=True)
                         except Exception as e:
                             st.warning(f"최적 파라미터 백테스트 오류: {e}")
@@ -2802,6 +2817,17 @@ def render_kis_isa_mode():
         _isa_px_cache = {}
         st.session_state[_isa_px_cache_key] = _isa_px_cache
 
+    # ISA 진입 시(QQQ/TQQQ 사용 화면) 미국 일봉 CSV를 세션당 1회 최신 거래일까지 동기화
+    _isa_us_sync_key = f"isa_us_wtr_yf_synced_{pd.Timestamp.now().strftime('%Y%m%d')}"
+    if not st.session_state.get(_isa_us_sync_key):
+        try:
+            _dc.fetch_and_cache_yf("QQQ", start="1999-03-10", force_refresh=True)
+            _dc.fetch_and_cache_yf("TQQQ", start="2010-02-12", force_refresh=True)
+        except Exception as _e:
+            logging.warning(f"ISA 미국 데이터 자동 동기화 실패: {_e}")
+        finally:
+            st.session_state[_isa_us_sync_key] = True
+
     def _get_isa_daily_chart(_code: str, count: int = 120, end_date: str | None = None):
         _c = _code_only(_code)
         if not _c:
@@ -2855,8 +2881,9 @@ def render_kis_isa_mode():
         _isa_px_cache[_c] = {"ts": _now, "val": float(_p if _p > 0 else 0.0)}
         return float(_p if _p > 0 else 0.0)
 
-    tab_i1, tab_i2, tab_i3, tab_i4, tab_i5 = st.tabs([
-        "🚀 실시간 모니터링", "🛒 수동 주문", "📋 주문방식", "💳 수수료/세금", "📊 미국 위대리 백테스트"
+    tab_i1, tab_i2, tab_i3, tab_i4, tab_i5, tab_i6 = st.tabs([
+        "🚀 실시간 모니터링", "🛒 수동 주문", "📋 주문방식", "💳 수수료/세금",
+        "📊 미국 위대리 백테스트", "🔧 위대리 최적화"
     ])
 
     # ══════════════════════════════════════════════════════════════
@@ -2997,24 +3024,21 @@ def render_kis_isa_mode():
                 c3.metric("매도 비율", f"{float(sig['sell_ratio']):.1f}%")
                 c4.metric("매수 비율", f"{float(sig['buy_ratio']):.1f}%")
 
-                # 권장 동작 및 다음 거래일 주문 수량
-                act_str = act["action"] or "HOLD"
-                st.info(f"**권장 동작**: {act_str} | **주간 손익**: {act['weekly_pnl']:+,.0f} KRW")
-                
-                sc1, sc2 = st.columns(2)
-                with sc1:
-                    st.success(f"### 📅 다음 거래일 주문 수량: **{act['quantity']}주** ({act_str})")
-                    st.caption(f"최근 주가({res.get('cur_price', 0):,.0f}원) 기준 계산된 예상 수량입니다.")
-                
-                # 백테스트 요약 (시작일 ~ 현재)
-                if bt:
-                    m = bt["metrics"]
-                    with sc2:
-                        st.write(f"**전략 성과 ({isa_start_date} ~ 현재)**")
-                        st.write(f"수익률: **{m['total_return']:+.2f}%** | MDD: **{m['mdd']:.2f}%** | CAGR: **{m['cagr']:.2f}%**")
-                        st.write(f"최종자산: {m['final_equity']:,.0f}원 (1천만원 기준)")
-
                 # ── 백테스트 자산현황 vs 실제 계좌 비교 ──
+                _bal_valid = bal and not bal.get("error")
+                actual_cash_v = float(bal.get("cash", 0.0)) if _bal_valid else 0.0
+                actual_hlds = (bal.get("holdings", []) or []) if _bal_valid else []
+                actual_etf = next((h for h in actual_hlds if str(h.get("code", "")) == str(isa_etf_code)), None)
+                actual_shares = int(actual_etf.get("qty", 0)) if actual_etf else 0
+                actual_price = res.get("cur_price", 0)
+                actual_eval = actual_shares * actual_price
+                actual_total = actual_cash_v + actual_eval
+                actual_cash_ratio = actual_cash_v / actual_total * 100 if actual_total > 0 else 0
+
+                bt_shares = 0
+                bt_cash_ratio = 0.0
+                bt_equity = 0.0
+                bt_return_pct = 0.0
                 if bt:
                     eq_df = bt["equity_df"]
                     bt_last = eq_df.iloc[-1]
@@ -3024,17 +3048,74 @@ def render_kis_isa_mode():
                     bt_return_pct = bt["metrics"]["total_return"]
                     bt_cash_ratio = bt_cash / bt_equity * 100 if bt_equity > 0 else 0
 
-                    # 실제 계좌 정보
-                    _bal_valid = bal and not bal.get("error")
-                    actual_cash_v = float(bal.get("cash", 0.0)) if _bal_valid else 0.0
-                    actual_hlds = (bal.get("holdings", []) or []) if _bal_valid else []
-                    actual_etf = next((h for h in actual_hlds if str(h.get("code", "")) == str(isa_etf_code)), None)
-                    actual_shares = int(actual_etf.get("qty", 0)) if actual_etf else 0
-                    actual_price = res.get("cur_price", 0)
-                    actual_eval = actual_shares * actual_price
-                    actual_total = actual_cash_v + actual_eval
-                    actual_cash_ratio = actual_cash_v / actual_total * 100 if actual_total > 0 else 0
+                # 동기화 주문 계산: 실제 자본 기준으로 백테스트 비율 스케일링
+                _sync_action = None
+                _sync_qty = 0
+                _sync_reason = ""
+                _bt_init = 10_000_000  # 백테스트 기준 자본
 
+                if bt and _bal_valid and actual_price > 0:
+                    # 백테스트의 주식 비율을 실제 자본에 적용
+                    _bt_stock_ratio = (bt_shares * float(bt_last["price"])) / bt_equity if bt_equity > 0 else 0
+                    _target_stock_val = actual_total * _bt_stock_ratio
+                    _target_shares = int(_target_stock_val / actual_price) if actual_price > 0 else 0
+
+                    _diff = _target_shares - actual_shares
+                    if _diff > 0 and (_diff * actual_price) <= actual_cash_v:
+                        _sync_action = "BUY"
+                        _sync_qty = _diff
+                        _sync_reason = f"백테스트 주식비율 {_bt_stock_ratio*100:.0f}% 맞추기 위해 {_diff}주 매수 필요"
+                    elif _diff > 0 and actual_cash_v > 0:
+                        _affordable = int(actual_cash_v * 0.9 / actual_price)  # 현금의 90%
+                        if _affordable > 0:
+                            _sync_action = "BUY"
+                            _sync_qty = _affordable
+                            _sync_reason = f"목표 {_target_shares}주 중 현금으로 {_affordable}주 매수 가능"
+                        else:
+                            _sync_reason = f"목표 {_target_shares}주, 현금 부족 (예수금 {actual_cash_v:,.0f}원)"
+                    elif _diff < 0:
+                        _sync_action = "SELL"
+                        _sync_qty = abs(_diff)
+                        _sync_reason = f"백테스트 주식비율 {_bt_stock_ratio*100:.0f}% 맞추기 위해 {abs(_diff)}주 매도 필요"
+                    elif actual_total <= 0:
+                        _sync_reason = "계좌에 자금이 없습니다"
+                    else:
+                        _sync_reason = "백테스트와 동기화 완료"
+
+                # ── 백테스트 기준 주문 정보 ──
+                _bt_action_str = "HOLD"
+                _bt_action_qty = 0
+                _bt_action_price = 0.0
+                if bt:
+                    _bt_action_str = str(bt_last.get("action", "HOLD")) or "HOLD"
+                    _bt_action_qty = int(bt_last.get("quantity", 0))
+                    _bt_action_price = float(bt_last["price"])
+
+                act_str = act["action"] or "HOLD"
+                _weekly_pnl = act['weekly_pnl']
+                _weekly_qty = act['quantity']
+
+                st.info(f"**백테스트 최근 동작**: {_bt_action_str} {_bt_action_qty}주 | **종가**: {_bt_action_price:,.0f}원")
+
+                sc1, sc2 = st.columns(2)
+                with sc1:
+                    if _bt_action_qty > 0:
+                        _color = "error" if _bt_action_str == "SELL" else "success"
+                        getattr(st, _color)(f"### 📅 다음 거래일 주문: **{_bt_action_str} {_bt_action_qty}주**")
+                    else:
+                        st.success(f"### 📅 다음 거래일 주문: **HOLD (0주)**")
+                    st.caption(f"백테스트 종가 {_bt_action_price:,.0f}원 기준 (1천만원 초기자본)")
+
+                # 백테스트 요약 (시작일 ~ 현재)
+                if bt:
+                    m = bt["metrics"]
+                    with sc2:
+                        st.write(f"**전략 성과 ({isa_start_date} ~ 현재)**")
+                        st.write(f"수익률: **{m['total_return']:+.2f}%** | MDD: **{m['mdd']:.2f}%** | CAGR: **{m['cagr']:.2f}%**")
+                        st.write(f"최종자산: {m['final_equity']:,.0f}원 (1천만원 기준)")
+
+                # 비교 메트릭
+                if bt:
                     st.divider()
                     ac1, ac2, ac3, ac4 = st.columns(4)
                     ac1.metric(
@@ -3065,11 +3146,26 @@ def render_kis_isa_mode():
                         ac4.metric("포지션 동기화", "불일치")
                         ac4.caption(f"백테: {bt_state} / 실제: {actual_state}")
 
+                # ── 실제 계좌 상태 (별도 영역) ──
+                if _sync_action and _sync_qty > 0:
+                    st.warning(f"**포지션 동기화 필요**: {_sync_action} {_sync_qty}주 — {_sync_reason}")
+                if not _bal_valid:
+                    st.warning("계좌 잔고 조회에 실패했습니다. KIS API 키를 확인해주세요.")
+                elif actual_total <= 0:
+                    st.warning("계좌에 자금이 없습니다. 입금 후 포지션 동기화를 진행해주세요.")
+
                 # 추세선 차트
+                # 차트 공통 시작일: equity_df가 있으면 실제 거래 시작일 사용
+                _chart_start_ts = pd.Timestamp(isa_start_date)
+                if bt and bt.get("equity_df") is not None and len(bt["equity_df"]) > 0:
+                    _eq_first = bt["equity_df"].index[0]
+                    if _eq_first > _chart_start_ts:
+                        _chart_start_ts = _eq_first
+
                 weekly_df = res.get("weekly_df")
                 trend = res.get("trend")
                 if weekly_df is not None and trend is not None:
-                    start_ts = pd.Timestamp(isa_start_date)
+                    start_ts = _chart_start_ts
                     mask = weekly_df.index >= start_ts
                     weekly_plot = weekly_df.loc[mask]
                     trend_plot = np.asarray(trend)[mask]
@@ -3125,8 +3221,11 @@ def render_kis_isa_mode():
                                     x=weekly_plot.index, y=sun_line,
                                     name="초저평가 -10%", line=dict(color="darkgreen", dash="dot", width=1),
                                 ))
+                        # 공통 x축 범위 (트렌드/수익률/DD 모두 동일)
+                        _xrange = [start_ts, weekly_plot.index[-1]]
                         fig.update_layout(
                             xaxis_title="날짜", yaxis_title="가격",
+                            xaxis=dict(range=_xrange),
                             height=450,
                             margin=dict(l=0, r=0, t=56, b=30),
                             legend=dict(orientation="h", yanchor="bottom", y=1.08),
@@ -3145,6 +3244,9 @@ def render_kis_isa_mode():
                         _trend_bm_label = _fmt_etf_code_name(isa_trend_etf_code)
                         _bm_df = bt.get("benchmark_df")
 
+                        # 공통 x축 범위 (트렌드 차트와 동일)
+                        _eq_xrange = [_chart_start_ts, eq_df.index[-1]]
+
                         st.markdown(
                             "<div style='font-size:2.05rem; font-weight:800; line-height:1.25; margin:0.7rem 0 1.1rem 0;'>누적 수익률 (%)</div>",
                             unsafe_allow_html=True,
@@ -3161,6 +3263,7 @@ def render_kis_isa_mode():
                             ))
                         fig_eq.update_layout(
                             yaxis_title="수익률 (%)", height=370,
+                            xaxis=dict(range=_eq_xrange),
                             margin=dict(l=0, r=0, t=56, b=30),
                             legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="left", x=0)
                         )
@@ -3191,9 +3294,11 @@ def render_kis_isa_mode():
                             ))
                         fig_dd.update_layout(
                             yaxis_title="DD (%)", height=300,
+                            xaxis=dict(range=_eq_xrange),
                             margin=dict(l=0, r=0, t=56, b=30),
                             legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="left", x=0)
                         )
+                        fig_dd = _apply_dd_hover_format(fig_dd)
                         st.plotly_chart(fig_dd, use_container_width=True)
 
                         # ── 상세 성과 분석 (벤치마크, 월별, 몬테카를로, 켈리) ──
@@ -3501,40 +3606,13 @@ def render_kis_isa_mode():
         import data_cache as _yf_dc
         from datetime import date as _dt_date
 
-        # ── 샘플 전략 카드 ──
-        _us_presets = {
-            "기본": {"ov": 5.0, "un": -6.0, "cap": 10000, "fee": 0.01,
-                     "desc": "표준 설정. 안정적인 리밸런싱"},
-            "공격적": {"ov": 8.0, "un": -10.0, "cap": 30000, "fee": 0.01,
-                       "desc": "넓은 이격도 범위, 큰 초기자본"},
-            "방어적": {"ov": 3.0, "un": -4.0, "cap": 10000, "fee": 0.01,
-                       "desc": "좁은 이격도 범위, 빈번한 리밸런싱"},
-            "직접 설정": None,
-        }
-
-        _sc1, _sc2, _sc3 = st.columns(3)
-        for _sc_col, (_pname, _pval) in zip(
-            [_sc1, _sc2, _sc3],
-            [(k, v) for k, v in _us_presets.items() if v is not None],
-        ):
-            with _sc_col:
-                st.markdown(f"**{_pname}**")
-                st.caption(_pval["desc"])
-                st.code(f"고평가: {_pval['ov']}%  |  저평가: {_pval['un']}%\n초기자본: ${_pval['cap']:,}  |  수수료: {_pval['fee']}%", language=None)
-
-        st.divider()
-
-        # ── 평가 시스템 & 전략 선택 ──
-        _us_mode_col, _us_preset_col = st.columns(2)
+        # ── 평가 시스템 ──
+        _us_mode_col, _ = st.columns(2)
         with _us_mode_col:
             us_eval_mode = st.selectbox("평가 시스템", [3, 5], index=1,
                                         format_func=lambda x: f"{x}단계", key="us_wdr_eval_mode")
-        with _us_preset_col:
-            _us_preset_sel = st.selectbox("전략 선택", list(_us_presets.keys()), index=0, key="us_wdr_preset")
-            _us_preset = _us_presets[_us_preset_sel]
 
         # ── 파라미터 입력 ──
-        _is_custom = _us_preset is None
         pcol1, pcol2, pcol3, pcol4 = st.columns(4)
         with pcol1:
             _def_start = _dt_date(2012, 1, 1)
@@ -3545,33 +3623,26 @@ def render_kis_isa_mode():
                 min_value=_dt_date(2000, 1, 1), max_value=_dt_date.today(), key="us_wdr_end_date")
         with pcol3:
             bt_cap = st.number_input("초기 자본 ($)", min_value=1000,
-                value=10000 if _is_custom else _us_preset["cap"], step=1000, key="bt_tqqq_cap")
+                value=10000, step=1000, key="bt_tqqq_cap")
         with pcol4:
             bt_fee = st.number_input("매매 수수료 (%)", min_value=0.0, max_value=1.0,
-                value=0.01 if _is_custom else _us_preset["fee"],
-                step=0.005, format="%.3f", key="bt_tqqq_fee_pct")
+                value=0.01, step=0.005, format="%.3f", key="bt_tqqq_fee_pct")
 
         pcol5, pcol6, _, _ = st.columns(4)
         with pcol5:
             bt_ov = st.number_input("고평가 임계값 (%)", min_value=0.0, max_value=30.0,
-                value=5.0 if _is_custom else _us_preset["ov"], step=0.5, key="bt_tqqq_ov",
-                disabled=not _is_custom)
+                value=5.0, step=0.5, key="bt_tqqq_ov")
         with pcol6:
             bt_un = st.number_input("저평가 임계값 (%)", min_value=-30.0, max_value=0.0,
-                value=-6.0 if _is_custom else _us_preset["un"], step=0.5, key="bt_tqqq_un",
-                disabled=not _is_custom)
-        if not _is_custom:
-            bt_ov = _us_preset["ov"]
-            bt_un = _us_preset["un"]
+                value=-6.0, step=0.5, key="bt_tqqq_un")
 
         if st.button("백테스트 실행", key="tqqq_wdr_run_bt", type="primary", use_container_width=True):
             with st.spinner("QQQ/TQQQ 데이터 로드 중..."):
                 start_str = str(bt_start_date)
                 end_str = str(bt_end_date)
                 try:
-                    # QQQ: 추세선 정확도를 위해 1999년부터 풀 데이터 로드
-                    df_sig_full = _yf_dc.fetch_and_cache_yf("QQQ", start="1999-03-10")
-                    df_trade_raw = _yf_dc.fetch_and_cache_yf("TQQQ", start="2010-02-12")
+                    df_sig_full = _yf_dc.fetch_and_cache_yf("QQQ", start="1999-03-10", force_refresh=True)
+                    df_trade_raw = _yf_dc.fetch_and_cache_yf("TQQQ", start="2010-02-12", force_refresh=True)
 
                     if df_sig_full is None or df_sig_full.empty or df_trade_raw is None or df_trade_raw.empty:
                         st.error("데이터 로드 실패. data/ 폴더에 QQQ_daily.csv, TQQQ_daily.csv를 확인하세요.")
@@ -3625,7 +3696,7 @@ def render_kis_isa_mode():
                             c7.metric("최종 자산", f"${m['final_equity']:,.0f}")
                             c8.metric("샤프", f"{m['sharpe']:.2f}")
 
-                            # ── QQQ Growth Trend 차트 (시작일부터 표시) ──
+                            # ── QQQ Growth Trend 차트 ──
                             if _weekly_full is not None and _trend_full is not None and len(_weekly_full) > 0:
                                 _start_ts = pd.Timestamp(start_str)
                                 _chart_mask = _weekly_full.index >= _start_ts
@@ -3643,7 +3714,6 @@ def render_kis_isa_mode():
                                 ))
                                 _valid = ~np.isnan(_tr_chart)
                                 if _valid.any():
-                                    # 고평가/저평가 라인
                                     _ov_line = _tr_chart.copy()
                                     _ov_line[_valid] = _tr_chart[_valid] * (1 + bt_ov / 100.0)
                                     _un_line = _tr_chart.copy()
@@ -3656,7 +3726,6 @@ def render_kis_isa_mode():
                                         x=_wk_chart.index, y=_un_line,
                                         name=f"저평가 {bt_un}%", line=dict(color="green", dash="dot", width=1),
                                     ))
-                                    # 5단계: 초고평가/초저평가 라인
                                     if us_eval_mode == 5:
                                         _sov_line = _tr_chart.copy()
                                         _sov_line[_valid] = _tr_chart[_valid] * 1.10
@@ -3720,6 +3789,7 @@ def render_kis_isa_mode():
                                 margin=dict(l=0, r=0, t=70, b=30),
                                 legend=dict(orientation="h", yanchor="bottom", y=1.06)
                             )
+                            fig_dd = _apply_dd_hover_format(fig_dd)
                             st.plotly_chart(fig_dd, use_container_width=True)
 
                             # ── 연도별 성과 ──
@@ -3758,6 +3828,12 @@ def render_kis_pension_mode():
 
     st.title("연금저축 포트폴리오")
     st.sidebar.header("연금저축 설정")
+    _pen_bt_start_raw = str(config.get("start_date", "2020-01-01") or "2020-01-01")
+    try:
+        _pen_bt_start_ts = pd.Timestamp(_pen_bt_start_raw).normalize()
+    except Exception:
+        _pen_bt_start_raw = "2020-01-01"
+        _pen_bt_start_ts = pd.Timestamp(_pen_bt_start_raw).normalize()
 
     kis_ak = _get_runtime_value(("KIS_PENSION_APP_KEY", "KIS_APP_KEY"), "")
     kis_sk = _get_runtime_value(("KIS_PENSION_APP_SECRET", "KIS_APP_SECRET"), "")
@@ -4276,6 +4352,7 @@ def render_kis_pension_mode():
             "kr_ief": str(kr_ief),
             "kr_qqq": str(kr_qqq),
             "kr_shy": str(kr_shy),
+            "bt_start": str(_pen_bt_start_raw),
         }
 
         def _compute_pen_signal_result():
@@ -4416,6 +4493,52 @@ def render_kis_pension_mode():
                 })
 
             action = "HOLD" if max_gap <= 0.03 else "REBALANCE"
+
+            bt_price_data = {}
+            for ticker in tickers:
+                _code = _code_only(source_map.get(ticker, ""))
+                if not _code:
+                    continue
+                _df_bt = _get_pen_daily_chart(_code, count=3000, use_disk_cache=True)
+                if _df_bt is None or _df_bt.empty:
+                    bt_price_data = {}
+                    break
+                _df_bt = _df_bt.copy().sort_index()
+                if "close" not in _df_bt.columns and "Close" in _df_bt.columns:
+                    _df_bt["close"] = _df_bt["Close"]
+                if "close" not in _df_bt.columns:
+                    bt_price_data = {}
+                    break
+                if len(_df_bt) >= 2:
+                    _last_dt = pd.to_datetime(_df_bt.index[-1]).date()
+                    if _last_dt >= _today:
+                        _df_bt = _df_bt.iloc[:-1]
+                _df_bt = _df_bt[_df_bt.index >= _pen_bt_start_ts]
+                if _df_bt.empty:
+                    bt_price_data = {}
+                    break
+                bt_price_data[ticker] = _df_bt
+
+            bt_result = None
+            bt_benchmark_series = None
+            bt_benchmark_label = "SPY Buy & Hold"
+            if bt_price_data:
+                bt_result = strategy.run_backtest(
+                    bt_price_data,
+                    initial_balance=10_000_000.0,
+                    fee=0.0002,
+                )
+                _bm_ticker = "SPY"
+                _bm_series = _normalize_numeric_series(
+                    bt_price_data.get(_bm_ticker),
+                    preferred_cols=("close", "Close"),
+                )
+                if not _bm_series.empty:
+                    bt_benchmark_series = _bm_series
+                    _bm_code = _code_only(source_map.get(_bm_ticker, ""))
+                    if _bm_code:
+                        bt_benchmark_label = f"{_fmt_etf_code_name(_bm_code)} Buy & Hold"
+
             return {
                 "signal": signal,
                 "action": action,
@@ -4425,6 +4548,10 @@ def render_kis_pension_mode():
                 "risk_chart_df": _risk_df,
                 "risk_chart_code": _risk_chart_code,
                 "balance": bal_local,
+                "bt_start_date": str(_pen_bt_start_raw),
+                "bt_result": bt_result,
+                "bt_benchmark_series": bt_benchmark_series,
+                "bt_benchmark_label": bt_benchmark_label,
             }
 
         if st.session_state.get("pen_signal_result") is None or st.session_state.get("pen_signal_params") != pen_sig_params:
@@ -4457,6 +4584,7 @@ def render_kis_pension_mode():
                 "kr_efa": str((_dm_settings.get("kr_etf_map", {}) or {}).get("EFA", "")),
                 "kr_agg": str((_dm_settings.get("kr_etf_map", {}) or {}).get("AGG", "")),
                 "kr_bil": str((_dm_settings.get("kr_etf_map", {}) or {}).get("BIL", "")),
+                "bt_start": str(_pen_bt_start_raw),
             }
 
             def _compute_dm_signal_result():
@@ -4628,6 +4756,60 @@ def render_kis_pension_mode():
                     _sleeve_alloc_amt += float(_row.get("목표수량(주,버림)", 0)) * _pxf
                 _sleeve_cash_est = max(_sleeve_eval - _sleeve_alloc_amt, 0.0)
 
+                _dm_bt_price_data = {}
+                for _tk in _dm_tickers:
+                    _code = str(_dm_kr_map.get(_tk, "")).strip()
+                    if not _code:
+                        continue
+                    _df_bt = _get_pen_daily_chart(_code, count=3000, use_disk_cache=True)
+                    if _df_bt is None or _df_bt.empty:
+                        _dm_bt_price_data = {}
+                        break
+                    _df_bt = _df_bt.copy().sort_index()
+                    if "close" not in _df_bt.columns and "Close" in _df_bt.columns:
+                        _df_bt["close"] = _df_bt["Close"]
+                    if "close" not in _df_bt.columns:
+                        _dm_bt_price_data = {}
+                        break
+                    if len(_df_bt) >= 2:
+                        _last_dt = pd.to_datetime(_df_bt.index[-1]).date()
+                        if _last_dt >= _today:
+                            _df_bt = _df_bt.iloc[:-1]
+                    _df_bt = _df_bt[_df_bt.index >= _pen_bt_start_ts]
+                    if _df_bt.empty:
+                        _dm_bt_price_data = {}
+                        break
+                    _dm_bt_price_data[_tk] = _df_bt
+
+                _dm_bt_result = None
+                _dm_bm_series = None
+                _dm_bm_label = "SPY Buy & Hold"
+                if _dm_bt_price_data:
+                    _dm_bt_result = _dm_strategy.run_backtest(
+                        _dm_bt_price_data,
+                        initial_balance=10_000_000.0,
+                        fee=0.0002,
+                    )
+                    _dm_bm_ticker = ""
+                    for _t in (_dm_settings.get("offensive", []) or []):
+                        if _t in _dm_bt_price_data:
+                            _dm_bm_ticker = str(_t)
+                            break
+                    if not _dm_bm_ticker:
+                        for _t in _dm_tickers:
+                            if _t in _dm_bt_price_data:
+                                _dm_bm_ticker = str(_t)
+                                break
+                    _dm_bm_series_norm = _normalize_numeric_series(
+                        _dm_bt_price_data.get(_dm_bm_ticker),
+                        preferred_cols=("close", "Close"),
+                    )
+                    if not _dm_bm_series_norm.empty:
+                        _dm_bm_series = _dm_bm_series_norm
+                        _dm_bm_code = _code_only(str(_dm_kr_map.get(_dm_bm_ticker, "")))
+                        if _dm_bm_code:
+                            _dm_bm_label = f"{_fmt_etf_code_name(_dm_bm_code)} Buy & Hold"
+
                 return {
                     "signal": _dm_sig,
                     "action": _action,
@@ -4644,6 +4826,10 @@ def render_kis_pension_mode():
                         "sleeve_cash_est": _sleeve_cash_est,
                     },
                     "balance": _bal_local,
+                    "bt_start_date": str(_pen_bt_start_raw),
+                    "bt_result": _dm_bt_result,
+                    "bt_benchmark_series": _dm_bm_series,
+                    "bt_benchmark_label": _dm_bm_label,
                 }
 
             if st.session_state.get("pen_dm_signal_result") is None or st.session_state.get("pen_dm_signal_params") != _dm_params:
@@ -4796,10 +4982,38 @@ def render_kis_pension_mode():
                     "주문 상태": _order_status,
                 })
 
-            _sm1, _sm2, _sm3 = st.columns(3)
-            _sm1.metric("리밸런싱 필요 전략", f"{_rebal_strategies}개")
-            _sm2.metric("매수 예정 종목", f"{_total_buy_count}개")
-            _sm3.metric("매도 예정 종목", f"{_total_sell_count}개")
+            # 다음 리밸런싱 예정일 계산 (매월 마지막 영업일)
+            from datetime import date as _d_date, timedelta as _d_td
+            import calendar as _cal
+            _today = _d_date.today()
+            def _next_rebal_date(_ref):
+                """매월 마지막 영업일(월~금) 계산. _ref 이후 가장 가까운 날짜 반환."""
+                y, m = _ref.year, _ref.month
+                last_day = _cal.monthrange(y, m)[1]
+                dt = _d_date(y, m, last_day)
+                while dt.weekday() >= 5:  # 토(5)/일(6) → 금요일로
+                    dt -= _d_td(days=1)
+                if dt >= _ref:
+                    return dt
+                # 이미 지남 → 다음 달
+                if m == 12:
+                    y, m = y + 1, 1
+                else:
+                    m += 1
+                last_day = _cal.monthrange(y, m)[1]
+                dt = _d_date(y, m, last_day)
+                while dt.weekday() >= 5:
+                    dt -= _d_td(days=1)
+                return dt
+
+            _next_rebal = _next_rebal_date(_today)
+            _days_left = (_next_rebal - _today).days
+
+            _sm1, _sm2, _sm3, _sm4 = st.columns(4)
+            _sm1.metric("다음 리밸런싱", f"{_next_rebal.strftime('%Y-%m-%d')}", delta=f"D-{_days_left}" if _days_left > 0 else "오늘")
+            _sm2.metric("리밸런싱 필요 전략", f"{_rebal_strategies}개")
+            _sm3.metric("매수 예정 종목", f"{_total_buy_count}개")
+            _sm4.metric("매도 예정 종목", f"{_total_sell_count}개")
             st.dataframe(pd.DataFrame(_combo_list), use_container_width=True, hide_index=True)
         else:
             st.info("시그널 계산 결과가 없습니다. 잔고를 새로고침해주세요.")
@@ -4920,6 +5134,148 @@ def render_kis_pension_mode():
                     st.caption("매매수량은 비중 차이 기준 자동 계산되며, 소수점 주식은 모두 버림 처리합니다.")
                     st.dataframe(res["alloc_df"], use_container_width=True, hide_index=True)
 
+                _laa_bt = res.get("bt_result")
+                if isinstance(_laa_bt, dict):
+                    _laa_eq = _laa_bt.get("equity_df")
+                    if isinstance(_laa_eq, pd.DataFrame) and not _laa_eq.empty and "equity" in _laa_eq.columns:
+                        _laa_m = _laa_bt.get("metrics", {}) or {}
+                        _laa_start = str(res.get("bt_start_date", _pen_bt_start_raw))
+                        _laa_final_eq = float(_laa_m.get("final_equity", _laa_eq["equity"].iloc[-1]))
+                        _laa_total_ret = float(_laa_m.get("total_return", 0.0))
+                        _laa_mdd = float(_laa_m.get("mdd", 0.0))
+                        _laa_cagr = float(_laa_m.get("cagr", 0.0))
+
+                        _bal_valid = isinstance(bal, dict) and not bal.get("error")
+                        _actual_cash_v = float(bal.get("cash", 0.0)) if _bal_valid else 0.0
+                        _actual_hlds = (bal.get("holdings", []) or []) if _bal_valid else []
+                        _actual_eval_v = sum(float(h.get("eval_amt", 0.0) or 0.0) for h in _actual_hlds)
+                        _actual_total_v = _actual_cash_v + _actual_eval_v
+
+                        _alloc_df_sync = res.get("alloc_df")
+                        _max_gap_pct = 0.0
+                        _sync_ok = True
+                        if isinstance(_alloc_df_sync, pd.DataFrame) and not _alloc_df_sync.empty:
+                            if "비중 차이(%p)" in _alloc_df_sync.columns:
+                                _max_gap_pct = float(
+                                    pd.to_numeric(_alloc_df_sync["비중 차이(%p)"], errors="coerce").abs().max()
+                                )
+                            if "주문" in _alloc_df_sync.columns:
+                                _orders = _alloc_df_sync["주문"].astype(str)
+                                _sync_ok = not _orders.isin(["매수", "매도"]).any()
+
+                        st.write(f"**전략 성과 ({_laa_start} ~ 현재)**")
+                        st.write(
+                            f"수익률: **{_laa_total_ret:+.2f}%** | MDD: **{_laa_mdd:.2f}%** | CAGR: **{_laa_cagr:.2f}%**"
+                        )
+                        st.write(f"최종자산: {_laa_final_eq:,.0f}원 (1천만원 기준)")
+
+                        st.divider()
+                        ac1, ac2, ac3, ac4 = st.columns(4)
+                        ac1.metric(
+                            "백테스트 자산 (1천만원 기준)",
+                            f"{_laa_final_eq:,.0f}원",
+                            delta=f"{_laa_total_ret:+.2f}%",
+                        )
+                        ac2.metric(
+                            "실제 총자산",
+                            f"{_actual_total_v:,.0f}원" if _bal_valid else "조회 불가",
+                        )
+                        ac3.metric("최대 비중 차이", f"{_max_gap_pct:.2f}%p")
+                        ac4.metric("포지션 동기화", "일치" if _sync_ok else "불일치")
+                        ac4.caption("주문 상태가 모두 '유지'이면 일치로 판단합니다.")
+
+                        _laa_bm_series = res.get("bt_benchmark_series")
+                        _laa_bm_label = str(res.get("bt_benchmark_label", "SPY Buy & Hold"))
+                        _laa_bm_ret = None
+                        if isinstance(_laa_bm_series, pd.Series):
+                            _laa_bm_series = _laa_bm_series.dropna()
+                            _laa_bm_series = _laa_bm_series[_laa_bm_series.index >= pd.Timestamp(_laa_start)]
+                            if len(_laa_bm_series) > 1 and float(_laa_bm_series.iloc[0]) > 0:
+                                _laa_bm_ret = (_laa_bm_series / float(_laa_bm_series.iloc[0]) - 1.0) * 100.0
+
+                        _eq_ret = (_laa_eq["equity"] / 10_000_000.0 - 1.0) * 100.0
+                        st.markdown(
+                            "<div style='font-size:2.05rem; font-weight:800; line-height:1.25; margin:0.7rem 0 1.1rem 0;'>누적 수익률 (%)</div>",
+                            unsafe_allow_html=True,
+                        )
+                        fig_eq = go.Figure()
+                        fig_eq.add_trace(
+                            go.Scatter(
+                                x=_laa_eq.index,
+                                y=_eq_ret.values,
+                                mode="lines",
+                                name="LAA 전략",
+                                line=dict(color="gold", width=2),
+                            )
+                        )
+                        if isinstance(_laa_bm_ret, pd.Series) and not _laa_bm_ret.empty:
+                            fig_eq.add_trace(
+                                go.Scatter(
+                                    x=_laa_bm_ret.index,
+                                    y=_laa_bm_ret.values,
+                                    mode="lines",
+                                    name=_laa_bm_label,
+                                    line=dict(color="gray", width=1, dash="dot"),
+                                )
+                            )
+                        fig_eq.update_layout(
+                            yaxis_title="수익률(%)",
+                            height=370,
+                            margin=dict(l=0, r=0, t=56, b=30),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="left", x=0),
+                        )
+                        st.plotly_chart(fig_eq, use_container_width=True)
+                        st.markdown("<div style='height:2.2rem;'></div>", unsafe_allow_html=True)
+
+                        _eq_peak = _laa_eq["equity"].cummax()
+                        _eq_dd = (_laa_eq["equity"] - _eq_peak) / _eq_peak * 100.0
+                        st.markdown(
+                            "<div style='font-size:2.05rem; font-weight:800; line-height:1.25; margin:0.7rem 0 1.1rem 0;'>Drawdown</div>",
+                            unsafe_allow_html=True,
+                        )
+                        fig_dd = go.Figure()
+                        fig_dd.add_trace(
+                            go.Scatter(
+                                x=_laa_eq.index,
+                                y=_eq_dd.values,
+                                mode="lines",
+                                name="LAA 전략 DD(%)",
+                                line=dict(color="crimson", width=2),
+                                fill="tozeroy",
+                                fillcolor="rgba(220,20,60,0.15)",
+                            )
+                        )
+                        if isinstance(_laa_bm_ret, pd.Series) and not _laa_bm_ret.empty:
+                            _bm_eq = _laa_bm_ret / 100.0 + 1.0
+                            _bm_peak = _bm_eq.cummax()
+                            _bm_dd = (_bm_eq - _bm_peak) / _bm_peak * 100.0
+                            fig_dd.add_trace(
+                                go.Scatter(
+                                    x=_bm_dd.index,
+                                    y=_bm_dd.values,
+                                    mode="lines",
+                                    name=f"{_laa_bm_label} DD(%)",
+                                    line=dict(color="gray", width=1, dash="dot"),
+                                )
+                            )
+                        fig_dd.update_layout(
+                            yaxis_title="DD(%)",
+                            height=300,
+                            margin=dict(l=0, r=0, t=56, b=30),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="left", x=0),
+                        )
+                        fig_dd = _apply_dd_hover_format(fig_dd)
+                        st.plotly_chart(fig_dd, use_container_width=True)
+
+                        _render_performance_analysis(
+                            equity_series=_laa_eq["equity"],
+                            benchmark_series=_laa_bm_series if isinstance(_laa_bm_series, pd.Series) else None,
+                            strategy_metrics=_laa_m,
+                            strategy_label="LAA 전략",
+                            benchmark_label=_laa_bm_label,
+                            monte_carlo_sims=400,
+                        )
+
         # ──────────────────────────────────────────────────────────
         # 섹션 4: 듀얼모멘텀 전략 포트폴리오
         # ──────────────────────────────────────────────────────────
@@ -5009,6 +5365,158 @@ def render_kis_pension_mode():
                         em2.metric("전략 배정 평가금액", f"{float(_meta.get('sleeve_eval', 0.0)):,.0f} KRW")
                         em3.metric("버림 후 잔여 현금(예상)", f"{float(_meta.get('sleeve_cash_est', 0.0)):,.0f} KRW")
                         st.dataframe(_exp_df, use_container_width=True, hide_index=True)
+
+                    _dm_bt = _dm_res.get("bt_result")
+                    if isinstance(_dm_bt, dict):
+                        _dm_eq = _dm_bt.get("equity_df")
+                        if isinstance(_dm_eq, pd.DataFrame) and not _dm_eq.empty and "equity" in _dm_eq.columns:
+                            _dm_m = _dm_bt.get("metrics", {}) or {}
+                            _dm_start = str(_dm_res.get("bt_start_date", _pen_bt_start_raw))
+                            _dm_final_eq = float(_dm_m.get("final_equity", _dm_eq["equity"].iloc[-1]))
+                            _dm_total_ret = float(_dm_m.get("total_return", 0.0))
+                            _dm_mdd = float(_dm_m.get("mdd", 0.0))
+                            _dm_cagr = float(_dm_m.get("cagr", 0.0))
+
+                            _bal_valid = isinstance(bal, dict) and not bal.get("error")
+                            _actual_cash_v = float(bal.get("cash", 0.0)) if _bal_valid else 0.0
+                            _actual_hlds = (bal.get("holdings", []) or []) if _bal_valid else []
+                            _actual_eval_v = sum(float(h.get("eval_amt", 0.0) or 0.0) for h in _actual_hlds)
+                            _actual_total_v = _actual_cash_v + _actual_eval_v
+
+                            _dm_kr_map_local = _dm_settings.get("kr_etf_map", {}) or {}
+                            _dm_codes = [str(v).strip() for v in _dm_kr_map_local.values() if str(v).strip()]
+                            _actual_dm_codes = []
+                            for _h in _actual_hlds:
+                                _code = str(_h.get("code", "")).strip()
+                                _qty = float(_h.get("qty", 0.0) or 0.0)
+                                if _code in _dm_codes and _qty > 0:
+                                    _actual_dm_codes.append(_code)
+                            _actual_dm_codes = sorted(set(_actual_dm_codes))
+
+                            _bt_last_ticker = ""
+                            if "ticker" in _dm_eq.columns and len(_dm_eq) > 0:
+                                _bt_last_ticker = str(_dm_eq["ticker"].iloc[-1]).strip().upper()
+                            if not _bt_last_ticker:
+                                _bt_last_ticker = str(_dm_sig.get("target_ticker", "")).strip().upper()
+                            _bt_last_code = str(_dm_kr_map_local.get(_bt_last_ticker, "")).strip()
+                            _sync_dm = (len(_actual_dm_codes) == 1 and _actual_dm_codes[0] == _bt_last_code)
+                            _bt_pos_label = _fmt_etf_code_name(_bt_last_code) if _bt_last_code else _bt_last_ticker or "-"
+                            if _actual_dm_codes:
+                                _actual_pos_label = ", ".join([_fmt_etf_code_name(c) for c in _actual_dm_codes])
+                            else:
+                                _actual_pos_label = "CASH"
+
+                            st.write(f"**전략 성과 ({_dm_start} ~ 현재)**")
+                            st.write(
+                                f"수익률: **{_dm_total_ret:+.2f}%** | MDD: **{_dm_mdd:.2f}%** | CAGR: **{_dm_cagr:.2f}%**"
+                            )
+                            st.write(f"최종자산: {_dm_final_eq:,.0f}원 (1천만원 기준)")
+
+                            st.divider()
+                            dc1, dc2, dc3, dc4 = st.columns(4)
+                            dc1.metric(
+                                "백테스트 자산 (1천만원 기준)",
+                                f"{_dm_final_eq:,.0f}원",
+                                delta=f"{_dm_total_ret:+.2f}%",
+                            )
+                            dc2.metric(
+                                "실제 총자산",
+                                f"{_actual_total_v:,.0f}원" if _bal_valid else "조회 불가",
+                            )
+                            dc3.metric("백테/실제 포지션", f"{_bt_pos_label} / {_actual_pos_label}")
+                            dc4.metric("포지션 동기화", "일치" if _sync_dm else "불일치")
+
+                            _dm_bm_series = _dm_res.get("bt_benchmark_series")
+                            _dm_bm_label = str(_dm_res.get("bt_benchmark_label", "SPY Buy & Hold"))
+                            _dm_bm_ret = None
+                            if isinstance(_dm_bm_series, pd.Series):
+                                _dm_bm_series = _dm_bm_series.dropna()
+                                _dm_bm_series = _dm_bm_series[_dm_bm_series.index >= pd.Timestamp(_dm_start)]
+                                if len(_dm_bm_series) > 1 and float(_dm_bm_series.iloc[0]) > 0:
+                                    _dm_bm_ret = (_dm_bm_series / float(_dm_bm_series.iloc[0]) - 1.0) * 100.0
+
+                            _dm_eq_ret = (_dm_eq["equity"] / 10_000_000.0 - 1.0) * 100.0
+                            st.markdown(
+                                "<div style='font-size:2.05rem; font-weight:800; line-height:1.25; margin:0.7rem 0 1.1rem 0;'>누적 수익률 (%)</div>",
+                                unsafe_allow_html=True,
+                            )
+                            fig_dm_eq = go.Figure()
+                            fig_dm_eq.add_trace(
+                                go.Scatter(
+                                    x=_dm_eq.index,
+                                    y=_dm_eq_ret.values,
+                                    mode="lines",
+                                    name="듀얼모멘텀 전략",
+                                    line=dict(color="seagreen", width=2),
+                                )
+                            )
+                            if isinstance(_dm_bm_ret, pd.Series) and not _dm_bm_ret.empty:
+                                fig_dm_eq.add_trace(
+                                    go.Scatter(
+                                        x=_dm_bm_ret.index,
+                                        y=_dm_bm_ret.values,
+                                        mode="lines",
+                                        name=_dm_bm_label,
+                                        line=dict(color="gray", width=1, dash="dot"),
+                                    )
+                                )
+                            fig_dm_eq.update_layout(
+                                yaxis_title="수익률(%)",
+                                height=370,
+                                margin=dict(l=0, r=0, t=56, b=30),
+                                legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="left", x=0),
+                            )
+                            st.plotly_chart(fig_dm_eq, use_container_width=True)
+                            st.markdown("<div style='height:2.2rem;'></div>", unsafe_allow_html=True)
+
+                            _dm_eq_peak = _dm_eq["equity"].cummax()
+                            _dm_eq_dd = (_dm_eq["equity"] - _dm_eq_peak) / _dm_eq_peak * 100.0
+                            st.markdown(
+                                "<div style='font-size:2.05rem; font-weight:800; line-height:1.25; margin:0.7rem 0 1.1rem 0;'>Drawdown</div>",
+                                unsafe_allow_html=True,
+                            )
+                            fig_dm_dd = go.Figure()
+                            fig_dm_dd.add_trace(
+                                go.Scatter(
+                                    x=_dm_eq.index,
+                                    y=_dm_eq_dd.values,
+                                    mode="lines",
+                                    name="듀얼모멘텀 전략 DD(%)",
+                                    line=dict(color="crimson", width=2),
+                                    fill="tozeroy",
+                                    fillcolor="rgba(220,20,60,0.15)",
+                                )
+                            )
+                            if isinstance(_dm_bm_ret, pd.Series) and not _dm_bm_ret.empty:
+                                _dm_bm_eq = _dm_bm_ret / 100.0 + 1.0
+                                _dm_bm_peak = _dm_bm_eq.cummax()
+                                _dm_bm_dd = (_dm_bm_eq - _dm_bm_peak) / _dm_bm_peak * 100.0
+                                fig_dm_dd.add_trace(
+                                    go.Scatter(
+                                        x=_dm_bm_dd.index,
+                                        y=_dm_bm_dd.values,
+                                        mode="lines",
+                                        name=f"{_dm_bm_label} DD(%)",
+                                        line=dict(color="gray", width=1, dash="dot"),
+                                    )
+                                )
+                            fig_dm_dd.update_layout(
+                                yaxis_title="DD(%)",
+                                height=300,
+                                margin=dict(l=0, r=0, t=56, b=30),
+                                legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="left", x=0),
+                            )
+                            fig_dm_dd = _apply_dd_hover_format(fig_dm_dd)
+                            st.plotly_chart(fig_dm_dd, use_container_width=True)
+
+                            _render_performance_analysis(
+                                equity_series=_dm_eq["equity"],
+                                benchmark_series=_dm_bm_series if isinstance(_dm_bm_series, pd.Series) else None,
+                                strategy_metrics=_dm_m,
+                                strategy_label="듀얼모멘텀 전략",
+                                benchmark_label=_dm_bm_label,
+                                monte_carlo_sims=400,
+                            )
 
     # ══════════════════════════════════════════════════════════════
     # Tab 2: 백테스트
@@ -7231,6 +7739,7 @@ def main():
                                 hovermode='x unified',
                                 legend=dict(orientation="h", yanchor="bottom", y=1.06, xanchor="left", x=0)
                             )
+                            fig_dd = _apply_dd_hover_format(fig_dd)
                             st.plotly_chart(fig_dd, use_container_width=True)
 
                             # 개별 자산 에쿼티 기여도 차트
@@ -8323,6 +8832,7 @@ def main():
                         fig.update_yaxes(title_text="가격 (KRW)", row=1, col=1, secondary_y=False)
                         fig.update_yaxes(title_text="자산 (KRW)", row=1, col=1, secondary_y=True)
                         fig.update_yaxes(title_text="낙폭 (%)", row=2, col=1)
+                        fig = _apply_dd_hover_format(fig)
                         st.plotly_chart(fig, use_container_width=True)
 
                         if 'yearly_stats' in res:
@@ -9166,6 +9676,7 @@ def main():
                         fig_aux.update_layout(height=520, margin=dict(l=0, r=0, t=30, b=20))
                         fig_aux.update_yaxes(title_text="Return (%)", row=1, col=1)
                         fig_aux.update_yaxes(title_text="Drawdown (%)", row=2, col=1)
+                        fig_aux = _apply_dd_hover_format(fig_aux)
                         st.plotly_chart(fig_aux, use_container_width=True)
 
                         _rsi_curve = abr.get("rsi_curve")
@@ -9586,6 +10097,7 @@ def main():
                                 if "benchmark_dd" in _cdf.columns:
                                     _fig_dd.add_trace(go.Scatter(x=_cdf["date"], y=_cdf["benchmark_dd"], mode="lines", name="단순보유 DD(%)", line=dict(dash="dot")))
                                 _fig_dd.update_layout(height=320, margin=dict(l=0, r=0, t=20, b=10), yaxis_title="DD(%)")
+                                _fig_dd = _apply_dd_hover_format(_fig_dd)
                                 st.plotly_chart(_fig_dd, use_container_width=True)
 
                                 if _disp_s2 is not None and len(_disp_s2) == len(_cdf):

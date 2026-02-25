@@ -927,11 +927,12 @@ def save_cache_yf(ticker, df):
     _df.to_csv(path)
 
 
-def fetch_and_cache_yf(ticker, start="2010-01-01"):
+def fetch_and_cache_yf(ticker, start="2010-01-01", force_refresh: bool = False):
     """
     yfinance 데이터 캐시 우선 로드.
     - CSV 있으면 로드 → 마지막 날짜 이후 증분 다운로드 → CSV 갱신
     - CSV 없으면 전체 다운로드 → CSV 저장
+    - force_refresh=True면 캐시가 최신처럼 보여도 증분 조회를 시도
     Returns: DataFrame (date index, ohlcv columns) or None
     """
     import yfinance as yf
@@ -945,7 +946,7 @@ def fetch_and_cache_yf(ticker, start="2010-01-01"):
             last_date = last_date.tz_localize(None)
 
         gap_days = (datetime.now() - last_date).days
-        if gap_days <= 1:
+        if (not force_refresh) and gap_days <= 1:
             return cached  # 최신 상태
 
         # 증분 다운로드 (마지막 날짜 다음날부터)
