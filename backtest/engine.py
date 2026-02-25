@@ -1,8 +1,8 @@
-import pyupbit
 import pandas as pd
 import numpy as np
 from strategy.sma import SMAStrategy
 from strategy.donchian import DonchianStrategy
+import data_cache
 
 class BacktestEngine:
     def __init__(self):
@@ -27,7 +27,12 @@ class BacktestEngine:
         try:
             if df is None:
                 fetch_count = count
-                df = pyupbit.get_ohlcv(ticker, interval=interval, count=fetch_count)
+                df = data_cache.get_ohlcv_local_first(
+                    ticker,
+                    interval=interval,
+                    count=fetch_count,
+                    allow_api_fallback=True,
+                )
                 if df is None:
                     return {"error": "Failed to fetch data"}
             else:
@@ -218,7 +223,8 @@ class BacktestEngine:
 
         return {
             "performance": performance,
-            "df": df
+            "df": df,
+            "equity_curve": equity_curve
         }
 
     # ================================================================
@@ -468,10 +474,11 @@ class BacktestEngine:
                         fee=0.0005, slippage=0.0, start_date=None,
                         initial_balance=1000000, n_trials=100,
                         objective_metric="calmar",
-                        progress_callback=None):
+                        progress_callback=None, sell_mode="lower"):
         """
         Optuna TPE 기반 베이지안 최적화.
         objective_metric: "calmar", "sharpe", "return", "mdd"
+        sell_mode: "lower" (하단선) or "midline" (중심선) — Donchian only
         Returns: dict with best_params, best_value, trials, study
         """
         import optuna
@@ -530,7 +537,11 @@ class BacktestEngine:
 
                 signal_arr = np.zeros(len(close_arr_full), dtype=np.int8)
                 signal_arr[close_arr_full > upper_cache[bp]] = 1
-                signal_arr[close_arr_full < lower_cache[sp]] = -1
+                if sell_mode == "midline":
+                    midline = (upper_cache[bp] + lower_cache[sp]) / 2
+                    signal_arr[close_arr_full < midline] = -1
+                else:
+                    signal_arr[close_arr_full < lower_cache[sp]] = -1
             else:
                 p = trial.suggest_int("sma_period", buy_range[0], buy_range[1])
 
@@ -583,15 +594,16 @@ class BacktestEngine:
     # ================================================================
 
     def run_aux_backtest(self, df, main_strategy="Donchian", main_buy_p=20,
-                         main_sell_p=10, ma_short=5, ma_long=20,
+                         main_sell_p=10, ma_count=2, ma_short=5, ma_long=20,
                          oversold_threshold=-5.0, tp1_pct=5.0, tp2_pct=10.0,
                          fee=0.0005, slippage=0.0, start_date=None,
                          initial_balance=1000000, split_count=2,
                          buy_seed_mode="equal", pyramid_ratio=1.0,
+                         use_rsi_filter=False, rsi_period=2, rsi_threshold=10.0,
                          progress_callback=None, main_df=None):
         """보조 전략 단일 백테스트 실행."""
         from strategy.aux_mean_reversion import (
-            compute_disparity, generate_main_position, fast_simulate_aux
+            compute_disparity, compute_rsi, generate_main_position, fast_simulate_aux
         )
 
         def _emit(unit, msg):
@@ -637,10 +649,32 @@ class BacktestEngine:
             _m_pos_s = pd.Series(_m_pos, index=_main_idx).sort_index()
             main_pos = _m_pos_s.reindex(_exec_idx, method="ffill").fillna(0).astype(np.int8).values
 
-        # 이격도 계산
+        # 이격도 계산 (ma_count=1이면 단기MA 이격도만 사용)
         _emit(35, "이격도 계산")
+        try:
+            ma_count = int(ma_count)
+        except Exception:
+            ma_count = 2
+        ma_count = 1 if ma_count == 1 else 2
         disp_short = compute_disparity(close_arr, ma_short)
-        disp_long = compute_disparity(close_arr, ma_long)
+        if ma_count == 1:
+            disp_long = disp_short
+        else:
+            disp_long = compute_disparity(close_arr, ma_long)
+
+        try:
+            use_rsi_filter = bool(use_rsi_filter)
+        except Exception:
+            use_rsi_filter = False
+        try:
+            rsi_period = max(2, int(rsi_period))
+        except Exception:
+            rsi_period = 2
+        try:
+            rsi_threshold = float(rsi_threshold)
+        except Exception:
+            rsi_threshold = 10.0
+        rsi_arr = compute_rsi(close_arr, rsi_period) if use_rsi_filter else None
 
         # start_date 필터
         start_idx = 0
@@ -664,6 +698,9 @@ class BacktestEngine:
             split_count=split_count,
             buy_seed_mode=buy_seed_mode,
             pyramid_ratio=pyramid_ratio,
+            use_rsi_filter=use_rsi_filter,
+            rsi_arr=(None if rsi_arr is None else rsi_arr[start_idx:]),
+            rsi_threshold=rsi_threshold,
             return_series=True,
         )
 
@@ -689,11 +726,22 @@ class BacktestEngine:
         res["strategy_return_curve"] = _strat_return
         res["benchmark_return_curve"] = _bench_return
         res["benchmark_dd_curve"] = _bench_dd
+        res["disparity_short_curve"] = disp_short[start_idx:]
+        res["disparity_long_curve"] = disp_long[start_idx:]
+        res["oversold_threshold"] = float(oversold_threshold)
+        res["ma_count"] = ma_count
+        res["ma_short"] = int(ma_short)
+        res["ma_long"] = int(ma_short if ma_count == 1 else ma_long)
+        res["use_rsi_filter"] = bool(use_rsi_filter)
+        res["rsi_period"] = int(rsi_period)
+        res["rsi_threshold"] = float(rsi_threshold)
+        if rsi_arr is not None:
+            res["rsi_curve"] = rsi_arr[start_idx:]
         _emit(100, "완료")
         return res
 
     def optimize_aux(self, df, main_strategy="Donchian", main_buy_p=20,
-                     main_sell_p=10, ma_short_range=(3, 30),
+                     main_sell_p=10, ma_count=2, ma_short_range=(3, 30),
                      ma_long_range=(10, 120), threshold_range=(-15.0, -1.0),
                      tp1_range=(2.0, 10.0), tp2_range=(5.0, 20.0),
                      split_count_range=(1, 5),
@@ -701,13 +749,16 @@ class BacktestEngine:
                      initial_balance=1000000, n_trials=100,
                      objective_metric="calmar", progress_callback=None,
                      buy_seed_mode="equal", pyramid_ratio=1.0, main_df=None,
-                     min_trade_count=0):
-        """보조 전략 Optuna 최적화 (분할 매수 횟수 포함)."""
-        import optuna
-        optuna.logging.set_verbosity(optuna.logging.WARNING)
-
+                     min_trade_count=0, optimization_method="optuna",
+                     ma_short_step=1, ma_long_step=1,
+                     threshold_step=0.5, tp_step=0.5, split_step=1,
+                     max_grid_evals=30000,
+                     use_rsi_filter=False,
+                     rsi_period_range=(2, 2), rsi_threshold_range=(5.0, 10.0),
+                     rsi_period_step=1, rsi_threshold_step=0.5):
+        """보조 전략 최적화 (Optuna/그리드, 분할 매수 횟수 포함)."""
         from strategy.aux_mean_reversion import (
-            compute_disparity, generate_main_position, fast_simulate_aux
+            compute_disparity, compute_rsi, generate_main_position, fast_simulate_aux
         )
 
         df = df.copy()
@@ -741,12 +792,91 @@ class BacktestEngine:
             _m_pos_s = pd.Series(_m_pos, index=_main_idx).sort_index()
             main_pos = _m_pos_s.reindex(_exec_idx, method="ffill").fillna(0).astype(np.int8).values
 
+        try:
+            ma_count = int(ma_count)
+        except Exception:
+            ma_count = 2
+        ma_count = 1 if ma_count == 1 else 2
+
+        opt_method = str(optimization_method or "optuna").strip().lower()
+        if opt_method not in {"optuna", "grid"}:
+            opt_method = "optuna"
+
+        try:
+            ma_short_step = max(1, int(ma_short_step))
+        except Exception:
+            ma_short_step = 1
+        try:
+            ma_long_step = max(1, int(ma_long_step))
+        except Exception:
+            ma_long_step = 1
+        try:
+            split_step = max(1, int(split_step))
+        except Exception:
+            split_step = 1
+        try:
+            threshold_step = float(threshold_step)
+        except Exception:
+            threshold_step = 0.5
+        if threshold_step <= 0:
+            threshold_step = 0.5
+        try:
+            tp_step = float(tp_step)
+        except Exception:
+            tp_step = 0.5
+        if tp_step <= 0:
+            tp_step = 0.5
+        try:
+            max_grid_evals = max(1, int(max_grid_evals))
+        except Exception:
+            max_grid_evals = 30000
+
+        try:
+            use_rsi_filter = bool(use_rsi_filter)
+        except Exception:
+            use_rsi_filter = False
+        try:
+            rsi_period_step = max(1, int(rsi_period_step))
+        except Exception:
+            rsi_period_step = 1
+        try:
+            rsi_threshold_step = float(rsi_threshold_step)
+        except Exception:
+            rsi_threshold_step = 0.5
+        if rsi_threshold_step <= 0:
+            rsi_threshold_step = 0.5
+        try:
+            _rsi_pmin = max(2, int(rsi_period_range[0]))
+            _rsi_pmax = max(2, int(rsi_period_range[1]))
+        except Exception:
+            _rsi_pmin, _rsi_pmax = 2, 2
+        if _rsi_pmax < _rsi_pmin:
+            _rsi_pmin, _rsi_pmax = _rsi_pmax, _rsi_pmin
+        rsi_period_range = (int(_rsi_pmin), int(_rsi_pmax))
+        try:
+            _rsi_tmin = float(rsi_threshold_range[0])
+            _rsi_tmax = float(rsi_threshold_range[1])
+        except Exception:
+            _rsi_tmin, _rsi_tmax = 5.0, 10.0
+        if _rsi_tmax < _rsi_tmin:
+            _rsi_tmin, _rsi_tmax = _rsi_tmax, _rsi_tmin
+        rsi_threshold_range = (float(_rsi_tmin), float(_rsi_tmax))
+
         # 이격도 사전계산 (모든 기간)
         disp_cache = {}
-        all_periods = set(range(ma_short_range[0], ma_short_range[1] + 1)) | \
-                      set(range(ma_long_range[0], ma_long_range[1] + 1))
+        all_periods = set(range(ma_short_range[0], ma_short_range[1] + 1))
+        if ma_count == 2:
+            all_periods |= set(range(ma_long_range[0], ma_long_range[1] + 1))
         for p in all_periods:
             disp_cache[p] = compute_disparity(close_arr, p)
+
+        rsi_cache = {}
+        if use_rsi_filter:
+            rp_vals = list(range(int(rsi_period_range[0]), int(rsi_period_range[1]) + 1, int(rsi_period_step)))
+            if rp_vals[-1] != int(rsi_period_range[1]):
+                rp_vals.append(int(rsi_period_range[1]))
+            for rp in sorted(set(rp_vals)):
+                rsi_cache[int(rp)] = compute_rsi(close_arr, int(rp))
 
         # start_date 필터
         start_idx = 0
@@ -769,74 +899,247 @@ class BacktestEngine:
         def _metric(res, calmar):
             if objective_metric == "calmar":
                 return calmar
-            elif objective_metric == "sharpe":
+            if objective_metric == "sharpe":
                 return res['sharpe']
-            elif objective_metric == "return":
+            if objective_metric == "return":
                 return res['total_return']
-            elif objective_metric == "mdd":
+            if objective_metric == "mdd":
                 return res['mdd']
             return calmar
 
-        def objective(trial):
-            ms = trial.suggest_int("ma_short", ma_short_range[0], ma_short_range[1])
-            ml = trial.suggest_int("ma_long", ma_long_range[0], ma_long_range[1])
-            if ml <= ms:
-                ml = ms + 1
-                if ml > ma_long_range[1]:
-                    return float('-inf')
-            thr = trial.suggest_float("threshold", threshold_range[0], threshold_range[1], step=0.5)
-            t1 = trial.suggest_float("tp1_pct", tp1_range[0], tp1_range[1], step=0.5)
-            t2 = trial.suggest_float("tp2_pct", tp2_range[0], tp2_range[1], step=0.5)
+        def _float_grid_values(vmin, vmax, step):
+            vmin = float(vmin)
+            vmax = float(vmax)
+            if vmax < vmin:
+                vmin, vmax = vmax, vmin
+            step = max(1e-9, float(step))
+            out = []
+            cur = vmin
+            guard = 0
+            while cur <= vmax + 1e-9 and guard < 100000:
+                out.append(round(float(cur), 6))
+                cur += step
+                guard += 1
+            if not out or out[-1] < vmax - 1e-9:
+                out.append(round(float(vmax), 6))
+            return out
+
+        def _evaluate_one(ms, ml, thr, t1, t2, sc, rp=None, rt=None):
+            if len(o) < 5:
+                return float('-inf'), None
+
+            ms = int(ms)
+            ml = int(ml)
+            sc = int(sc)
+            thr = float(thr)
+            t1 = float(t1)
+            t2 = float(t2)
+            rp = int(rp) if rp is not None else int(rsi_period_range[0])
+            rt = float(rt) if rt is not None else float(rsi_threshold_range[0])
             if t2 <= t1:
-                t2 = t1 + 0.5
-            sc = trial.suggest_int("split_count", split_count_range[0], split_count_range[1])
+                t2 = t1 + max(0.1, float(tp_step))
 
             ds = disp_cache[ms][start_idx:]
-            dl = disp_cache[ml][start_idx:]
+            dl = ds if ma_count == 1 else disp_cache[ml][start_idx:]
+            rsi_slice = None
+            if use_rsi_filter:
+                _rsi_full = rsi_cache.get(rp, None)
+                if _rsi_full is not None:
+                    rsi_slice = _rsi_full[start_idx:]
 
-            if len(o) < 5:
-                return float('-inf')
-
-            res = fast_simulate_aux(o, c, h, l, mp, ds, dl,
-                                    thr, t1, t2, fee, slippage,
-                                    initial_balance, year_arr,
-                                    split_count=sc,
-                                    buy_seed_mode=buy_seed_mode,
-                                    pyramid_ratio=pyramid_ratio)
+            res = fast_simulate_aux(
+                o, c, h, l, mp, ds, dl,
+                thr, t1, t2, fee, slippage,
+                initial_balance, year_arr,
+                split_count=sc,
+                buy_seed_mode=buy_seed_mode,
+                pyramid_ratio=pyramid_ratio,
+                use_rsi_filter=use_rsi_filter,
+                rsi_arr=rsi_slice,
+                rsi_threshold=rt,
+            )
 
             calmar = abs(res['cagr'] / res['mdd']) if res['mdd'] != 0 else 0
             trade_count = int(res.get('trade_count', 0))
             meets_trade_filter = trade_count >= int(min_trade_count)
             score = _metric(res, calmar) if meets_trade_filter else -1e9
+
             record = {
                 **res, 'calmar': calmar,
+                'MA Count': int(ma_count),
                 'MA Short': ms, 'MA Long': ml,
                 'Threshold': thr, 'TP1 %': t1, 'TP2 %': t2,
                 'Split': sc,
+                'Use RSI': bool(use_rsi_filter),
+                'RSI Period': int(rp),
+                'RSI Threshold': float(rt),
                 'Buy Seed Mode': buy_seed_mode,
                 'Pyramid Ratio': pyramid_ratio,
                 'Min Trades': int(min_trade_count),
                 'Trade Filter Pass': bool(meets_trade_filter),
+                'optimization_method': opt_method,
                 'score': float(score),
             }
-            trial_results.append(record)
+            return float(score), record
 
-            if progress_callback:
-                val = score
-                progress_callback(len(trial_results), n_trials,
-                                  f"Trial {len(trial_results)}: {objective_metric}={val:.2f}, trades={trade_count}")
+        if opt_method == "optuna":
+            import optuna
+            optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-            return score
+            def objective(trial):
+                ms = trial.suggest_int("ma_short", ma_short_range[0], ma_short_range[1])
+                if ma_count == 1:
+                    ml = ms
+                else:
+                    ml = trial.suggest_int("ma_long", ma_long_range[0], ma_long_range[1])
+                    if ml <= ms:
+                        ml = ms + 1
+                        if ml > ma_long_range[1]:
+                            return float('-inf')
 
-        study = optuna.create_study(
-            direction="maximize",
-            sampler=optuna.samplers.TPESampler(seed=42)
-        )
-        study.optimize(objective, n_trials=n_trials)
+                thr = trial.suggest_float("threshold", threshold_range[0], threshold_range[1], step=threshold_step)
+                t1 = trial.suggest_float("tp1_pct", tp1_range[0], tp1_range[1], step=tp_step)
+                t2 = trial.suggest_float("tp2_pct", tp2_range[0], tp2_range[1], step=tp_step)
+                sc = trial.suggest_int("split_count", split_count_range[0], split_count_range[1], step=split_step)
+                if use_rsi_filter:
+                    rp = trial.suggest_int("rsi_period", rsi_period_range[0], rsi_period_range[1], step=rsi_period_step)
+                    rt = trial.suggest_float("rsi_threshold", rsi_threshold_range[0], rsi_threshold_range[1], step=rsi_threshold_step)
+                else:
+                    rp = int(rsi_period_range[0])
+                    rt = float(rsi_threshold_range[0])
+
+                score, record = _evaluate_one(ms, ml, thr, t1, t2, sc, rp, rt)
+                if record is not None:
+                    trial_results.append(record)
+
+                if progress_callback:
+                    progress_callback(
+                        len(trial_results), int(n_trials),
+                        f"Trial {len(trial_results)}: {objective_metric}={score:.2f}, trades={int(record.get('trade_count', 0)) if record else 0}"
+                    )
+                return score
+
+            study = optuna.create_study(
+                direction="maximize",
+                sampler=optuna.samplers.TPESampler(seed=42)
+            )
+            study.optimize(objective, n_trials=int(n_trials))
+
+            best_params = dict(study.best_params)
+            if ma_count == 1 and "ma_short" in best_params and "ma_long" not in best_params:
+                best_params["ma_long"] = int(best_params["ma_short"])
+            if use_rsi_filter:
+                if "rsi_period" not in best_params:
+                    best_params["rsi_period"] = int(rsi_period_range[0])
+                if "rsi_threshold" not in best_params:
+                    best_params["rsi_threshold"] = float(rsi_threshold_range[0])
+
+            return {
+                "best_params": best_params,
+                "best_value": float(study.best_value),
+                "trials": trial_results,
+                "study": study,
+                "optimization_method": opt_method,
+                "evaluated_count": len(trial_results),
+            }
+
+        # grid 방식
+        ms_vals = list(range(int(ma_short_range[0]), int(ma_short_range[1]) + 1, int(ma_short_step)))
+        if ms_vals[-1] != int(ma_short_range[1]):
+            ms_vals.append(int(ma_short_range[1]))
+
+        if ma_count == 1:
+            ml_vals = [None]
+        else:
+            ml_vals = list(range(int(ma_long_range[0]), int(ma_long_range[1]) + 1, int(ma_long_step)))
+            if ml_vals[-1] != int(ma_long_range[1]):
+                ml_vals.append(int(ma_long_range[1]))
+
+        thr_vals = _float_grid_values(threshold_range[0], threshold_range[1], threshold_step)
+        tp1_vals = _float_grid_values(tp1_range[0], tp1_range[1], tp_step)
+        tp2_vals = _float_grid_values(tp2_range[0], tp2_range[1], tp_step)
+        split_vals = list(range(int(split_count_range[0]), int(split_count_range[1]) + 1, int(split_step)))
+        if split_vals[-1] != int(split_count_range[1]):
+            split_vals.append(int(split_count_range[1]))
+
+        if use_rsi_filter:
+            rp_vals = list(range(int(rsi_period_range[0]), int(rsi_period_range[1]) + 1, int(rsi_period_step)))
+            if rp_vals[-1] != int(rsi_period_range[1]):
+                rp_vals.append(int(rsi_period_range[1]))
+            rp_vals = sorted(set(int(v) for v in rp_vals))
+            rt_vals = _float_grid_values(rsi_threshold_range[0], rsi_threshold_range[1], rsi_threshold_step)
+        else:
+            rp_vals = [int(rsi_period_range[0])]
+            rt_vals = [float(rsi_threshold_range[0])]
+
+        total_est = len(ms_vals) * len(ml_vals) * len(thr_vals) * len(tp1_vals) * len(tp2_vals) * len(split_vals) * len(rp_vals) * len(rt_vals)
+        total_target = max(1, min(int(total_est), int(max_grid_evals)))
+
+        best_score = float('-inf')
+        best_params = {}
+
+        for ms in ms_vals:
+            for ml in ml_vals:
+                _ml = int(ms) if ma_count == 1 else int(ml)
+                if ma_count == 2 and _ml <= int(ms):
+                    continue
+                for thr in thr_vals:
+                    for t1 in tp1_vals:
+                        for t2 in tp2_vals:
+                            if float(t2) <= float(t1):
+                                continue
+                            for sc in split_vals:
+                                for rp in rp_vals:
+                                    for rt in rt_vals:
+                                        if len(trial_results) >= int(max_grid_evals):
+                                            break
+
+                                        score, record = _evaluate_one(ms, _ml, thr, t1, t2, sc, rp, rt)
+                                        if record is None:
+                                            continue
+                                        trial_results.append(record)
+
+                                        if score > best_score:
+                                            best_score = score
+                                            best_params = {
+                                                "ma_short": int(ms),
+                                                "ma_long": int(_ml),
+                                                "threshold": float(thr),
+                                                "tp1_pct": float(t1),
+                                                "tp2_pct": float(t2),
+                                                "split_count": int(sc),
+                                            }
+                                            if use_rsi_filter:
+                                                best_params["rsi_period"] = int(rp)
+                                                best_params["rsi_threshold"] = float(rt)
+
+                                        if progress_callback:
+                                            progress_callback(
+                                                len(trial_results), total_target,
+                                                f"Grid {len(trial_results)}: {objective_metric}={score:.2f}, trades={int(record.get('trade_count', 0))}"
+                                            )
+                                    if len(trial_results) >= int(max_grid_evals):
+                                        break
+                                if len(trial_results) >= int(max_grid_evals):
+                                    break
+                            if len(trial_results) >= int(max_grid_evals):
+                                break
+                        if len(trial_results) >= int(max_grid_evals):
+                            break
+                    if len(trial_results) >= int(max_grid_evals):
+                        break
+                if len(trial_results) >= int(max_grid_evals):
+                    break
+            if len(trial_results) >= int(max_grid_evals):
+                break
 
         return {
-            "best_params": study.best_params,
-            "best_value": study.best_value,
+            "best_params": best_params,
+            "best_value": float(best_score if trial_results else float('-inf')),
             "trials": trial_results,
-            "study": study,
+            "study": None,
+            "optimization_method": opt_method,
+            "evaluated_count": len(trial_results),
+            "total_estimated": int(total_est),
+            "max_grid_evals": int(max_grid_evals),
         }

@@ -1,7 +1,5 @@
 import threading
 import time
-import pandas as pd
-import pyupbit
 import datetime
 import data_cache
 
@@ -157,9 +155,19 @@ class CoinTradingWorker:
             try:
                 self.status_msg = "Fetching..."
                 with ThreadPoolExecutor(max_workers=3) as pool:
-                    f_price = pool.submit(pyupbit.get_current_price, ticker)
+                    f_price = pool.submit(
+                        data_cache.get_current_price_local_first,
+                        ticker,
+                        3.0,
+                        True,
+                    )
                     f_krw = pool.submit(trader.get_balance, "KRW")
-                    f_ob = pool.submit(pyupbit.get_orderbook, ticker)
+                    f_ob = pool.submit(
+                        data_cache.get_orderbook_cached,
+                        ticker,
+                        2.0,
+                        True,
+                    )
 
                     try:
                         self._data['price'] = f_price.result(timeout=3) or 0
@@ -271,7 +279,13 @@ class GoldDataWorker:
                 # 잔고 + 현재가 + 호가를 병렬 조회 (최대 5초 타임아웃)
                 with ThreadPoolExecutor(max_workers=3) as pool:
                     f_bal = pool.submit(self._trader.get_balance)
-                    f_price = pool.submit(self._trader.get_current_price)
+                    f_price = pool.submit(
+                        data_cache.get_gold_current_price_local_first,
+                        self._trader,
+                        "M04020000",
+                        True,
+                        8.0,
+                    )
                     f_ob = pool.submit(self._trader.get_orderbook)
 
                     try:
@@ -294,7 +308,7 @@ class GoldDataWorker:
                 now = time.time()
                 if (now - self._chart_updated) > 300:
                     try:
-                        df = self._trader.get_daily_chart(count=5000)
+                        df = data_cache.fetch_and_cache_gold(self._trader, code="M04020000", count=5000)
                         if df is not None and len(df) > 10:
                             self._chart_df = df
                             self._chart_updated = now

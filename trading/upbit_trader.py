@@ -1,8 +1,8 @@
 import pyupbit
-import pandas as pd
 import time
 import logging
 from strategy.sma import SMAStrategy
+import data_cache
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +151,7 @@ class UpbitTrader:
 
     def get_current_price(self, ticker):
         try:
-            return pyupbit.get_current_price(ticker)
+            return data_cache.get_current_price_local_first(ticker, ttl_sec=3.0, allow_api_fallback=True)
         except Exception as e:
             logger.error(f"Error getting price: {e}")
             return None
@@ -159,10 +159,7 @@ class UpbitTrader:
     def get_orderbook(self, ticker):
         """호가창 조회"""
         try:
-            ob = pyupbit.get_orderbook(ticker)
-            if isinstance(ob, list):
-                ob = ob[0]
-            return ob
+            return data_cache.get_orderbook_cached(ticker, ttl_sec=2.0, allow_api_fallback=True)
         except Exception as e:
             logger.error(f"Error getting orderbook: {e}")
             return None
@@ -466,7 +463,12 @@ class UpbitTrader:
         """
         # 1. Determine Target Price (Current Candle Open)
         try:
-            df = pyupbit.get_ohlcv(ticker, interval=interval, count=1)
+            df = data_cache.get_ohlcv_local_first(
+                ticker,
+                interval=interval,
+                count=1,
+                allow_api_fallback=True,
+            )
             target_price = df['open'].iloc[0]
         except Exception as e:
             logger.error(f"Failed to get target price (OHLCV): {e}")
@@ -602,7 +604,12 @@ class UpbitTrader:
         """
         count = max(200, sma_period * 3)
 
-        df = pyupbit.get_ohlcv(ticker, interval=interval, count=count)
+        df = data_cache.get_ohlcv_local_first(
+            ticker,
+            interval=interval,
+            count=count,
+            allow_api_fallback=True,
+        )
         if df is None:
             return "Failed to fetch data"
 

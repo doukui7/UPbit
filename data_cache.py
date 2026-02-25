@@ -7,6 +7,25 @@ import os
 import pandas as pd
 import pyupbit
 from datetime import datetime, timedelta
+import threading
+
+# ── yfinance SSL 인증서 경로 수정 (한글 경로 문제 해결) ──
+# certifi 경로에 non-ASCII 문자가 있으면 curl이 인증서를 찾지 못함
+try:
+    import certifi as _certifi
+    _cert_path = _certifi.where()
+    _has_nonascii = any(ord(c) > 127 for c in _cert_path)
+    if _has_nonascii:
+        # TEMP 경로도 한글 포함 가능 → C:\temp 사용
+        _safe_cert = "C:\\temp\\cacert.pem"
+        if not os.path.isfile(_safe_cert):
+            import shutil
+            os.makedirs(os.path.dirname(_safe_cert), exist_ok=True)
+            shutil.copy2(_cert_path, _safe_cert)
+        for _env_key in ("CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"):
+            os.environ[_env_key] = _safe_cert
+except Exception:
+    pass
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
 
@@ -15,6 +34,25 @@ CANDLES_PER_DAY = {
     "day": 1, "minute240": 6, "minute60": 24,
     "minute30": 48, "minute15": 96, "minute5": 288, "minute1": 1440
 }
+
+# 메모리 TTL 캐시 (현재가/호가)
+_MEM_CACHE_LOCK = threading.Lock()
+_PRICE_MEM_CACHE = {}      # key=ticker -> {"ts": float, "val": float}
+_ORDERBOOK_MEM_CACHE = {}  # key=ticker -> {"ts": float, "val": dict}
+
+
+def _normalize_ohlcv_df(df):
+    if df is None or getattr(df, "empty", True):
+        return df
+    out = df.copy()
+    try:
+        out.index = pd.to_datetime(out.index)
+    except Exception:
+        pass
+    if "close" not in out.columns and "Close" in out.columns:
+        out = out.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"})
+    out = out[~out.index.duplicated(keep="last")].sort_index()
+    return out
 
 
 def _ensure_cache_dir():
@@ -223,6 +261,234 @@ def get_ohlcv_cached(ticker, interval="day", to=None, count=200, progress_callba
     return fetch_and_cache(ticker, interval, to=to, count=count, progress_callback=progress_callback)
 
 
+def get_ohlcv_local_first(ticker, interval="day", to=None, count=200, allow_api_fallback=True, progress_callback=None):
+    """
+    로컬(parquet) 우선으로 OHLCV 조회.
+    - 로컬에 충분하면 즉시 반환
+    - 부족하고 allow_api_fallback=True면 API로 보강 후 반환
+    """
+    cached = _normalize_ohlcv_df(load_cached(ticker, interval))
+
+    req_count = int(max(1, count))
+    if cached is not None and len(cached) > 0:
+        subset = cached
+        if to:
+            try:
+                to_ts = pd.to_datetime(to)
+                if subset.index.tz is not None and to_ts.tz is None:
+                    to_ts = to_ts.tz_localize(subset.index.tz)
+                subset = subset[subset.index <= to_ts]
+            except Exception:
+                pass
+        if subset is not None and len(subset) > 0:
+            if len(subset) >= req_count:
+                return subset.tail(req_count)
+            if not allow_api_fallback:
+                return subset
+
+    if not allow_api_fallback:
+        return cached.tail(req_count) if cached is not None and len(cached) > 0 else None
+
+    # 부족 시에는 count 기준으로 다시 내려받아 과거 구간도 보강
+    try:
+        fresh = _chunked_download(ticker, interval=interval, to=to, count=req_count, progress_callback=progress_callback)
+        fresh = _normalize_ohlcv_df(fresh)
+        if fresh is not None and not fresh.empty:
+            merged = fresh
+            if cached is not None and not cached.empty:
+                merged = pd.concat([cached, fresh])
+                merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+            save_cache(ticker, interval, merged)
+            if to:
+                try:
+                    to_ts = pd.to_datetime(to)
+                    if merged.index.tz is not None and to_ts.tz is None:
+                        to_ts = to_ts.tz_localize(merged.index.tz)
+                    merged = merged[merged.index <= to_ts]
+                except Exception:
+                    pass
+            if merged is not None and not merged.empty:
+                return merged.tail(req_count)
+    except Exception:
+        pass
+
+    return get_ohlcv_cached(
+        ticker,
+        interval=interval,
+        to=to,
+        count=req_count,
+        progress_callback=progress_callback,
+    )
+
+
+def _get_local_last_close_with_ts(ticker, intervals=None):
+    ivs = list(intervals or [])
+    if not ivs:
+        ivs = ["minute1", "minute5", "minute15", "minute30", "minute60", "minute240", "day"]
+    seen = set()
+    for iv in ivs:
+        if iv in seen:
+            continue
+        seen.add(iv)
+        df = _normalize_ohlcv_df(load_cached(ticker, iv))
+        if df is None or df.empty:
+            continue
+        if "close" in df.columns:
+            try:
+                p = float(df["close"].iloc[-1] or 0.0)
+                if p > 0:
+                    return p, pd.to_datetime(df.index[-1])
+            except Exception:
+                continue
+    return 0.0, None
+
+
+def _get_local_last_close(ticker, intervals=None):
+    p, _ = _get_local_last_close_with_ts(ticker, intervals=intervals)
+    return p
+
+
+def _is_local_price_stale(last_ts, max_age_sec=900):
+    if last_ts is None:
+        return True
+    try:
+        now_ts = pd.Timestamp.now(tz=last_ts.tz) if getattr(last_ts, "tz", None) is not None else pd.Timestamp.now()
+        age = (now_ts - last_ts).total_seconds()
+        return age > float(max_age_sec)
+    except Exception:
+        return True
+
+
+def get_current_price_local_first(ticker, ttl_sec=5.0, allow_api_fallback=True):
+    """
+    현재가 로컬 우선 조회.
+    1) 메모리 TTL 캐시
+    2) 로컬 OHLCV 마지막 종가
+    3) (옵션) pyupbit 현재가 API
+    """
+    t = str(ticker or "").strip().upper()
+    if not t:
+        return 0.0
+
+    now_ts = float(datetime.now().timestamp())
+    with _MEM_CACHE_LOCK:
+        hit = _PRICE_MEM_CACHE.get(t)
+        if isinstance(hit, dict) and (now_ts - float(hit.get("ts", 0.0))) <= float(ttl_sec):
+            return float(hit.get("val", 0.0) or 0.0)
+
+    p, last_ts = _get_local_last_close_with_ts(t)
+    stale = _is_local_price_stale(last_ts, max_age_sec=900)
+    if (p <= 0 or stale) and allow_api_fallback:
+        try:
+            p = float(pyupbit.get_current_price(t) or 0.0)
+        except Exception:
+            p = 0.0
+
+    with _MEM_CACHE_LOCK:
+        _PRICE_MEM_CACHE[t] = {"ts": now_ts, "val": float(p if p > 0 else 0.0)}
+    return float(p if p > 0 else 0.0)
+
+
+def get_current_prices_local_first(tickers, ttl_sec=5.0, allow_api_fallback=True):
+    """
+    다중 현재가 조회 (로컬 우선 + API 폴백).
+    Returns: {ticker: price_float}
+    """
+    unique = []
+    seen = set()
+    for t in tickers or []:
+        key = str(t or "").strip().upper()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(key)
+
+    if not unique:
+        return {}
+
+    now_ts = float(datetime.now().timestamp())
+    out = {}
+    pending = []
+
+    with _MEM_CACHE_LOCK:
+        for t in unique:
+            hit = _PRICE_MEM_CACHE.get(t)
+            if isinstance(hit, dict) and (now_ts - float(hit.get("ts", 0.0))) <= float(ttl_sec):
+                out[t] = float(hit.get("val", 0.0) or 0.0)
+            else:
+                pending.append(t)
+
+    # 1) 로컬 close로 먼저 채움
+    still_missing = []
+    for t in pending:
+        p, last_ts = _get_local_last_close_with_ts(t)
+        stale = _is_local_price_stale(last_ts, max_age_sec=900)
+        if p > 0 and (not stale or not allow_api_fallback):
+            out[t] = float(p)
+        else:
+            still_missing.append(t)
+
+    # 2) API 폴백
+    if still_missing and allow_api_fallback:
+        try:
+            api_res = pyupbit.get_current_price(still_missing)
+            if isinstance(api_res, dict):
+                for t, v in api_res.items():
+                    out[str(t).upper()] = float(v or 0.0)
+            elif isinstance(api_res, (int, float)) and len(still_missing) == 1:
+                out[still_missing[0]] = float(api_res or 0.0)
+        except Exception:
+            pass
+
+        for t in still_missing:
+            if out.get(t, 0.0) > 0:
+                continue
+            try:
+                out[t] = float(pyupbit.get_current_price(t) or 0.0)
+            except Exception:
+                out[t] = 0.0
+
+    # 3) TTL 업데이트
+    with _MEM_CACHE_LOCK:
+        for t in unique:
+            val = float(out.get(t, 0.0) or 0.0)
+            _PRICE_MEM_CACHE[t] = {"ts": now_ts, "val": val}
+
+    return {t: float(out.get(t, 0.0) or 0.0) for t in unique}
+
+
+def get_orderbook_cached(ticker, ttl_sec=3.0, allow_api_fallback=True):
+    """
+    호가 캐시 조회.
+    - 메모리 TTL 캐시 우선
+    - allow_api_fallback=True면 API 호출
+    """
+    t = str(ticker or "").strip().upper()
+    if not t:
+        return None
+
+    now_ts = float(datetime.now().timestamp())
+    with _MEM_CACHE_LOCK:
+        hit = _ORDERBOOK_MEM_CACHE.get(t)
+        if isinstance(hit, dict) and (now_ts - float(hit.get("ts", 0.0))) <= float(ttl_sec):
+            return hit.get("val")
+
+    if not allow_api_fallback:
+        return None
+
+    ob = None
+    try:
+        ob = pyupbit.get_orderbook(t)
+        if isinstance(ob, list):
+            ob = ob[0] if ob else None
+    except Exception:
+        ob = None
+
+    with _MEM_CACHE_LOCK:
+        _ORDERBOOK_MEM_CACHE[t] = {"ts": now_ts, "val": ob}
+    return ob
+
+
 def clear_cache(ticker=None, interval=None):
     """캐시 삭제"""
     _ensure_cache_dir()
@@ -234,6 +500,9 @@ def clear_cache(ticker=None, interval=None):
         for f in os.listdir(CACHE_DIR):
             if f.endswith(".parquet"):
                 os.remove(os.path.join(CACHE_DIR, f))
+    with _MEM_CACHE_LOCK:
+        _PRICE_MEM_CACHE.clear()
+        _ORDERBOOK_MEM_CACHE.clear()
 
 
 def batch_download(tickers, intervals=None, count=10000, progress_callback=None):
@@ -361,6 +630,64 @@ def gold_cache_info(code="M04020000"):
     return {"exists": False}
 
 
+def get_gold_daily_local_first(trader=None, code="M04020000", count=2000, allow_api_fallback=True):
+    """
+    Gold 일봉 로컬 우선 조회.
+    - cache/GOLD_*.parquet 우선
+    - 부족 시 API 보강(fetch_and_cache_gold)
+    """
+    cnt = int(max(1, count))
+    cached = _normalize_ohlcv_df(load_cached_gold(code=code, interval="day"))
+    if cached is not None and not cached.empty:
+        if len(cached) >= cnt:
+            return cached.tail(cnt)
+        if not allow_api_fallback:
+            return cached
+
+    if allow_api_fallback and trader is not None:
+        try:
+            api_df = fetch_and_cache_gold(trader, code=code, count=cnt)
+            api_df = _normalize_ohlcv_df(api_df)
+            if api_df is not None and not api_df.empty:
+                return api_df.tail(cnt)
+        except Exception:
+            pass
+
+    return cached.tail(cnt) if cached is not None and not cached.empty else None
+
+
+def get_gold_current_price_local_first(trader=None, code="M04020000", allow_api_fallback=True, ttl_sec=8.0):
+    """
+    Gold 현재가 로컬 우선 조회.
+    - 일봉 캐시 마지막 close 우선
+    - 부족 시 trader.get_current_price 폴백
+    """
+    key = f"GOLD::{code}"
+    now_ts = float(datetime.now().timestamp())
+    with _MEM_CACHE_LOCK:
+        hit = _PRICE_MEM_CACHE.get(key)
+        if isinstance(hit, dict) and (now_ts - float(hit.get("ts", 0.0))) <= float(ttl_sec):
+            return float(hit.get("val", 0.0) or 0.0)
+
+    p = 0.0
+    d = get_gold_daily_local_first(trader=None, code=code, count=2, allow_api_fallback=False)
+    if d is not None and not d.empty:
+        try:
+            p = float(d["close"].iloc[-1] or 0.0)
+        except Exception:
+            p = 0.0
+
+    if p <= 0 and allow_api_fallback and trader is not None:
+        try:
+            p = float(trader.get_current_price(code) or 0.0)
+        except Exception:
+            p = 0.0
+
+    with _MEM_CACHE_LOCK:
+        _PRICE_MEM_CACHE[key] = {"ts": now_ts, "val": float(p if p > 0 else 0.0)}
+    return float(p if p > 0 else 0.0)
+
+
 # ═══════════════════════════════════════════════════════
 # 번들 CSV 데이터 (오프라인 fallback용)
 # ═══════════════════════════════════════════════════════
@@ -380,6 +707,21 @@ def load_bundled_csv(ticker):
         return df
     except Exception:
         return None
+
+
+def _save_bundled_csv(ticker, df):
+    """data/ 디렉토리에 CSV 자동 저장 (캐시 갱신 시 호출)."""
+    if df is None or df.empty:
+        return
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        csv_path = os.path.join(DATA_DIR, f"{ticker}_daily.csv")
+        _df = df.copy()
+        _df.index.name = "date"
+        _df.columns = [c.lower() for c in _df.columns]
+        _df.to_csv(csv_path)
+    except Exception:
+        pass
 
 
 # ═══════════════════════════════════════════════════════
@@ -441,6 +783,7 @@ def fetch_and_cache_kis_domestic(trader, ticker, count=1500, progress_callback=N
                 cached = cached[~cached.index.duplicated(keep='first')].sort_index()
         
         save_cache_kis(ticker, is_overseas=False, df=cached)
+        _save_bundled_csv(ticker, cached)  # CSV도 갱신
         return cached
     else:
         # 전체 로드
@@ -448,13 +791,81 @@ def fetch_and_cache_kis_domestic(trader, ticker, count=1500, progress_callback=N
         df_new = trader.get_daily_chart(ticker, count=count) if trader else None
         if df_new is not None and not df_new.empty:
             save_cache_kis(ticker, is_overseas=False, df=df_new)
+            _save_bundled_csv(ticker, df_new)  # CSV도 갱신
             return df_new
-        
+
         # API 실패 → 번들 CSV fallback
         bundled = load_bundled_csv(ticker)
         if bundled is not None:
             save_cache_kis(ticker, is_overseas=False, df=bundled)
         return bundled
+
+
+def get_kis_domestic_local_first(
+    trader,
+    ticker,
+    count=1500,
+    end_date=None,
+    allow_api_fallback=True,
+):
+    """로컬(cache/data) 우선 조회 후, 부족할 때만 API로 보강."""
+    t = str(ticker).strip()
+    if not t:
+        return None
+
+    cnt = int(max(1, count))
+    local_df = load_cached_kis(t, is_overseas=False)
+    if local_df is None or local_df.empty:
+        local_df = load_bundled_csv(t)
+
+    if local_df is not None and not local_df.empty:
+        try:
+            local_df = local_df.copy().sort_index()
+            local_df.index = pd.to_datetime(local_df.index)
+            local_df = local_df[~local_df.index.duplicated(keep="last")]
+        except Exception:
+            pass
+
+        if end_date:
+            try:
+                end_ts = pd.to_datetime(end_date)
+                local_df = local_df[local_df.index <= end_ts]
+            except Exception:
+                pass
+
+        if len(local_df) >= cnt:
+            return local_df.tail(cnt)
+
+    if allow_api_fallback and trader is not None:
+        try:
+            if end_date:
+                api_df = trader.get_daily_chart(t, end_date=str(end_date), count=cnt)
+            else:
+                api_df = fetch_and_cache_kis_domestic(trader, t, count=cnt)
+            if api_df is not None and not api_df.empty:
+                try:
+                    api_df = api_df.copy().sort_index()
+                    api_df.index = pd.to_datetime(api_df.index)
+                    api_df = api_df[~api_df.index.duplicated(keep="last")]
+                except Exception:
+                    pass
+                if len(api_df) > cnt:
+                    api_df = api_df.tail(cnt)
+                if end_date:
+                    try:
+                        save_cache_kis(t, is_overseas=False, df=api_df)
+                        _save_bundled_csv(t, api_df)
+                    except Exception:
+                        pass
+                return api_df
+        except Exception:
+            pass
+
+    if local_df is not None and not local_df.empty:
+        if len(local_df) > cnt:
+            local_df = local_df.tail(cnt)
+        return local_df
+    return None
 
 
 def fetch_and_cache_kis_overseas(trader, symbol, exchange="NAS", count=1500, progress_callback=None):
@@ -482,6 +893,100 @@ def fetch_and_cache_kis_overseas(trader, symbol, exchange="NAS", count=1500, pro
             save_cache_kis(symbol, is_overseas=True, df=df_new)
             return df_new
         return None
+
+
+# ═══════════════════════════════════════════════════════
+# yfinance 캐시 (미국 주식 일봉 — QQQ, TQQQ 등)
+# ═══════════════════════════════════════════════════════
+
+def _yf_csv_path(ticker):
+    """yfinance 데이터 CSV 경로: data/{TICKER}_daily.csv"""
+    return os.path.join(DATA_DIR, f"{ticker}_daily.csv")
+
+
+def load_cached_yf(ticker):
+    """yfinance 로컬 CSV 로드. 없으면 None."""
+    path = _yf_csv_path(ticker)
+    if not os.path.exists(path):
+        return None
+    try:
+        df = pd.read_csv(path, parse_dates=["date"], index_col="date")
+        df.columns = [c.lower() for c in df.columns]
+        return df
+    except Exception:
+        return None
+
+
+def save_cache_yf(ticker, df):
+    """yfinance 데이터를 CSV로 저장."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    path = _yf_csv_path(ticker)
+    _df = df.copy()
+    _df.index.name = "date"
+    _df.columns = [c.lower() for c in _df.columns]
+    _df.to_csv(path)
+
+
+def fetch_and_cache_yf(ticker, start="2010-01-01"):
+    """
+    yfinance 데이터 캐시 우선 로드.
+    - CSV 있으면 로드 → 마지막 날짜 이후 증분 다운로드 → CSV 갱신
+    - CSV 없으면 전체 다운로드 → CSV 저장
+    Returns: DataFrame (date index, ohlcv columns) or None
+    """
+    import yfinance as yf
+
+    cached = load_cached_yf(ticker)
+
+    if cached is not None and len(cached) > 0:
+        last_date = cached.index[-1]
+        # tz 제거
+        if hasattr(last_date, 'tz') and last_date.tz is not None:
+            last_date = last_date.tz_localize(None)
+
+        gap_days = (datetime.now() - last_date).days
+        if gap_days <= 1:
+            return cached  # 최신 상태
+
+        # 증분 다운로드 (마지막 날짜 다음날부터)
+        next_day = (last_date + timedelta(days=1)).strftime("%Y-%m-%d")
+        try:
+            df_new = yf.download(ticker, start=next_day, auto_adjust=True, progress=False)
+            if df_new is not None and not df_new.empty:
+                # MultiIndex 처리 (yfinance 최신 버전)
+                if isinstance(df_new.columns, pd.MultiIndex):
+                    df_new.columns = df_new.columns.get_level_values(0)
+                df_new = df_new[['Open', 'High', 'Low', 'Close', 'Volume']].rename(columns=str.lower)
+                df_new.index = pd.to_datetime(df_new.index)
+                if df_new.index.tz is not None:
+                    df_new.index = df_new.index.tz_localize(None)
+                df_new.index.name = "date"
+
+                merged = pd.concat([cached, df_new])
+                merged = merged[~merged.index.duplicated(keep='last')].sort_index()
+                save_cache_yf(ticker, merged)
+                return merged
+        except Exception:
+            pass  # 갭필 실패 → 기존 캐시 반환
+
+        return cached
+    else:
+        # 전체 다운로드
+        try:
+            df_new = yf.download(ticker, start=start, auto_adjust=True, progress=False)
+            if df_new is None or df_new.empty:
+                return cached  # None 반환
+            if isinstance(df_new.columns, pd.MultiIndex):
+                df_new.columns = df_new.columns.get_level_values(0)
+            df_new = df_new[['Open', 'High', 'Low', 'Close', 'Volume']].rename(columns=str.lower)
+            df_new.index = pd.to_datetime(df_new.index)
+            if df_new.index.tz is not None:
+                df_new.index = df_new.index.tz_localize(None)
+            df_new.index.name = "date"
+            save_cache_yf(ticker, df_new)
+            return df_new
+        except Exception:
+            return cached  # 실패 시 기존 캐시(None 포함) 반환
 
 
 def list_cache():

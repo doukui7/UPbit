@@ -75,7 +75,9 @@ class WDRStrategy:
     * 현재 선택: 한국투자증권 (API 지원 + 저수수료 + 안정성)
     """
 
-    DEFAULT_SETTINGS = {
+    # ── 3단계 기본 설정 ──
+    DEFAULT_SETTINGS_3TIER = {
+        'evaluation_mode': 3,
         'overvalue_threshold': 5.0,
         'undervalue_threshold': -6.0,
         'sell_ratio_overvalue': 100.0,
@@ -84,15 +86,50 @@ class WDRStrategy:
         'buy_ratio_overvalue': 66.7,
         'buy_ratio_neutral': 66.7,
         'buy_ratio_undervalue': 120.0,
-        'trend_period_weeks': 260,  # 5년
+        'trend_period_weeks': 260,
         'initial_cash_ratio': 0.50,
         'min_cash_ratio': 0.10,
         'min_stock_ratio': 0.10,
-        'commission_rate': 0.00015,  # ISA ETF 수수료 (~0.015%)
+        'commission_rate': 0.00015,
     }
 
-    def __init__(self, settings: dict = None):
-        self.settings = {**self.DEFAULT_SETTINGS, **(settings or {})}
+    # ── 5단계 기본 설정 ──
+    DEFAULT_SETTINGS_5TIER = {
+        'evaluation_mode': 5,
+        'super_overvalue_threshold': 10.0,
+        'overvalue_threshold': 5.0,
+        'undervalue_threshold': -6.0,
+        'super_undervalue_threshold': -10.0,
+        'sell_ratio_super_overvalue': 150.0,
+        'sell_ratio_overvalue': 100.0,
+        'sell_ratio_neutral': 66.7,
+        'sell_ratio_undervalue': 60.0,
+        'sell_ratio_super_undervalue': 33.0,
+        'buy_ratio_super_overvalue': 33.0,
+        'buy_ratio_overvalue': 66.7,
+        'buy_ratio_neutral': 66.7,
+        'buy_ratio_undervalue': 120.0,
+        'buy_ratio_super_undervalue': 200.0,
+        'trend_period_weeks': 260,
+        'initial_cash_ratio': 0.50,
+        'min_cash_ratio': 0.10,
+        'min_stock_ratio': 0.10,
+        'commission_rate': 0.00015,
+    }
+
+    # 하위 호환용
+    DEFAULT_SETTINGS = DEFAULT_SETTINGS_3TIER
+
+    def __init__(self, settings: dict = None, evaluation_mode: int = None):
+        # evaluation_mode 결정: 인자 > settings > 기본(3)
+        mode = evaluation_mode
+        if mode is None and settings:
+            mode = settings.get('evaluation_mode')
+        if mode is None:
+            mode = 3
+        base = self.DEFAULT_SETTINGS_5TIER if mode == 5 else self.DEFAULT_SETTINGS_3TIER
+        self.settings = {**base, **(settings or {})}
+        self.settings['evaluation_mode'] = mode
 
     # ─────────────────────────────────────────────────────
     # 데이터 변환
@@ -157,23 +194,44 @@ class WDRStrategy:
     # ─────────────────────────────────────────────────────
     @staticmethod
     def calc_divergence(price: float, trend: float) -> float:
-        """이격도 계산 (%)."""
+        """이격도 계산 (%): (가격 - 추세) / 추세 × 100.
+        양수 = 가격이 추세 위 (고평가), 음수 = 가격이 추세 아래 (저평가)."""
         if trend == 0 or pd.isna(trend):
             return 0.0
         return (price - trend) / trend * 100
 
     def get_market_state(self, divergence: float) -> tuple:
         """
-        3단계 시장 상태 판단.
+        시장 상태 판단 (3단계 또는 5단계).
         Returns: (state, sell_ratio, buy_ratio)
         """
         s = self.settings
-        if divergence > s['overvalue_threshold']:
-            return ('OVERVALUE', s['sell_ratio_overvalue'], s['buy_ratio_overvalue'])
-        elif divergence < s['undervalue_threshold']:
-            return ('UNDERVALUE', s['sell_ratio_undervalue'], s['buy_ratio_undervalue'])
+        mode = s.get('evaluation_mode', 3)
+
+        if mode == 5:
+            sov = s.get('super_overvalue_threshold', 10.0)
+            ov = s['overvalue_threshold']
+            un = s['undervalue_threshold']
+            sun = s.get('super_undervalue_threshold', -10.0)
+
+            if divergence > sov:
+                return ('SUPER_OVERVALUE', s['sell_ratio_super_overvalue'], s['buy_ratio_super_overvalue'])
+            elif divergence > ov:
+                return ('OVERVALUE', s['sell_ratio_overvalue'], s['buy_ratio_overvalue'])
+            elif divergence < sun:
+                return ('SUPER_UNDERVALUE', s['sell_ratio_super_undervalue'], s['buy_ratio_super_undervalue'])
+            elif divergence < un:
+                return ('UNDERVALUE', s['sell_ratio_undervalue'], s['buy_ratio_undervalue'])
+            else:
+                return ('NEUTRAL', s['sell_ratio_neutral'], s['buy_ratio_neutral'])
         else:
-            return ('NEUTRAL', s['sell_ratio_neutral'], s['buy_ratio_neutral'])
+            # 3단계
+            if divergence > s['overvalue_threshold']:
+                return ('OVERVALUE', s['sell_ratio_overvalue'], s['buy_ratio_overvalue'])
+            elif divergence < s['undervalue_threshold']:
+                return ('UNDERVALUE', s['sell_ratio_undervalue'], s['buy_ratio_undervalue'])
+            else:
+                return ('NEUTRAL', s['sell_ratio_neutral'], s['buy_ratio_neutral'])
 
     # ─────────────────────────────────────────────────────
     # 리밸런싱 액션 계산
@@ -341,7 +399,7 @@ class WDRStrategy:
             (sig_df["close"] - sig_df["trend"]) / sig_df["trend"] * 100.0
         )
 
-        merged = sig_df[["divergence"]].join(
+        merged = sig_df[["close", "divergence"]].rename(columns={"close": "signal_close"}).join(
             weekly_trade.rename(columns={"close": "trade_close"}),
             how="inner",
         ).dropna(subset=["trade_close"])
@@ -353,14 +411,34 @@ class WDRStrategy:
             return None
 
         commission_rate = float(self.settings.get("commission_rate", 0.00015))
-        cash_ratio = float(self.settings.get("initial_cash_ratio", 0.5))
         first_price = float(merged["trade_close"].iloc[0])
         if first_price <= 0:
             return None
 
+        # 초기 매수 비율: 5단계에서는 첫 이격도에 따라 결정
         init_balance = float(initial_balance)
-        cash = init_balance * cash_ratio
-        shares = int((init_balance * (1.0 - cash_ratio)) / first_price)
+        first_div = float(merged["divergence"].iloc[0])
+        mode = self.settings.get("evaluation_mode", 3)
+        if mode == 5:
+            sov = self.settings.get("super_overvalue_threshold", 10.0)
+            ov = self.settings["overvalue_threshold"]
+            un = self.settings["undervalue_threshold"]
+            sun = self.settings.get("super_undervalue_threshold", -10.0)
+            if first_div > sov:
+                buy_ratio = 0.20
+            elif first_div > ov:
+                buy_ratio = 0.35
+            elif first_div < sun:
+                buy_ratio = 0.80
+            elif first_div < un:
+                buy_ratio = 0.65
+            else:
+                buy_ratio = 0.50
+        else:
+            buy_ratio = 1.0 - float(self.settings.get("initial_cash_ratio", 0.5))
+
+        cash = init_balance * (1.0 - buy_ratio)
+        shares = int((init_balance * buy_ratio) / first_price)
         cash = init_balance - shares * first_price
 
         equity_records = [{
@@ -470,7 +548,7 @@ class WDRStrategy:
         calmar = abs(cagr / mdd) if mdd != 0 else 0.0
         win_rate = (win_count / sell_count * 100.0) if sell_count > 0 else 0.0
 
-        benchmark_pct = (merged["trade_close"] / merged["trade_close"].iloc[0] - 1.0) * 100.0
+        benchmark_pct = (merged["signal_close"] / merged["signal_close"].iloc[0] - 1.0) * 100.0
         benchmark_df = pd.DataFrame({"benchmark_return_pct": benchmark_pct}, index=merged.index)
 
         return {

@@ -6,7 +6,7 @@
       "strategy": "Donchian",
       "parameter": 115,
       "sell_parameter": 105,
-      "weight": 50,
+      "weight": 50.0,
       "interval": "minute240"
     },
     {
@@ -15,10 +15,11 @@
       "strategy": "SMA",
       "parameter": 29,
       "sell_parameter": 0,
-      "weight": 50,
+      "weight": 50.0,
       "interval": "day"
     }
   ],
+  "aux_portfolio": [],
   "start_date": "2020-01-01",
   "initial_cap": 1000000
 }

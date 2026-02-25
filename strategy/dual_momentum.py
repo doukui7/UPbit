@@ -93,6 +93,12 @@ class DualMomentumStrategy:
         'lookback': 12,       # 카나리아 룩백 (개월)
         'top_n': 1,           # 공격 자산 중 선택 수
         'trading_days_per_month': 22,
+        'momentum_weights': {  # score = (m1*w1 + m3*w3 + m6*w6 + m12*w12) / 4
+            'm1': 12.0,
+            'm3': 4.0,
+            'm6': 2.0,
+            'm12': 1.0,
+        },
 
         # 한국 ETF 매핑 (연금저축/ISA에서 실제 매매할 종목코드)
         'kr_etf_map': {
@@ -126,7 +132,8 @@ class DualMomentumStrategy:
 
     @staticmethod
     def calc_momentum_score(prices: np.ndarray,
-                            trading_days: int = 22) -> float:
+                            trading_days: int = 22,
+                            weights: dict | None = None) -> float:
         """
         복합 모멘텀 점수 계산.
         score = (m1*12 + m3*4 + m6*2 + m12) / 4
@@ -135,7 +142,12 @@ class DualMomentumStrategy:
         m3 = DualMomentumStrategy.calc_monthly_return(prices, 3, trading_days)
         m6 = DualMomentumStrategy.calc_monthly_return(prices, 6, trading_days)
         m12 = DualMomentumStrategy.calc_monthly_return(prices, 12, trading_days)
-        return (m1 * 12 + m3 * 4 + m6 * 2 + m12) / 4
+        w = weights or {}
+        w1 = float(w.get('m1', 12.0))
+        w3 = float(w.get('m3', 4.0))
+        w6 = float(w.get('m6', 2.0))
+        w12 = float(w.get('m12', 1.0))
+        return (m1 * w1 + m3 * w3 + m6 * w6 + m12 * w12) / 4.0
 
     # ─────────────────────────────────────────────────────
     # 시그널 분석
@@ -162,7 +174,11 @@ class DualMomentumStrategy:
             df = price_data[ticker]
             close_col = 'close' if 'close' in df.columns else 'Close'
             prices = df[close_col].values
-            scores[ticker] = round(self.calc_momentum_score(prices, td), 6)
+            scores[ticker] = round(self.calc_momentum_score(
+                prices,
+                td,
+                s.get('momentum_weights'),
+            ), 6)
 
         # 카나리아 수익률 (절대 모멘텀 기준선)
         canary_ticker = s['canary'][0]

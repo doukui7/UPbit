@@ -153,16 +153,25 @@ class KISTrader:
             "FID_INPUT_ISCD": stock_code,
         }
 
-        try:
-            res = self._session.get(url, params=params,
-                                    headers=self._headers("FHKST01010100"), timeout=5)
-            data = res.json()
-            output = data.get("output", {})
-            price = float(output.get("stck_prpr", 0))
-            return price if price > 0 else None
-        except Exception as e:
-            logger.error(f"현재가 조회 오류 ({stock_code}): {e}")
-            return None
+        for _retry in range(3):
+            try:
+                res = self._session.get(
+                    url,
+                    params=params,
+                    headers=self._headers("FHKST01010100"),
+                    timeout=5,
+                )
+                data = res.json()
+                output = data.get("output", {})
+                price = float(output.get("stck_prpr", 0))
+                return price if price > 0 else None
+            except Exception as e:
+                if _retry < 2:
+                    logger.warning(f"현재가 조회 재시도 {_retry + 1}/2 ({stock_code}): {e}")
+                    time.sleep(0.25 + (0.25 * _retry))
+                else:
+                    logger.error(f"현재가 조회 오류 ({stock_code}): {e}")
+        return None
 
     def get_price_info(self, stock_code: str) -> dict | None:
         """국내주식/ETF 현재가 상세 조회."""
@@ -191,6 +200,61 @@ class KISTrader:
             }
         except Exception as e:
             logger.error(f"현재가 상세 오류 ({stock_code}): {e}")
+            return None
+
+    def get_orderbook(self, stock_code: str) -> dict | None:
+        """
+        국내주식/ETF 호가 조회 (FHKST01010200).
+
+        Returns: {
+            'asks': [{'price': float, 'qty': int}, ...],  # 매도호가 (낮→높)
+            'bids': [{'price': float, 'qty': int}, ...],  # 매수호가 (높→낮)
+            'cur_prc': float
+        }
+        """
+        if not self._ensure_token():
+            return None
+
+        url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": stock_code,
+        }
+
+        try:
+            res = self._session.get(url, params=params,
+                                    headers=self._headers("FHKST01010200"), timeout=5)
+            data = res.json()
+            o = data.get("output1", {})
+
+            if not o:
+                logger.debug(f"호가 응답 없음 ({stock_code})")
+                return None
+
+            asks = []
+            bids = []
+
+            for i in range(1, 11):
+                ask_p = float(o.get(f"askp{i}", 0))
+                ask_q = int(o.get(f"askp_rsqn{i}", 0))
+                bid_p = float(o.get(f"bidp{i}", 0))
+                bid_q = int(o.get(f"bidp_rsqn{i}", 0))
+                if ask_p > 0:
+                    asks.append({'price': ask_p, 'qty': ask_q})
+                if bid_p > 0:
+                    bids.append({'price': bid_p, 'qty': bid_q})
+
+            cur_prc = float(o.get("stck_prpr", 0))
+            if not cur_prc and asks and bids:
+                cur_prc = (asks[0]['price'] + bids[0]['price']) / 2
+
+            if asks or bids:
+                return {'asks': asks, 'bids': bids, 'cur_prc': cur_prc}
+
+            return None
+
+        except Exception as e:
+            logger.error(f"호가 조회 오류 ({stock_code}): {e}")
             return None
 
     def get_daily_chart(self, stock_code: str, start_date: str = None,
@@ -226,45 +290,56 @@ class KISTrader:
                 "FID_ORG_ADJ_PRC": "0",  # 수정주가
             }
 
-            try:
-                res = self._session.get(url, params=params,
-                                        headers=self._headers("FHKST03010100"), timeout=10)
-                data = res.json()
-                rows = data.get("output2", [])
-
-                if not rows:
+            rows = None
+            for _retry in range(3):
+                try:
+                    res = self._session.get(
+                        url,
+                        params=params,
+                        headers=self._headers("FHKST03010100"),
+                        timeout=10,
+                    )
+                    data = res.json()
+                    rows = data.get("output2", [])
                     break
+                except Exception as e:
+                    if _retry < 2:
+                        logger.warning(f"일봉 조회 재시도 {_retry + 1}/2 ({stock_code}): {e}")
+                        time.sleep(0.7 + (0.4 * _retry))
+                    else:
+                        logger.error(f"일봉 조회 오류 ({stock_code}): {e}")
 
-                for r in rows:
-                    try:
-                        dt = r.get("stck_bsop_date", "")
-                        if not dt or dt < start_date:
-                            continue
-                        all_rows.append({
-                            "date": dt,
-                            "open": float(r.get("stck_oprc", 0)),
-                            "high": float(r.get("stck_hgpr", 0)),
-                            "low": float(r.get("stck_lwpr", 0)),
-                            "close": float(r.get("stck_clpr", 0)),
-                            "volume": int(r.get("acml_vol", 0)),
-                        })
-                    except (ValueError, TypeError):
-                        continue
-
-                if len(all_rows) >= count:
-                    break
-
-                # 다음 페이지 (가장 오래된 날짜 - 1)
-                oldest = min(r.get("stck_bsop_date", "99999999") for r in rows)
-                if oldest <= start_date:
-                    break
-                current_end = str(int(oldest) - 1).zfill(8)
-
-                time.sleep(0.2)
-
-            except Exception as e:
-                logger.error(f"일봉 조회 오류 ({stock_code}): {e}")
+            if rows is None:
                 break
+            if not rows:
+                break
+
+            for r in rows:
+                try:
+                    dt = r.get("stck_bsop_date", "")
+                    if not dt or dt < start_date:
+                        continue
+                    all_rows.append({
+                        "date": dt,
+                        "open": float(r.get("stck_oprc", 0)),
+                        "high": float(r.get("stck_hgpr", 0)),
+                        "low": float(r.get("stck_lwpr", 0)),
+                        "close": float(r.get("stck_clpr", 0)),
+                        "volume": int(r.get("acml_vol", 0)),
+                    })
+                except (ValueError, TypeError):
+                    continue
+
+            if len(all_rows) >= count:
+                break
+
+            # 다음 페이지 (가장 오래된 날짜 - 1)
+            oldest = min(r.get("stck_bsop_date", "99999999") for r in rows)
+            if oldest <= start_date:
+                break
+            current_end = str(int(oldest) - 1).zfill(8)
+
+            time.sleep(0.2)
 
         if not all_rows:
             return None

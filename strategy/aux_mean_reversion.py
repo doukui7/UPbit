@@ -2,10 +2,11 @@
 보조 전략: MA 이격도 기반 역추세 분할매수 + 익절 전략
 
 메인 전략(SMA/Donchian)이 현금(CASH) 포지션일 때만 작동.
-단기·중기 이동평균 이격도가 모두 과매도 영역이면 분할 매수,
-**전체 평균 매수가(평단가)** 대비 TP1%~TP2% 균등 분배 지정가 매도.
+단기·중기 이동평균(또는 단일 이동평균) 이격도가 과매도 영역이면 분할 매수,
+**전체 평균 매수가(평단가)** 대비 TP1/TP2 지정가로 50%씩 2회 매도.
 
 분할 매수 조건: 과매도 + 직전 매수가보다 가격이 더 하락한 경우에만 추가 매수.
+분할 매도: 매수 횟수와 무관하게 항상 TP1에서 50%, TP2에서 나머지 50% 매도.
 
 매수 시드 배분:
   - 동일: 각 분할 동일 금액
@@ -21,6 +22,28 @@ def compute_disparity(close_arr: np.ndarray, ma_period: int) -> np.ndarray:
     with np.errstate(divide='ignore', invalid='ignore'):
         disp = (close_arr - ma) / ma * 100
     return disp
+
+
+def compute_rsi(close_arr: np.ndarray, period: int = 14) -> np.ndarray:
+    """RSI 계산 (Wilder smoothing)."""
+    period = max(2, int(period))
+    close_s = pd.Series(close_arr, dtype="float64")
+    delta = close_s.diff()
+    gain = delta.clip(lower=0.0)
+    loss = -delta.clip(upper=0.0)
+
+    avg_gain = gain.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rs = avg_gain / avg_loss
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+
+    # 손실이 0이고 상승만 있는 구간은 100, 변화가 거의 없는 구간은 50으로 보정.
+    rsi = rsi.astype("float64")
+    rsi[(avg_loss == 0) & (avg_gain > 0)] = 100.0
+    rsi[(avg_loss == 0) & (avg_gain == 0)] = 50.0
+    return rsi.values
 
 
 def generate_main_position(close_arr: np.ndarray, high_arr: np.ndarray,
@@ -103,6 +126,9 @@ def fast_simulate_aux(open_arr: np.ndarray, close_arr: np.ndarray,
                       split_count: int = 2,
                       buy_seed_mode: str = "equal",
                       pyramid_ratio: float = 1.0,
+                      use_rsi_filter: bool = False,
+                      rsi_arr: np.ndarray = None,
+                      rsi_threshold: float = 10.0,
                       return_series: bool = False) -> dict:
     """
     보조 전략 고속 시뮬레이션 (N분할 매수 + 평단가 기반 TP).
@@ -116,18 +142,17 @@ def fast_simulate_aux(open_arr: np.ndarray, close_arr: np.ndarray,
     split_count: 분할 매수 횟수 (1~20)
     buy_seed_mode: "equal" | "pyramiding"
     pyramid_ratio: 피라미딩 배율 (예: 1.3이면 다음 티어가 이전 티어의 1.3배)
-    tp1_pct ~ tp2_pct: 평단가 대비 익절 % (N등분)
+    tp1_pct, tp2_pct: 평단가 대비 익절 % (항상 50%씩 2회 매도)
     """
     n = len(open_arr)
     split_count = max(1, min(split_count, 20))
+    use_rsi_filter = bool(use_rsi_filter and rsi_arr is not None)
+    rsi_threshold = float(rsi_threshold)
 
     balance = initial_balance
 
-    # TP 비율 배열 (균등 분배)
-    if split_count == 1:
-        tp_pcts = np.array([tp2_pct])
-    else:
-        tp_pcts = np.linspace(tp1_pct, tp2_pct, split_count)
+    # TP 비율 배열: 항상 2단계 (50%씩 매도)
+    tp_pcts = np.array([tp1_pct, tp2_pct])
 
     # 매수 가중치 (균등/피라미딩)
     buy_weights = _calc_buy_weights(split_count, buy_seed_mode=buy_seed_mode, pyramid_ratio=pyramid_ratio)
@@ -141,9 +166,9 @@ def fast_simulate_aux(open_arr: np.ndarray, close_arr: np.ndarray,
     last_buy_price = 0.0   # 직전 매수 체결가 (추가하락 조건용)
     pending_buy = False
 
-    # TP 가격 배열 (평단가 변경 시 재계산)
-    tp_prices = np.zeros(split_count)
-    tp_sold = np.zeros(split_count, dtype=bool)
+    # TP 가격 배열: 항상 2개 (평단가 변경 시 재계산)
+    tp_prices = np.zeros(2)
+    tp_sold = np.zeros(2, dtype=bool)
 
     wins = 0
     total_trades = 0
@@ -179,18 +204,17 @@ def fast_simulate_aux(open_arr: np.ndarray, close_arr: np.ndarray,
             buys_done += 1
             pending_buy = False
 
-            # 평단가 변경 → 미매도 TP 전부 재계산
-            for s in range(split_count):
+            # 평단가 변경 → 미매도 TP 전부 재계산 (항상 2개)
+            for s in range(2):
                 if not tp_sold[s]:
                     tp_prices[s] = avg_price * (1 + tp_pcts[s] / 100)
 
-        # ── 2) TP 체크 (장중 고가 기준, 낮은 TP부터) ──
-        for s in range(split_count):
-            if s < buys_done and not tp_sold[s] and total_qty > 0:
+        # ── 2) TP 체크 (장중 고가 기준, 항상 50%씩 2회 매도) ──
+        for s in range(2):
+            if buys_done > 0 and not tp_sold[s] and total_qty > 0:
                 if hi >= tp_prices[s]:
-                    # 남은 TP 횟수로 균등 분배
-                    remaining_tps = split_count - sells_done
-                    sell_qty = total_qty / remaining_tps if remaining_tps > 0 else total_qty
+                    # 1차: 보유량의 50%, 2차: 나머지 전량
+                    sell_qty = total_qty * 0.5 if s == 0 else total_qty
 
                     balance += sell_qty * tp_prices[s] * fee_mult
                     total_qty -= sell_qty
@@ -234,8 +258,12 @@ def fast_simulate_aux(open_arr: np.ndarray, close_arr: np.ndarray,
             dl = disp_long[i]
             if not (np.isnan(ds) or np.isnan(dl)):
                 if ds < oversold_threshold and dl < oversold_threshold:
+                    rsi_ok = True
+                    if use_rsi_filter:
+                        rv = rsi_arr[i]
+                        rsi_ok = (not np.isnan(rv)) and (rv <= rsi_threshold)
                     # 첫 매수: 무조건 / 추가 매수: 직전 매수가보다 하락 시에만
-                    if buys_done == 0 or cl < last_buy_price:
+                    if rsi_ok and (buys_done == 0 or cl < last_buy_price):
                         pending_buy = True
 
         # ── 6) Equity 기록 ──
@@ -281,6 +309,8 @@ def fast_simulate_aux(open_arr: np.ndarray, close_arr: np.ndarray,
         "next_action": "BUY" if pending_buy else None,
         "buy_seed_mode": buy_seed_mode,
         "pyramid_ratio": pyramid_ratio,
+        "use_rsi_filter": bool(use_rsi_filter),
+        "rsi_threshold": float(rsi_threshold),
         "equity_curve": equity if return_series else None,
         "drawdown_curve": dd if return_series else None,
     }
