@@ -249,14 +249,25 @@ def _append_step(result: dict, step: str, status: str, detail: str):
 
 
 def get_portfolio():
-    """Load portfolio from PORTFOLIO env var (JSON). Raises if not set."""
+    """Load portfolio from PORTFOLIO env var (JSON) or portfolio.json file."""
     raw = os.getenv("PORTFOLIO")
-    if not raw:
-        raise RuntimeError("PORTFOLIO 환경변수가 설정되지 않았습니다. GitHub Secrets에 PORTFOLIO를 등록하세요.")
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        raise RuntimeError(f"PORTFOLIO 환경변수가 올바른 JSON이 아닙니다: {raw[:100]}")
+    if raw:
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            raise RuntimeError(f"PORTFOLIO 환경변수가 올바른 JSON이 아닙니다: {raw[:100]}")
+
+    # 환경변수 없으면 portfolio.json 파일에서 로드
+    p_json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
+    if os.path.exists(p_json_path):
+        with open(p_json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        portfolio = data.get("portfolio", [])
+        if portfolio:
+            logger.info(f"portfolio.json에서 포트폴리오 로드: {len(portfolio)}개 항목")
+            return portfolio
+
+    raise RuntimeError("PORTFOLIO 환경변수 또는 portfolio.json 파일이 필요합니다.")
 
 
 def _normalize_coin_interval(interval: str) -> str:
