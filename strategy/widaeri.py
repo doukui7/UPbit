@@ -87,7 +87,7 @@ class WDRStrategy:
         'buy_ratio_neutral': 66.7,
         'buy_ratio_undervalue': 120.0,
         'trend_period_weeks': 260,
-        'initial_cash_ratio': 0.50,
+        'initial_cash_ratio': 0.16,
         'min_cash_ratio': 0.10,
         'min_stock_ratio': 0.10,
         'commission_rate': 0.00015,
@@ -111,7 +111,7 @@ class WDRStrategy:
         'buy_ratio_undervalue': 120.0,
         'buy_ratio_super_undervalue': 200.0,
         'trend_period_weeks': 260,
-        'initial_cash_ratio': 0.50,
+        'initial_cash_ratio': 0.16,
         'min_cash_ratio': 0.10,
         'min_stock_ratio': 0.10,
         'commission_rate': 0.00015,
@@ -357,6 +357,7 @@ class WDRStrategy:
         trade_daily_df: pd.DataFrame | None = None,
         initial_balance: float = 10_000_000,
         start_date=None,
+        fee_rate: float | None = None,
     ) -> dict | None:
         """
         WDR 주간 리밸런싱 백테스트.
@@ -410,7 +411,7 @@ class WDRStrategy:
         if len(merged) < 5:
             return None
 
-        commission_rate = float(self.settings.get("commission_rate", 0.00015))
+        commission_rate = float(fee_rate) if fee_rate is not None else float(self.settings.get("commission_rate", 0.00015))
         first_price = float(merged["trade_close"].iloc[0])
         if first_price <= 0:
             return None
@@ -447,6 +448,7 @@ class WDRStrategy:
             "cash": cash,
             "shares": shares,
             "price": first_price,
+            "signal_close": float(merged["signal_close"].iloc[0]),
             "divergence": float(merged["divergence"].iloc[0]),
             "action": "INIT",
             "quantity": shares,
@@ -517,6 +519,7 @@ class WDRStrategy:
                 "cash": cash,
                 "shares": shares,
                 "price": cur_price,
+                "signal_close": float(merged["signal_close"].iloc[i]),
                 "divergence": divergence,
                 "action": action["action"] or "HOLD",
                 "quantity": int(action["quantity"]),

@@ -3418,6 +3418,16 @@ def render_kis_isa_mode():
                             _peak = _detail["equity"].cummax()
                             _detail["DD(%)"] = (_detail["equity"] - _peak) / _peak * 100
                             _detail["자산수익률(%)"] = (_detail["equity"] / _detail["equity"].iloc[0] - 1) * 100
+                            # 매매수량에 +/- 부호
+                            def _signed_qty(row):
+                                if row["action"] == "BUY":
+                                    return f"+{int(row['quantity'])}"
+                                elif row["action"] == "SELL":
+                                    return f"-{int(row['quantity'])}"
+                                elif row["action"] == "INIT":
+                                    return f"+{int(row['quantity'])}"
+                                return "0"
+                            _detail["매매수량_표시"] = _detail.apply(_signed_qty, axis=1)
                             _disp = pd.DataFrame({
                                 "시그널종가": _detail.get("시그널종가", pd.Series(dtype=float)),
                                 "트렌드": _detail.get("트렌드", pd.Series(dtype=float)),
@@ -3425,13 +3435,15 @@ def render_kis_isa_mode():
                                 "매매ETF가격": _detail["price"].round(0).astype(int),
                                 "변동률(%)": _detail["변동률(%)"].round(2),
                                 "매매": _detail["action"],
-                                "매매수량": _detail["quantity"].astype(int),
+                                "매매수량": _detail["매매수량_표시"],
                                 "보유수량": _detail["shares"].astype(int),
                                 "예수금": _detail["cash"].round(0).astype(int),
                                 "총자산": _detail["equity"].round(0).astype(int),
                                 "자산수익률(%)": _detail["자산수익률(%)"].round(2),
                                 "DD(%)": _detail["DD(%)"].round(2),
                             }, index=_detail.index)
+                            # 최신순 정렬
+                            _disp = _disp.iloc[::-1]
                             # 매매 컬럼 색상 표시를 위한 스타일
                             def _style_trade_row(row):
                                 if row["매매"] == "BUY":
@@ -3445,7 +3457,6 @@ def render_kis_isa_mode():
                                 "이격도(%)": "{:+.2f}",
                                 "매매ETF가격": "{:,}",
                                 "변동률(%)": "{:+.2f}",
-                                "매매수량": "{:,}",
                                 "보유수량": "{:,}",
                                 "예수금": "{:,}",
                                 "총자산": "{:,}",
