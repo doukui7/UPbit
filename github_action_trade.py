@@ -2,6 +2,8 @@ import os
 import sys
 import json
 import time
+import html
+import re
 import logging
 import pandas as pd
 from datetime import datetime, timezone, timedelta
@@ -129,15 +131,41 @@ def _send_telegram(message: str):
     if not token or not chat_id:
         logger.warning("텔레그램 설정이 없어 알림 전송을 생략합니다. (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID)")
         return
+
+    def _normalize_bot_token(raw: str) -> str:
+        t = str(raw or "").strip().strip('"').strip("'")
+        t = re.sub(r"\s+", "", t)
+        # 전체 API URL을 넣어도 토큰만 추출되도록 처리
+        if "api.telegram.org" in t and "/bot" in t:
+            m = re.search(r"/bot([^/\\s]+)", t)
+            if m:
+                t = m.group(1).strip()
+        if t.lower().startswith("bot"):
+            t = t[3:]
+        return t.strip().strip('"').strip("'")
+
+    token = _normalize_bot_token(token)
+    chat_id = str(chat_id).strip().strip('"').strip("'")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+    def _sanitize_html_chunk(text: str) -> str:
+        # parse_mode=HTML에서 '&', '<', '>'로 인한 파싱 오류 방지
+        escaped = html.escape(str(text), quote=False)
+        # 내부에서 사용하는 최소 태그만 허용
+        escaped = escaped.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
+        escaped = escaped.replace("&lt;code&gt;", "<code>").replace("&lt;/code&gt;", "</code>")
+        escaped = escaped.replace("&lt;pre&gt;", "<pre>").replace("&lt;/pre&gt;", "</pre>")
+        return escaped
+
     try:
         import requests
         # 텔레그램 메시지 4096자 제한
         for i in range(0, len(message), 4000):
             chunk = message[i:i+4000]
+            safe_chunk = _sanitize_html_chunk(chunk)
             resp = requests.post(url, json={
                 "chat_id": chat_id,
-                "text": chunk,
+                "text": safe_chunk,
                 "parse_mode": "HTML",
             }, timeout=10)
             ok = False
