@@ -187,6 +187,9 @@ def _send_telegram_message(token: str, chat_id: str, text: str):
                 t = m.group(1).strip()
         if t.lower().startswith("bot"):
             t = t[3:]
+        m2 = re.search(r"([0-9]{6,}:[A-Za-z0-9_-]{20,})", t)
+        if m2:
+            t = m2.group(1)
         return t.strip().strip('"').strip("'")
 
     token = _normalize_bot_token(token)
@@ -2804,7 +2807,7 @@ def render_kis_isa_mode():
         value=int(config.get("kis_isa_seed", 10_000_000)), step=1_000_000,
         key="isa_seed", disabled=IS_CLOUD,
     )
-    _isa_start_default = config.get("kis_isa_start_date", "2020-01-01")
+    _isa_start_default = config.get("kis_isa_start_date", "2022-03-08")
     isa_start_date = st.sidebar.date_input(
         "시작일",
         value=pd.to_datetime(_isa_start_default).date(),

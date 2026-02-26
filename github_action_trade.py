@@ -142,6 +142,10 @@ def _send_telegram(message: str):
                 t = m.group(1).strip()
         if t.lower().startswith("bot"):
             t = t[3:]
+        # 유효 패턴(숫자:영숫자/언더스코어/하이픈)만 추출
+        m2 = re.search(r"([0-9]{6,}:[A-Za-z0-9_-]{20,})", t)
+        if m2:
+            t = m2.group(1)
         return t.strip().strip('"').strip("'")
 
     token = _normalize_bot_token(token)
