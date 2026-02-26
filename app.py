@@ -187,6 +187,11 @@ def _send_telegram_message(token: str, chat_id: str, text: str):
                 t = m.group(1).strip()
         if t.lower().startswith("bot"):
             t = t[3:]
+        if ":" in t:
+            left, right = t.split(":", 1)
+            left = "".join(ch for ch in left if ch.isdigit())
+            right = "".join(ch for ch in right if re.match(r"[A-Za-z0-9_-]", ch))
+            t = f"{left}:{right}" if left and right else t
         m2 = re.search(r"([0-9]{6,}:[A-Za-z0-9_-]{20,})", t)
         if m2:
             t = m2.group(1)
@@ -3144,29 +3149,57 @@ def render_kis_isa_mode():
                     else:
                         _sync_reason = "백테스트와 동기화 완료"
 
-                # ── 백테스트 기준 주문 정보 ──
-                _bt_action_str = "HOLD"
-                _bt_action_qty = 0
-                _bt_action_price = 0.0
-                if bt:
-                    _bt_action_str = str(bt_last.get("action", "HOLD")) or "HOLD"
-                    _bt_action_qty = int(bt_last.get("quantity", 0))
-                    _bt_action_price = float(bt_last["price"])
+                # ── 현재가 기준 실시간 주문 계산 ──
+                # 백테스트 마지막 상태 + 현재가(=이번 주 종가 가정)로 리밸런싱 계산
+                _live_action_str = "HOLD"
+                _live_qty = 0
+                _live_cur_price = res.get("cur_price", 0) or 0
+                _live_prev_price = 0.0
+                _live_change_pct = 0.0
+                _live_pnl = 0.0
 
-                act_str = act["action"] or "HOLD"
-                _weekly_pnl = act['weekly_pnl']
-                _weekly_qty = act['quantity']
+                if bt and _live_cur_price > 0:
+                    _live_prev_price = float(bt_last["price"])
+                    _live_pnl = (_live_cur_price - _live_prev_price) * bt_shares
+                    _live_change_pct = (_live_cur_price / _live_prev_price - 1) * 100 if _live_prev_price > 0 else 0
 
-                st.info(f"**백테스트 최근 동작**: {_bt_action_str} {_bt_action_qty}주 | **종가**: {_bt_action_price:,.0f}원")
+                    _live_strat = WDRStrategy(settings={
+                        "overvalue_threshold": float(wdr_ov),
+                        "undervalue_threshold": float(wdr_un),
+                    }, evaluation_mode=int(wdr_eval_mode))
+                    _live_order = _live_strat.get_rebalance_action(
+                        weekly_pnl=_live_pnl,
+                        divergence=float(sig["divergence"]),
+                        current_shares=bt_shares,
+                        current_price=_live_cur_price,
+                        cash=bt_cash,
+                    )
+                    _live_action_str = _live_order["action"] or "HOLD"
+                    _live_qty = int(_live_order["quantity"])
+
+                # +/- 부호 표시
+                if _live_action_str == "BUY":
+                    _qty_display = f"+{_live_qty}주 매수"
+                elif _live_action_str == "SELL":
+                    _qty_display = f"-{_live_qty}주 매도"
+                else:
+                    _qty_display = "0주 (HOLD)"
+
+                st.info(
+                    f"**현재가**: {_live_cur_price:,.0f}원 | "
+                    f"**전주 종가**: {_live_prev_price:,.0f}원 | "
+                    f"**변동률**: {_live_change_pct:+.2f}% | "
+                    f"**주간 손익**: {_live_pnl:+,.0f}원"
+                )
 
                 sc1, sc2 = st.columns(2)
                 with sc1:
-                    if _bt_action_qty > 0:
-                        _color = "error" if _bt_action_str == "SELL" else "success"
-                        getattr(st, _color)(f"### 📅 다음 거래일 주문: **{_bt_action_str} {_bt_action_qty}주**")
+                    if _live_qty > 0:
+                        _color = "error" if _live_action_str == "SELL" else "success"
+                        getattr(st, _color)(f"### 📅 다음 거래일 주문: **{_qty_display}**")
                     else:
-                        st.success(f"### 📅 다음 거래일 주문: **HOLD (0주)**")
-                    st.caption(f"백테스트 종가 {_bt_action_price:,.0f}원 기준 ({isa_seed/10000:.0f}만원 초기자본)")
+                        st.success(f"### 📅 다음 거래일 주문: **{_qty_display}**")
+                    st.caption(f"현재가 {_live_cur_price:,.0f}원 기준 · 보유 {bt_shares}주 · 예수금 {bt_cash:,.0f}원")
 
                 # 백테스트 요약 (시작일 ~ 현재)
                 if bt:

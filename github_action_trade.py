@@ -142,6 +142,11 @@ def _send_telegram(message: str):
                 t = m.group(1).strip()
         if t.lower().startswith("bot"):
             t = t[3:]
+        if ":" in t:
+            left, right = t.split(":", 1)
+            left = "".join(ch for ch in left if ch.isdigit())
+            right = "".join(ch for ch in right if re.match(r"[A-Za-z0-9_-]", ch))
+            t = f"{left}:{right}" if left and right else t
         # 유효 패턴(숫자:영숫자/언더스코어/하이픈)만 추출
         m2 = re.search(r"([0-9]{6,}:[A-Za-z0-9_-]{20,})", t)
         if m2:
