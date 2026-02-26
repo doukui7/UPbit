@@ -79,6 +79,35 @@ class KISTrader:
             h.update(extra)
         return h
 
+    def _normalize_account_fields(self, account_no: str | None = None, acnt_prdt_cd: str | None = None) -> tuple[str, str]:
+        """
+        계좌번호/CANO, 상품코드를 안전하게 정규화.
+        - 10자리 입력 시: 앞 8자리(CANO) + 뒤 2자리(상품코드)
+        - 8자리 입력 시: 상품코드는 인자/기존값/기본값(01) 사용
+        """
+        raw_acct = "".join(ch for ch in str(account_no if account_no is not None else self.account_no) if ch.isdigit())
+        raw_prdt = "".join(ch for ch in str(acnt_prdt_cd if acnt_prdt_cd is not None else self.acnt_prdt_cd) if ch.isdigit())
+
+        if len(raw_acct) >= 10:
+            cano = raw_acct[:8]
+            prdt = raw_acct[8:10]
+        else:
+            cano = raw_acct[:8] if len(raw_acct) > 8 else raw_acct
+            prdt = raw_prdt
+
+        if not prdt:
+            prdt = "01"
+
+        prdt = prdt.zfill(2)[:2]
+        return cano, prdt
+
+    def _account_params(self) -> tuple[str, str]:
+        """요청 전 계좌 필드를 정규화하고 객체 상태도 동기화."""
+        cano, prdt = self._normalize_account_fields()
+        self.account_no = cano
+        self.acnt_prdt_cd = prdt
+        return cano, prdt
+
     def _hashkey(self, body: dict) -> str:
         """주문 요청 시 필요한 hashkey 생성."""
         url = f"{self.base_url}/uapi/hashkey"
@@ -465,12 +494,13 @@ class KISTrader:
         """
         if not self._ensure_token():
             return None
+        cano, prdt = self._account_params()
 
         tr_id = "VTTC8434R" if self.is_mock else "TTTC8434R"
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
         params = {
-            "CANO": self.account_no,
-            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "CANO": cano,
+            "ACNT_PRDT_CD": prdt,
             "AFHR_FLPR_YN": "N",
             "OFL_YN": "",
             "INQR_DVSN": "02",
@@ -553,6 +583,7 @@ class KISTrader:
         """
         if not self._ensure_token():
             return None
+        cano, prdt = self._account_params()
 
         if order_type == "BUY":
             tr_id = "VTTC0802U" if self.is_mock else "TTTC0802U"
@@ -562,8 +593,8 @@ class KISTrader:
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/order-cash"
 
         body = {
-            "CANO": self.account_no,
-            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "CANO": cano,
+            "ACNT_PRDT_CD": prdt,
             "PDNO": stock_code,
             "ORD_DVSN": ord_dvsn,
             "ORD_QTY": str(qty),
@@ -599,13 +630,14 @@ class KISTrader:
         """국내주식 주문 취소."""
         if not self._ensure_token():
             return None
+        cano, prdt = self._account_params()
 
         tr_id = "VTTC0803U" if self.is_mock else "TTTC0803U"
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/order-rvsecncl"
 
         body = {
-            "CANO": self.account_no,
-            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "CANO": cano,
+            "ACNT_PRDT_CD": prdt,
             "KRX_FWDG_ORD_ORGNO": "",
             "ORGN_ODNO": org_ord_no,
             "ORD_DVSN": "00",
@@ -677,13 +709,14 @@ class KISTrader:
         """
         if not self._ensure_token():
             return []
+        cano, prdt = self._account_params()
 
         tr_id = "VTTC8036R" if self.is_mock else "TTTC8036R"
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
 
         params = {
-            "CANO": self.account_no,
-            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "CANO": cano,
+            "ACNT_PRDT_CD": prdt,
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
             "INQR_DVSN_1": "1",

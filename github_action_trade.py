@@ -51,6 +51,28 @@ def _get_env_any(*keys, default=""):
     return default
 
 
+def _normalize_kis_account_fields(account_no: str, prdt_cd: str = "01") -> tuple[str, str]:
+    """
+    KIS 계좌번호 정규화.
+    - 10자리 계좌번호 입력 시: 앞 8자리(CANO), 뒤 2자리(상품코드)로 자동 분리
+    - 8자리 계좌번호 입력 시: 전달된 상품코드(없으면 01) 사용
+    """
+    raw_acct = "".join(ch for ch in str(account_no or "") if ch.isdigit())
+    raw_prdt = "".join(ch for ch in str(prdt_cd or "") if ch.isdigit())
+
+    if len(raw_acct) >= 10:
+        cano = raw_acct[:8]
+        acnt_prdt_cd = raw_acct[8:10]
+    else:
+        cano = raw_acct[:8] if len(raw_acct) > 8 else raw_acct
+        acnt_prdt_cd = raw_prdt
+
+    if not acnt_prdt_cd:
+        acnt_prdt_cd = "01"
+
+    return cano, acnt_prdt_cd.zfill(2)[:2]
+
+
 def _fetch_overseas_chart_any_exchange(trader: KISTrader, symbol: str, count: int = 420):
     """Try NAS/NYS/AMS in order and return (df, exchange)."""
     for ex in ("NAS", "NYS", "AMS"):
@@ -215,15 +237,45 @@ def get_portfolio():
     }]
 
 
+def _normalize_coin_interval(interval: str) -> str:
+    """코인 전략 interval 값을 내부 표준 키로 정규화."""
+    iv = str(interval or "day").strip().lower()
+    if iv in {"1d", "d", "day", "daily"}:
+        return "day"
+    if iv in {"4h", "240", "240m", "minute240"}:
+        return "minute240"
+    if iv in {"1h", "60", "60m", "minute60"}:
+        return "minute60"
+    return iv
+
+
+def _is_coin_interval_due(interval: str, now_kst: datetime) -> bool:
+    """
+    현재 시각 기준 전략 주기 실행 여부.
+    - 4H(minute240): KST 01/05/09/13/17/21시
+    - 1D(day): KST 09시
+    - 그 외: 호출 시점마다 실행
+    """
+    iv = _normalize_coin_interval(interval)
+    hour = int(now_kst.hour)
+
+    if iv == "day":
+        return hour == 9
+    if iv == "minute240":
+        return (hour % 4) == 1
+    return True
+
+
 def analyze_asset(trader, item):
     """1단계: 데이터 조회 → 시그널 계산 → 보유 현황 확인"""
     ticker = f"{item['market']}-{item['coin'].upper()}"
     strategy_name = item.get("strategy", "SMA")
     param = item.get("parameter", 20)
-    interval = item.get("interval", "day")
+    interval_raw = item.get("interval", "day")
+    interval = _normalize_coin_interval(interval_raw)
     weight = item.get("weight", 100)
 
-    logger.info(f"--- [{ticker}] {strategy_name}({param}), {weight}%, {interval} ---")
+    logger.info(f"--- [{ticker}] {strategy_name}({param}), {weight}%, {interval_raw}->{interval} ---")
 
     # Fetch data
     count = max(200, param * 3)
@@ -284,12 +336,28 @@ def run_auto_trade():
 
     trader = UpbitTrader(ACCESS_KEY, SECRET_KEY)
     portfolio = get_portfolio()
+    kst = timezone(timedelta(hours=9))
+    now_kst = datetime.now(kst)
 
-    logger.info(f"=== Portfolio Auto Trade ({len(portfolio)} assets) ===")
+    # 전략 주기(4H/1D)별 실행 필터
+    due_portfolio = []
+    for item in portfolio:
+        iv_raw = item.get("interval", "day")
+        if _is_coin_interval_due(iv_raw, now_kst):
+            due_portfolio.append(item)
+        else:
+            ticker = f"{item.get('market', 'KRW')}-{str(item.get('coin', '')).upper()}"
+            logger.info(f"[{ticker}] 주기 미도래로 스킵 (interval={iv_raw}, now={now_kst.strftime('%H:%M')} KST)")
+
+    if not due_portfolio:
+        logger.info(f"=== Portfolio Auto Trade: 실행 대상 없음 (now={now_kst.strftime('%Y-%m-%d %H:%M:%S')} KST) ===")
+        return
+
+    logger.info(f"=== Portfolio Auto Trade ({len(due_portfolio)}/{len(portfolio)} assets due) ===")
 
     # ── 1단계: 전체 시그널 분석 ──
     analyses = []
-    for item in portfolio:
+    for item in due_portfolio:
         try:
             result = analyze_asset(trader, item)
             if result:
@@ -403,11 +471,14 @@ def run_auto_trade():
     logger.info("=== Done ===")
 
     # 텔레그램 요약 전송
-    tg_lines = [f"<b>코인 자동매매</b> ({len(portfolio)}종목)"]
+    tg_lines = [f"<b>코인 자동매매</b> ({len(due_portfolio)}종목 실행 / 전체 {len(portfolio)}종목)"]
+    tg_lines.append(f"실행시각: {now_kst.strftime('%Y-%m-%d %H:%M')} KST")
     tg_lines.append(f"총자산: {total_portfolio_value:,.0f}원 (현금 {krw_balance:,.0f})")
     for a in analyses:
         action = a['signal']
-        tg_lines.append(f"  {a['ticker']}: {action} (보유≈{a['coin_value']:,.0f}원)")
+        iv = _normalize_coin_interval(a.get('interval', 'day'))
+        iv_label = "4H" if iv == "minute240" else ("1D" if iv == "day" else str(a.get('interval', 'day')))
+        tg_lines.append(f"  {a['ticker']} [{iv_label}]: {action} (보유≈{a['coin_value']:,.0f}원)")
     _send_telegram("\n".join(tg_lines))
 
 
@@ -606,6 +677,17 @@ def _is_kr_market_hours() -> bool:
     return market_open <= now <= market_close
 
 
+def _is_kr_order_window() -> bool:
+    """KST 09:00~15:20 주문 가능 시간 확인."""
+    kst = timezone(timedelta(hours=9))
+    now = datetime.now(kst)
+    if now.weekday() >= 5:
+        return False
+    order_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    order_close = now.replace(hour=15, minute=20, second=0, microsecond=0)
+    return order_open <= now <= order_close
+
+
 def run_kis_isa_trade():
     """
     한국투자증권 ISA 계좌 - 위대리(WDR) 3단계 전략 자동매매.
@@ -623,14 +705,15 @@ def run_kis_isa_trade():
     load_dotenv()
     logger.info("=== KIS ISA 위대리(WDR) 자동매매 시작 ===")
 
-    if not _is_kr_market_hours():
-        logger.info("국내 장 시간 외 (09:00~15:20 KST). 매매 생략.")
+    if not _is_kr_order_window():
+        logger.info("국내 주문 가능 시간 외 (09:00~15:20 KST). 매매 생략.")
         return
 
     isa_key = _get_env_any("KIS_ISA_APP_KEY", "KIS_APP_KEY")
     isa_secret = _get_env_any("KIS_ISA_APP_SECRET", "KIS_APP_SECRET")
-    isa_account = _get_env_any("KIS_ISA_ACCOUNT_NO", "KIS_ACCOUNT_NO")
-    isa_prdt = _get_env_any("KIS_ISA_ACNT_PRDT_CD", "KIS_ACNT_PRDT_CD", default="01")
+    isa_account_raw = _get_env_any("KIS_ISA_ACCOUNT_NO", "KIS_ACCOUNT_NO")
+    isa_prdt_raw = _get_env_any("KIS_ISA_ACNT_PRDT_CD", "KIS_ACNT_PRDT_CD", default="01")
+    isa_account, isa_prdt = _normalize_kis_account_fields(isa_account_raw, isa_prdt_raw)
 
     # 트레이더 초기화
     trader = KISTrader(is_mock=False)
@@ -640,7 +723,6 @@ def run_kis_isa_trade():
         trader.app_secret = isa_secret
     if isa_account:
         trader.account_no = isa_account
-    if isa_prdt:
         trader.acnt_prdt_cd = isa_prdt
 
     if not trader.auth():
@@ -793,14 +875,15 @@ def run_kis_pension_trade():
     load_dotenv()
     logger.info("=== KIS 연금저축 듀얼모멘텀(GEM) 자동매매 시작 ===")
 
-    if not _is_kr_market_hours():
-        logger.info("국내 장 시간 외 (09:00~15:20 KST). 매매 생략.")
+    if not _is_kr_order_window():
+        logger.info("국내 주문 가능 시간 외 (09:00~15:20 KST). 매매 생략.")
         return
 
     pension_key = _get_env_any("KIS_PENSION_APP_KEY", "KIS_APP_KEY")
     pension_secret = _get_env_any("KIS_PENSION_APP_SECRET", "KIS_APP_SECRET")
-    pension_acct = _get_env_any("KIS_PENSION_ACCOUNT_NO", "KIS_ACCOUNT_NO")
-    pension_prdt = _get_env_any("KIS_PENSION_ACNT_PRDT_CD", "KIS_ACNT_PRDT_CD", default="01")
+    pension_acct_raw = _get_env_any("KIS_PENSION_ACCOUNT_NO", "KIS_ACCOUNT_NO")
+    pension_prdt_raw = _get_env_any("KIS_PENSION_ACNT_PRDT_CD", "KIS_ACNT_PRDT_CD", default="01")
+    pension_acct, pension_prdt = _normalize_kis_account_fields(pension_acct_raw, pension_prdt_raw)
 
     # 연금저축 전용 트레이더 (ISA와 계좌가 다를 수 있음)
     trader = KISTrader(is_mock=False)
@@ -810,7 +893,6 @@ def run_kis_pension_trade():
         trader.app_secret = pension_secret
     if pension_acct:
         trader.account_no = pension_acct
-    if pension_prdt:
         trader.acnt_prdt_cd = pension_prdt
 
     if not trader.auth():
@@ -1040,6 +1122,10 @@ def _check_kiwoom_gold() -> dict:
             result['signal_msg'] = 'SKIP - 데이터 부족'
 
         # 5. 가상주문 왕복 테스트 (하한가 매수 1g → 조회 → 취소)
+        if not _is_kr_order_window():
+            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~15:20 KST)'
+            return result
+
         limit_price = trader._get_limit_price(code, "SELL")  # 하한가 (체결 불가 가격)
         if limit_price <= 0:
             result['order_msg'] = 'FAIL - 하한가 계산 실패'
@@ -1054,25 +1140,26 @@ def _check_kiwoom_gold() -> dict:
         time.sleep(2)
 
         # 미체결 조회
-        pending = trader.get_pending_orders(code)
-        found = any(p.get('ord_no') == ord_no for p in pending)
+        pending = trader.get_pending_orders(code) or []
+        found = any(p.get('ord_no') == ord_no for p in pending) if pending else bool(ord_no)
 
         # 취소
         cancel_result = trader.cancel_order(ord_no, code, qty=1)
+        cancel_ok = bool(cancel_result and (cancel_result.get('success') if isinstance(cancel_result, dict) else cancel_result))
         time.sleep(1)
 
         # 취소 확인
-        pending_after = trader.get_pending_orders(code)
-        still_there = any(p.get('ord_no') == ord_no for p in pending_after)
+        pending_after = trader.get_pending_orders(code) or []
+        still_there = any(p.get('ord_no') == ord_no for p in pending_after) if pending_after else False
 
-        if found and cancel_result and not still_there:
+        if found and cancel_ok and not still_there:
             result['order_test'] = True
             result['order_msg'] = '주문→조회→취소 정상'
-        elif found and cancel_result:
+        elif found and cancel_ok:
             result['order_test'] = True
             result['order_msg'] = '주문→조회→취소 완료 (잔여 확인 필요)'
         else:
-            result['order_msg'] = f"주문={bool(ord_no)}, 조회={found}, 취소={bool(cancel_result)}"
+            result['order_msg'] = f"주문={bool(ord_no)}, 조회={found}, 취소={cancel_ok}"
 
     except Exception as e:
         result['order_msg'] = result.get('order_msg') or f'ERROR: {e}'
@@ -1094,6 +1181,19 @@ def _check_kis_isa() -> dict:
 
     try:
         trader = KISTrader(is_mock=False)
+        isa_key = _get_env_any("KIS_ISA_APP_KEY", "KIS_APP_KEY")
+        isa_secret = _get_env_any("KIS_ISA_APP_SECRET", "KIS_APP_SECRET")
+        isa_acct_raw = _get_env_any("KIS_ISA_ACCOUNT_NO", "KIS_ACCOUNT_NO")
+        isa_prdt_raw = _get_env_any("KIS_ISA_ACNT_PRDT_CD", "KIS_ACNT_PRDT_CD", default="01")
+        isa_account, isa_prdt = _normalize_kis_account_fields(isa_acct_raw, isa_prdt_raw)
+
+        if isa_key:
+            trader.app_key = isa_key
+        if isa_secret:
+            trader.app_secret = isa_secret
+        if isa_account:
+            trader.account_no = isa_account
+            trader.acnt_prdt_cd = isa_prdt
 
         # 1. 인증
         if not trader.auth():
@@ -1173,6 +1273,10 @@ def _check_kis_isa() -> dict:
             result['signal_msg'] = 'SKIP - 시그널 데이터 부족'
 
         # 5. 가상주문 왕복 테스트 (하한가 매수 1주 → 조회 → 취소)
+        if not _is_kr_order_window():
+            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~15:20 KST)'
+            return result
+
         limit_price = trader._get_limit_price(etf_code, "SELL")  # 하한가
         if limit_price <= 0:
             result['order_msg'] = 'FAIL - 하한가 계산 실패'
@@ -1186,23 +1290,24 @@ def _check_kis_isa() -> dict:
         ord_no = order_result.get('ord_no', '')
         time.sleep(2)
 
-        pending = trader.get_pending_orders(etf_code)
-        found = any(p.get('ord_no') == ord_no for p in pending)
+        pending = trader.get_pending_orders(etf_code) or []
+        found = any(p.get('ord_no') == ord_no for p in pending) if pending else bool(ord_no)
 
         cancel_result = trader.cancel_order(ord_no, etf_code)
+        cancel_ok = bool(cancel_result and (cancel_result.get('success') if isinstance(cancel_result, dict) else cancel_result))
         time.sleep(1)
 
-        pending_after = trader.get_pending_orders(etf_code)
-        still_there = any(p.get('ord_no') == ord_no for p in pending_after)
+        pending_after = trader.get_pending_orders(etf_code) or []
+        still_there = any(p.get('ord_no') == ord_no for p in pending_after) if pending_after else False
 
-        if found and cancel_result and not still_there:
+        if found and cancel_ok and not still_there:
             result['order_test'] = True
             result['order_msg'] = '주문→조회→취소 정상'
-        elif found and cancel_result:
+        elif found and cancel_ok:
             result['order_test'] = True
             result['order_msg'] = '주문→조회→취소 완료 (잔여 확인 필요)'
         else:
-            result['order_msg'] = f"주문={bool(ord_no)}, 조회={found}, 취소={bool(cancel_result)}"
+            result['order_msg'] = f"주문={bool(ord_no)}, 조회={found}, 취소={cancel_ok}"
 
     except Exception as e:
         result['order_msg'] = result.get('order_msg') or f'ERROR: {e}'
@@ -1225,16 +1330,16 @@ def _check_kis_pension() -> dict:
     try:
         trader = KISTrader(is_mock=False)
         # 연금저축 전용 키 오버라이드
-        pension_key = os.getenv("KIS_PENSION_APP_KEY")
-        pension_secret = os.getenv("KIS_PENSION_APP_SECRET")
+        pension_key = _get_env_any("KIS_PENSION_APP_KEY", "KIS_APP_KEY")
+        pension_secret = _get_env_any("KIS_PENSION_APP_SECRET", "KIS_APP_SECRET")
         if pension_key and pension_secret:
             trader.app_key = pension_key
             trader.app_secret = pension_secret
-        pension_acct = os.getenv("KIS_PENSION_ACCOUNT_NO")
+        pension_acct_raw = _get_env_any("KIS_PENSION_ACCOUNT_NO", "KIS_ACCOUNT_NO")
+        pension_prdt_raw = _get_env_any("KIS_PENSION_ACNT_PRDT_CD", "KIS_ACNT_PRDT_CD", default="01")
+        pension_acct, pension_prdt = _normalize_kis_account_fields(pension_acct_raw, pension_prdt_raw)
         if pension_acct:
             trader.account_no = pension_acct
-        pension_prdt = os.getenv("KIS_PENSION_ACNT_PRDT_CD")
-        if pension_prdt:
             trader.acnt_prdt_cd = pension_prdt
 
         # 1. 인증
@@ -1326,6 +1431,10 @@ def _check_kis_pension() -> dict:
             result['signal_msg'] = 'FAIL - 듀얼모멘텀 분석 실패'
 
         # 5. 가상주문 왕복 테스트
+        if not _is_kr_order_window():
+            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~15:20 KST)'
+            return result
+
         # 연금저축 계좌의 대표 종목으로 테스트
         test_code = kr_etf_map['SPY']  # TIGER 미국S&P500
         test_price = _get_kis_price_local_first(trader, test_code)
@@ -1346,23 +1455,24 @@ def _check_kis_pension() -> dict:
         ord_no = order_result.get('ord_no', '')
         time.sleep(2)
 
-        pending = trader.get_pending_orders(test_code)
-        found = any(p.get('ord_no') == ord_no for p in pending)
+        pending = trader.get_pending_orders(test_code) or []
+        found = any(p.get('ord_no') == ord_no for p in pending) if pending else bool(ord_no)
 
         cancel_result = trader.cancel_order(ord_no, test_code)
+        cancel_ok = bool(cancel_result and (cancel_result.get('success') if isinstance(cancel_result, dict) else cancel_result))
         time.sleep(1)
 
-        pending_after = trader.get_pending_orders(test_code)
-        still_there = any(p.get('ord_no') == ord_no for p in pending_after)
+        pending_after = trader.get_pending_orders(test_code) or []
+        still_there = any(p.get('ord_no') == ord_no for p in pending_after) if pending_after else False
 
-        if found and cancel_result and not still_there:
+        if found and cancel_ok and not still_there:
             result['order_test'] = True
             result['order_msg'] = '주문→조회→취소 정상'
-        elif found and cancel_result:
+        elif found and cancel_ok:
             result['order_test'] = True
             result['order_msg'] = '주문→조회→취소 완료 (잔여 확인 필요)'
         else:
-            result['order_msg'] = f"주문={bool(ord_no)}, 조회={found}, 취소={bool(cancel_result)}"
+            result['order_msg'] = f"주문={bool(ord_no)}, 조회={found}, 취소={cancel_ok}"
 
     except Exception as e:
         result['order_msg'] = result.get('order_msg') or f'ERROR: {e}'
@@ -1428,21 +1538,40 @@ def _check_upbit() -> dict:
 
         # 4. 시그널 분석
         signals = []
+        signal_errors = []
         for item in portfolio:
+            _ticker = f"{item.get('market', 'KRW')}-{str(item.get('coin', '')).upper()}"
             try:
                 a = analyze_asset(trader, item)
-                if a:
-                    signals.append(f"{a['ticker']}={a['signal']}")
-            except Exception:
-                signals.append(f"{item['market']}-{item['coin']}=ERROR")
+                if not a:
+                    signal_errors.append(f"{_ticker}=ERROR(분석결과 없음)")
+                    continue
 
-        if signals:
+                ticker = str(a.get('ticker') or _ticker)
+                signal_value = str(a.get('signal', '')).upper()
+                if signal_value in {"BUY", "SELL", "HOLD"}:
+                    signals.append(f"{ticker}={signal_value}")
+                else:
+                    signal_errors.append(f"{ticker}=ERROR({a.get('signal')})")
+            except Exception as e:
+                signal_errors.append(f"{_ticker}=ERROR({e})")
+
+        if signals and not signal_errors:
             result['signal'] = True
             result['signal_msg'] = ", ".join(signals)
+        elif signals and signal_errors:
+            result['signal'] = False
+            result['signal_msg'] = f"FAIL - 일부 시그널 분석 실패 ({'; '.join(signal_errors)}) | 성공: {', '.join(signals)}"
+        elif signal_errors:
+            result['signal_msg'] = f"FAIL - 시그널 분석 실패 ({'; '.join(signal_errors)})"
         else:
-            result['signal_msg'] = 'FAIL - 시그널 분석 실패'
+            result['signal_msg'] = 'SKIP - 포트폴리오 비어있음'
 
         # 5. 가상주문 왕복 테스트 (현재가 50% 아래 지정가 매수 → 조회 → 취소)
+        if krw < 5000:
+            result['order_msg'] = f"SKIP - 가상주문 최소금액 부족 (KRW {krw:,.0f}원)"
+            return result
+
         test_ticker = tickers[0]
         test_price = prices.get(test_ticker)
         if not test_price:
@@ -1477,11 +1606,17 @@ def _check_upbit() -> dict:
         min_volume = round(min_volume, 8)
 
         order = trader.buy_limit(test_ticker, dummy_price, min_volume)
-        if not order or 'error' in str(order).lower():
+        if not order:
+            result['order_msg'] = "FAIL - 주문 실패: 응답 없음"
+            return result
+        if 'error' in str(order).lower():
             result['order_msg'] = f"FAIL - 주문 실패: {order}"
             return result
 
         order_uuid = order.get('uuid', '')
+        if not order_uuid:
+            result['order_msg'] = f"FAIL - 주문 UUID 없음: {order}"
+            return result
         time.sleep(2)
 
         # 미체결 조회
@@ -1528,20 +1663,40 @@ def _print_health_report(results: dict):
     pass_count = 0
     total_count = len(results)
 
+    msg_key_map = {
+        'auth': 'auth_msg',
+        'balance': 'balance_msg',
+        'price': 'price_msg',
+        'signal': 'signal_msg',
+        'order_test': 'order_msg',
+    }
+
+    def _status_label(ok: bool, msg: str, allow_skip: bool = True) -> str:
+        txt = str(msg or "").strip().upper()
+        if ok:
+            return "PASS"
+        if allow_skip and txt.startswith("SKIP"):
+            return "SKIP"
+        return "FAIL"
+
+    def _is_ok_or_skip(ok: bool, msg: str) -> bool:
+        txt = str(msg or "").strip().upper()
+        return bool(ok) or txt.startswith("SKIP")
+
     for key, r in results.items():
         name = r['name']
         checks = ['auth', 'balance', 'price', 'signal', 'order_test']
-        all_pass = all(r.get(c, False) for c in checks if r.get(f'{c}_msg', ''))
+        all_pass = all(_is_ok_or_skip(r.get(c, False), r.get(msg_key_map[c], '')) for c in checks)
         if all_pass:
             pass_count += 1
 
         status_icon = "PASS" if all_pass else "WARN"
         lines.append(f"<b>[{name}]</b> {status_icon}")
-        lines.append(f"  인증: {'PASS' if r['auth'] else 'FAIL'} {r.get('auth_msg', '')}")
-        lines.append(f"  잔고: {'PASS' if r['balance'] else 'FAIL'} {r.get('balance_msg', '')}")
-        lines.append(f"  시세: {'PASS' if r['price'] else 'FAIL'} {r.get('price_msg', '')}")
-        lines.append(f"  시그널: {'PASS' if r['signal'] else 'WARN'} {r.get('signal_msg', '')}")
-        lines.append(f"  가상주문: {'PASS' if r['order_test'] else 'FAIL'} {r.get('order_msg', '')}")
+        lines.append(f"  인증: {_status_label(r.get('auth', False), r.get('auth_msg', ''), allow_skip=False)} {r.get('auth_msg', '')}")
+        lines.append(f"  잔고: {_status_label(r.get('balance', False), r.get('balance_msg', ''), allow_skip=False)} {r.get('balance_msg', '')}")
+        lines.append(f"  시세: {_status_label(r.get('price', False), r.get('price_msg', ''), allow_skip=False)} {r.get('price_msg', '')}")
+        lines.append(f"  시그널: {_status_label(r.get('signal', False), r.get('signal_msg', ''))} {r.get('signal_msg', '')}")
+        lines.append(f"  가상주문: {_status_label(r.get('order_test', False), r.get('order_msg', ''))} {r.get('order_msg', '')}")
         lines.append("")
 
     lines.append(f"<b>종합: {pass_count}/{total_count} 시스템 정상</b>")
@@ -1686,8 +1841,9 @@ def run_daily_status_report():
     # KIS ISA
     isa_key = _get_env_any("KIS_ISA_APP_KEY", "KIS_APP_KEY")
     isa_secret = _get_env_any("KIS_ISA_APP_SECRET", "KIS_APP_SECRET")
-    isa_account = _get_env_any("KIS_ISA_ACCOUNT_NO", "KIS_ACCOUNT_NO")
-    isa_prdt = _get_env_any("KIS_ISA_ACNT_PRDT_CD", "KIS_ACNT_PRDT_CD", default="01")
+    isa_account_raw = _get_env_any("KIS_ISA_ACCOUNT_NO", "KIS_ACCOUNT_NO")
+    isa_prdt_raw = _get_env_any("KIS_ISA_ACNT_PRDT_CD", "KIS_ACNT_PRDT_CD", default="01")
+    isa_account, isa_prdt = _normalize_kis_account_fields(isa_account_raw, isa_prdt_raw)
     if isa_key and isa_secret and isa_account:
         try:
             trader = KISTrader(is_mock=False)
@@ -1715,20 +1871,20 @@ def run_daily_status_report():
             lines.append("")
 
     # KIS Pension
-    pension_acct = _get_env_any("KIS_PENSION_ACCOUNT_NO", "KIS_ACCOUNT_NO")
+    pension_acct_raw = _get_env_any("KIS_PENSION_ACCOUNT_NO", "KIS_ACCOUNT_NO")
+    pension_prdt_raw = _get_env_any("KIS_PENSION_ACNT_PRDT_CD", "KIS_ACNT_PRDT_CD", default="01")
+    pension_acct, pension_prdt = _normalize_kis_account_fields(pension_acct_raw, pension_prdt_raw)
     if pension_acct:
         try:
             trader = KISTrader(is_mock=False)
             pension_key = _get_env_any("KIS_PENSION_APP_KEY", "KIS_APP_KEY")
             pension_secret = _get_env_any("KIS_PENSION_APP_SECRET", "KIS_APP_SECRET")
-            pension_prdt = _get_env_any("KIS_PENSION_ACNT_PRDT_CD", "KIS_ACNT_PRDT_CD", default="01")
             if pension_key:
                 trader.app_key = pension_key
             if pension_secret:
                 trader.app_secret = pension_secret
             if pension_acct:
                 trader.account_no = pension_acct
-            if pension_prdt:
                 trader.acnt_prdt_cd = pension_prdt
 
             if trader.auth():
@@ -1871,14 +2027,15 @@ def run_kis_pension_trade():
     load_dotenv()
     logger.info("=== KIS 연금저축 LAA 자동매매 시작 ===")
 
-    if not _is_kr_market_hours():
-        logger.info("국내 장 시간이 아닙니다(09:00~16:00 KST). 매매를 생략합니다.")
+    if not _is_kr_order_window():
+        logger.info("국내 주문 가능 시간이 아닙니다(09:00~15:20 KST). 매매를 생략합니다.")
         return
 
     pension_key = _get_env_any("KIS_PENSION_APP_KEY", "KIS_APP_KEY")
     pension_secret = _get_env_any("KIS_PENSION_APP_SECRET", "KIS_APP_SECRET")
-    pension_acct = _get_env_any("KIS_PENSION_ACCOUNT_NO", "KIS_ACCOUNT_NO")
-    pension_prdt = _get_env_any("KIS_PENSION_ACNT_PRDT_CD", "KIS_ACNT_PRDT_CD", default="01")
+    pension_acct_raw = _get_env_any("KIS_PENSION_ACCOUNT_NO", "KIS_ACCOUNT_NO")
+    pension_prdt_raw = _get_env_any("KIS_PENSION_ACNT_PRDT_CD", "KIS_ACNT_PRDT_CD", default="01")
+    pension_acct, pension_prdt = _normalize_kis_account_fields(pension_acct_raw, pension_prdt_raw)
 
     trader = KISTrader(is_mock=False)
     if pension_key:
@@ -1887,7 +2044,6 @@ def run_kis_pension_trade():
         trader.app_secret = pension_secret
     if pension_acct:
         trader.account_no = pension_acct
-    if pension_prdt:
         trader.acnt_prdt_cd = pension_prdt
 
     if not trader.auth():
@@ -2030,15 +2186,15 @@ def _check_kis_pension() -> dict:
         trader = KISTrader(is_mock=False)
         pension_key = _get_env_any("KIS_PENSION_APP_KEY", "KIS_APP_KEY")
         pension_secret = _get_env_any("KIS_PENSION_APP_SECRET", "KIS_APP_SECRET")
-        pension_acct = _get_env_any("KIS_PENSION_ACCOUNT_NO", "KIS_ACCOUNT_NO")
-        pension_prdt = _get_env_any("KIS_PENSION_ACNT_PRDT_CD", "KIS_ACNT_PRDT_CD", default="01")
+        pension_acct_raw = _get_env_any("KIS_PENSION_ACCOUNT_NO", "KIS_ACCOUNT_NO")
+        pension_prdt_raw = _get_env_any("KIS_PENSION_ACNT_PRDT_CD", "KIS_ACNT_PRDT_CD", default="01")
+        pension_acct, pension_prdt = _normalize_kis_account_fields(pension_acct_raw, pension_prdt_raw)
         if pension_key:
             trader.app_key = pension_key
         if pension_secret:
             trader.app_secret = pension_secret
         if pension_acct:
             trader.account_no = pension_acct
-        if pension_prdt:
             trader.acnt_prdt_cd = pension_prdt
 
         if not trader.auth():
@@ -2093,6 +2249,10 @@ def _check_kis_pension() -> dict:
         )
 
         # 주문 테스트: 목표 종목 중 1개로 1주 지정가 주문 후 즉시 취소
+        if not _is_kr_order_window():
+            result["order_msg"] = "SKIP - 주문 가능 시간이 아닙니다 (09:00~15:20 KST)"
+            return result
+
         test_code = next(iter(sig.get("target_weights_kr", {}).keys()), "")
         if not test_code:
             result["order_msg"] = "FAIL - 테스트 종목 없음"
@@ -2110,21 +2270,22 @@ def _check_kis_pension() -> dict:
 
         ord_no = order_result.get("ord_no", "")
         time.sleep(1.5)
-        pending = trader.get_pending_orders(test_code)
-        found = any(p.get("ord_no") == ord_no for p in pending)
+        pending = trader.get_pending_orders(test_code) or []
+        found = any(p.get("ord_no") == ord_no for p in pending) if pending else bool(ord_no)
         cancel_result = trader.cancel_order(ord_no, test_code)
+        cancel_ok = bool(cancel_result and (cancel_result.get('success') if isinstance(cancel_result, dict) else cancel_result))
         time.sleep(0.8)
-        pending_after = trader.get_pending_orders(test_code)
-        still_there = any(p.get("ord_no") == ord_no for p in pending_after)
+        pending_after = trader.get_pending_orders(test_code) or []
+        still_there = any(p.get("ord_no") == ord_no for p in pending_after) if pending_after else False
 
-        if found and cancel_result and not still_there:
+        if found and cancel_ok and not still_there:
             result["order_test"] = True
             result["order_msg"] = "PASS - 주문/취소 정상"
-        elif found and cancel_result:
+        elif found and cancel_ok:
             result["order_test"] = True
             result["order_msg"] = "PASS - 취소 전파 지연 가능"
         else:
-            result["order_msg"] = f"FAIL - 주문={bool(ord_no)}, 조회={found}, 취소={bool(cancel_result)}"
+            result["order_msg"] = f"FAIL - 주문={bool(ord_no)}, 조회={found}, 취소={cancel_ok}"
 
     except Exception as e:
         result["order_msg"] = result.get("order_msg") or f"ERROR: {e}"

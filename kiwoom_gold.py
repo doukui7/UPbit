@@ -380,26 +380,39 @@ class KiwoomGoldTrader:
             return None
 
         api_id = "kt50000" if order_type == "BUY" else "kt50001"
-        url    = f"{self.base_url}/api/dostk/acnt"
+        # 키움 도메스틱 주문 API는 /api/dostk/ordr 엔드포인트를 사용
+        url = f"{self.base_url}/api/dostk/ordr"
+
+        # 문서 기준: 금현물 trde_tp는 0(보통), 10(IOC), 20(FOK)
+        ord_tp_str = str(ord_tp or "").strip()
+        if ord_tp_str in {"10", "20"}:
+            trde_tp = ord_tp_str
+        else:
+            trde_tp = "0"
+
+        # 가격 미지정 시 현재가로 대체해 주문 본문 유효성 확보
+        ord_price = int(price) if float(price or 0) > 0 else int(self.get_current_price(code) or 0)
+        if ord_price <= 0:
+            logger.error(f"[{order_type}] 주문 실패: 유효한 주문가격 계산 불가 ({code})")
+            return {"success": False, "rc": -1, "msg": "유효한 주문가격 계산 불가"}
 
         body = {
-            "acnt_no":  self.account_no,
-            "stk_cd":   code,
-            "ord_qty":  str(qty),
-            "ord_uv":   str(int(price)) if price > 0 else "0",
-            "ord_tp":   ord_tp,          # 1=지정가, 3=시장가
-            "buy_sell": "1" if order_type == "BUY" else "2",
+            "stk_cd": code,
+            "ord_qty": str(qty),
+            "trde_tp": trde_tp,
+            "ord_uv": str(ord_price),
         }
 
         try:
             res  = self._session.post(url, json=body, headers=self._headers(api_id), timeout=10)
             res.raise_for_status()
             data = res.json()
-            rc   = data.get("return_code", -1)
-            msg  = data.get("return_msg",  "")
+            rc = data.get("return_code", data.get("rt_cd", -1))
+            msg = data.get("return_msg", data.get("msg1", ""))
 
             if str(rc) == "0":
-                ord_no = data.get("ord_no", "")
+                output = data.get("output", {}) if isinstance(data.get("output", {}), dict) else {}
+                ord_no = data.get("ord_no", "") or output.get("ord_no", "") or output.get("ODNO", "")
                 logger.info(f"[{order_type}] 주문 성공: 종목={code}, 수량={qty}, 주문번호={ord_no}")
                 return {"success": True, "ord_no": ord_no, "data": data}
             else:
@@ -414,18 +427,20 @@ class KiwoomGoldTrader:
         """금현물 주문 취소 (kt50003)."""
         if not self._ensure_token():
             return None
-        url  = f"{self.base_url}/api/dostk/acnt"
+        url = f"{self.base_url}/api/dostk/ordr"
         body = {
-            "acnt_no":      self.account_no,
-            "stk_cd":       code,
-            "org_ord_no":   org_ord_no,
-            "cncl_ord_qty": str(qty),
+            "orig_ord_no": org_ord_no,
+            "stk_cd": code,
+            "cncl_qty": str(qty if float(qty or 0) > 0 else 0),
         }
         try:
-            res  = self._session.post(url, json=body, headers=self._headers("kt50003"), timeout=10)
+            res = self._session.post(url, json=body, headers=self._headers("kt50003"), timeout=10)
             data = res.json()
-            logger.info(f"취소 결과: {data}")
-            return data
+            rc = data.get("return_code", data.get("rt_cd", -1))
+            msg = data.get("return_msg", data.get("msg1", ""))
+            ok = str(rc) == "0"
+            logger.info(f"취소 결과: rc={rc}, msg={msg}")
+            return {"success": ok, "rc": rc, "msg": msg, "data": data}
         except Exception as e:
             logger.error(f"취소 오류: {e}")
             return None
