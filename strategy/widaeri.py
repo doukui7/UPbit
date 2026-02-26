@@ -358,6 +358,7 @@ class WDRStrategy:
         initial_balance: float = 10_000_000,
         start_date=None,
         fee_rate: float | None = None,
+        initial_stock_ratio: float | None = None,
     ) -> dict | None:
         """
         WDR 주간 리밸런싱 백테스트.
@@ -416,27 +417,32 @@ class WDRStrategy:
         if first_price <= 0:
             return None
 
-        # 초기 매수 비율: 5단계에서는 첫 이격도에 따라 결정
+        # 초기 매수 비율 결정
         init_balance = float(initial_balance)
         first_div = float(merged["divergence"].iloc[0])
-        mode = self.settings.get("evaluation_mode", 3)
-        if mode == 5:
-            sov = self.settings.get("super_overvalue_threshold", 10.0)
-            ov = self.settings["overvalue_threshold"]
-            un = self.settings["undervalue_threshold"]
-            sun = self.settings.get("super_undervalue_threshold", -10.0)
-            if first_div > sov:
-                buy_ratio = 0.20
-            elif first_div > ov:
-                buy_ratio = 0.35
-            elif first_div < sun:
-                buy_ratio = 0.80
-            elif first_div < un:
-                buy_ratio = 0.65
-            else:
-                buy_ratio = 0.50
+
+        if initial_stock_ratio is not None:
+            # 외부에서 지정 (예: QQQ→TQQQ 참조 백테스트 비중 계승)
+            buy_ratio = float(initial_stock_ratio)
         else:
-            buy_ratio = 1.0 - float(self.settings.get("initial_cash_ratio", 0.5))
+            mode = self.settings.get("evaluation_mode", 3)
+            if mode == 5:
+                sov = self.settings.get("super_overvalue_threshold", 10.0)
+                ov = self.settings["overvalue_threshold"]
+                un = self.settings["undervalue_threshold"]
+                sun = self.settings.get("super_undervalue_threshold", -10.0)
+                if first_div > sov:
+                    buy_ratio = 0.20
+                elif first_div > ov:
+                    buy_ratio = 0.35
+                elif first_div < sun:
+                    buy_ratio = 0.80
+                elif first_div < un:
+                    buy_ratio = 0.65
+                else:
+                    buy_ratio = 0.50
+            else:
+                buy_ratio = 1.0 - float(self.settings.get("initial_cash_ratio", 0.16))
 
         cash = init_balance * (1.0 - buy_ratio)
         shares = int((init_balance * buy_ratio) / first_price)

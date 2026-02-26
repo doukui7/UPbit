@@ -37,23 +37,25 @@ on:
           - all
 
 jobs:
-  # ── 업비트 BTC 자동매매 ─────────────────────────────────
+  # ── 업비트 BTC 자동매매 (VM SSH 경유 - 고정 IP) ──
   trade:
     if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'trade' || github.event.inputs.run_job == 'all')) || github.event.schedule == '0 0,4,8,12,16,20 * * *'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Run Auto Trade via Cloud VM
+        uses: appleboy/ssh-action@v1
         with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run Auto Trade (Upbit)
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 15m
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          script: |
+            cd ~/upbit
+            git pull --quiet 2>/dev/null || true
+            source venv/bin/activate
+            pip install -q -r requirements.txt 2>/dev/null
+            python github_action_trade.py
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
@@ -61,7 +63,6 @@ jobs:
           TRADING_MODE: upbit
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
-        run: python github_action_trade.py
 
   # ── 키움 금현물 자동매매 ─────────────────────────────────
   kiwoom_gold:
@@ -150,31 +151,25 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
         run: python github_action_trade.py
 
-  # ── 일일 헬스체크 (가상주문 점검) ─────────────────────
+  # ── 일일 헬스체크 (VM SSH 경유 - Upbit IP 필요) ──
   health_check:
     if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'health_check' || github.event.inputs.run_job == 'all')) || github.event.schedule == '20 6 * * 1-5'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Run Daily Health Check via Cloud VM
+        uses: appleboy/ssh-action@v1
         with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Validate Telegram Config
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
-        run: |
-          [ -n "$TELEGRAM_BOT_TOKEN" ] || { echo "ERROR: TELEGRAM_BOT_TOKEN 미설정"; exit 1; }
-          [ -n "$TELEGRAM_CHAT_ID" ] || { echo "ERROR: TELEGRAM_CHAT_ID 미설정"; exit 1; }
-
-      - name: Run Daily Health Check
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 15m
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,Kiwoom_App_Key,Kiwoom_Secret_Key,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_APP_KEY,KIS_APP_SECRET,KIS_ACCOUNT_NO,KIS_ACNT_PRDT_CD,KIS_ISA_ETF_CODE,KIS_PENSION_ACCOUNT_NO,KIS_PENSION_ACNT_PRDT_CD,KR_ETF_SPY,KR_ETF_EFA,KR_ETF_AGG,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          script: |
+            cd ~/upbit
+            git pull --quiet 2>/dev/null || true
+            source venv/bin/activate
+            pip install -q -r requirements.txt 2>/dev/null
+            python github_action_trade.py
         env:
           # 업비트
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
@@ -202,25 +197,26 @@ jobs:
           TRADING_MODE: health_check
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
-        run: python github_action_trade.py
 
-  # ── 업비트 헬스체크 (4시간마다 가상주문 점검) ────────────
+  # ── 업비트 헬스체크 (VM SSH 경유 - 고정 IP) ──────
   health_check_upbit:
     if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'health_check_upbit' || github.event.inputs.run_job == 'all')) || github.event.schedule == '55 23,3,7,11,15,19 * * *'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Run Upbit Health Check via Cloud VM
+        uses: appleboy/ssh-action@v1
         with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run Upbit Health Check
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 10m
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          script: |
+            cd ~/upbit
+            git pull --quiet 2>/dev/null || true
+            source venv/bin/activate
+            pip install -q -r requirements.txt 2>/dev/null
+            python github_action_trade.py
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
@@ -228,32 +224,26 @@ jobs:
           TRADING_MODE: health_check_upbit
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
-        run: python github_action_trade.py
 
+  # ── 일일 자산 현황 리포트 (VM SSH 경유) ──────────
   daily_status:
     if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'daily_status' || github.event.inputs.run_job == 'all')) || github.event.schedule == '0 0 * * 1-5'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Run Daily Status Report via Cloud VM
+        uses: appleboy/ssh-action@v1
         with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Validate Telegram Config
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
-        run: |
-          [ -n "$TELEGRAM_BOT_TOKEN" ] || { echo "ERROR: TELEGRAM_BOT_TOKEN 미설정"; exit 1; }
-          [ -n "$TELEGRAM_CHAT_ID" ] || { echo "ERROR: TELEGRAM_CHAT_ID 미설정"; exit 1; }
-
-      - name: Run Daily Status Report
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 15m
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,Kiwoom_App_Key,Kiwoom_Secret_Key,KIWOOM_ACCOUNT,KIS_APP_KEY,KIS_APP_SECRET,KIS_ACCOUNT_NO,KIS_ACNT_PRDT_CD,KIS_ISA_ETF_CODE,KIS_PENSION_APP_KEY,KIS_PENSION_APP_SECRET,KIS_PENSION_ACCOUNT_NO,KIS_PENSION_ACNT_PRDT_CD,KR_ETF_SPY,KR_ETF_EFA,KR_ETF_AGG,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          script: |
+            cd ~/upbit
+            git pull --quiet 2>/dev/null || true
+            source venv/bin/activate
+            pip install -q -r requirements.txt 2>/dev/null
+            python github_action_trade.py
         env:
           # Upbit
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
@@ -280,7 +270,6 @@ jobs:
           TRADING_MODE: daily_status
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
-        run: python github_action_trade.py
 
   telegram_test_ping:
     if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'telegram_test_ping' || github.event.inputs.run_job == 'all')) || github.event.schedule == '0 * * * *'

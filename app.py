@@ -501,15 +501,15 @@ def _build_telegram_test_report() -> str:
                     allow_api_fallback=True,
                 )
                 sig = wdr.analyze(sig_df) if sig_df is not None and len(sig_df) >= 260 * 5 else None
-                _isa_px_df = data_cache.get_kis_domestic_local_first(
+                _isa_trade_df = data_cache.get_kis_domestic_local_first(
                     itr,
                     _code_only(isa_etf),
-                    count=3,
+                    count=1500,
                     allow_api_fallback=True,
                 )
                 cur_price = 0.0
-                if _isa_px_df is not None and not _isa_px_df.empty and "close" in _isa_px_df.columns:
-                    cur_price = _safe_float(_isa_px_df["close"].iloc[-1], 0.0)
+                if _isa_trade_df is not None and not _isa_trade_df.empty and "close" in _isa_trade_df.columns:
+                    cur_price = _safe_float(_isa_trade_df["close"].iloc[-1], 0.0)
                 if cur_price <= 0:
                     cur_price = _safe_float(itr.get_current_price(_code_only(isa_etf)) or 0.0, 0.0)
                 cur_shares = 0
@@ -520,25 +520,76 @@ def _build_telegram_test_report() -> str:
                 pos = f"{isa_etf} {cur_shares}주" if cur_shares > 0 else "현금"
 
                 if sig and cur_price > 0:
-                    etf_chart = data_cache.get_kis_domestic_local_first(
-                        itr,
-                        _code_only(isa_etf),
-                        count=10,
-                        allow_api_fallback=True,
-                    )
-                    weekly_pnl = 0.0
-                    if etf_chart is not None and len(etf_chart) >= 5 and cur_shares > 0:
-                        weekly_pnl = (cur_price - float(etf_chart["close"].iloc[-5])) * cur_shares
-                    action = wdr.get_rebalance_action(
-                        weekly_pnl=weekly_pnl,
-                        divergence=float(sig["divergence"]),
-                        current_shares=cur_shares,
-                        current_price=cur_price,
-                        cash=icash,
-                    )
-                    act = action.get("action")
-                    qty = int(action.get("quantity", 0) or 0)
-                    planned = "유지" if not act or qty <= 0 else f"{'매수' if act == 'BUY' else '매도'} 예정 {qty}주"
+                    # 비중 기반: 백테스트 → bt_stock_ratio → 실제 총자산 × 비율
+                    _ov_bt_ratio = None
+                    if _isa_trade_df is not None and len(_isa_trade_df) >= 60:
+                        _ov_isa_start = str(latest_cfg.get("kis_isa_start_date", "2022-03-08"))
+                        _ov_isa_seed = int(latest_cfg.get("kis_isa_seed", 10_000_000))
+                        _ov_trade_first = str(_isa_trade_df.index[0].date())
+                        _ov_eff_start = _ov_isa_start
+                        if _ov_eff_start < _ov_trade_first:
+                            _ov_eff_start = _ov_trade_first
+
+                        # 참조 백테스트 (비표준 ETF)
+                        _ov_ref_sr = None
+                        if str(isa_etf) != "418660" and _ov_eff_start > "2022-03-08":
+                            _ov_ref_trade = data_cache.get_kis_domestic_local_first(
+                                itr, "418660", count=1500, allow_api_fallback=True,
+                            )
+                            if sig_df is not None and _ov_ref_trade is not None:
+                                _ov_ref_bt = wdr.run_backtest(
+                                    signal_daily_df=sig_df, trade_daily_df=_ov_ref_trade,
+                                    initial_balance=_ov_isa_seed, start_date="2022-03-08",
+                                )
+                                if _ov_ref_bt and _ov_ref_bt.get("equity_df") is not None:
+                                    _ov_re = _ov_ref_bt["equity_df"]
+                                    _ov_ets = pd.Timestamp(_ov_eff_start)
+                                    _ov_rm = _ov_re.index <= _ov_ets
+                                    if _ov_rm.any():
+                                        _ov_rr = _ov_re.loc[_ov_rm].iloc[-1]
+                                        _ov_req = float(_ov_rr["equity"])
+                                        if _ov_req > 0:
+                                            _ov_ref_sr = (float(_ov_rr["shares"]) * float(_ov_rr["price"])) / _ov_req
+
+                        _ov_bt = wdr.run_backtest(
+                            signal_daily_df=sig_df, trade_daily_df=_isa_trade_df,
+                            initial_balance=_ov_isa_seed, start_date=_ov_eff_start,
+                            initial_stock_ratio=_ov_ref_sr,
+                        )
+                        if _ov_bt and _ov_bt.get("equity_df") is not None:
+                            _ov_last = _ov_bt["equity_df"].iloc[-1]
+                            _ov_bt_eq = float(_ov_last["equity"])
+                            if _ov_bt_eq > 0 and float(_ov_last["price"]) > 0:
+                                _ov_bt_ratio = (float(_ov_last["shares"]) * float(_ov_last["price"])) / _ov_bt_eq
+
+                    if _ov_bt_ratio is not None:
+                        _ov_actual_total = icash + cur_shares * cur_price
+                        _ov_target_val = _ov_actual_total * _ov_bt_ratio
+                        _ov_target_shares = int(_ov_target_val / cur_price) if cur_price > 0 else 0
+                        _ov_diff = _ov_target_shares - cur_shares
+                        if _ov_diff > 0:
+                            _ov_affordable = int(icash * 0.999 / cur_price) if cur_price > 0 else 0
+                            _ov_order_qty = min(_ov_diff, _ov_affordable)
+                            planned = f"매수 예정 {_ov_order_qty}주" if _ov_order_qty > 0 else "유지 (현금 부족)"
+                        elif _ov_diff < 0:
+                            planned = f"매도 예정 {abs(_ov_diff)}주"
+                        else:
+                            planned = "유지"
+                    else:
+                        # 폴백: 백테스트 실패 시 기존 P&L 방식
+                        weekly_pnl = 0.0
+                        if _isa_trade_df is not None and len(_isa_trade_df) >= 5 and cur_shares > 0:
+                            weekly_pnl = (cur_price - float(_isa_trade_df["close"].iloc[-5])) * cur_shares
+                        action = wdr.get_rebalance_action(
+                            weekly_pnl=weekly_pnl,
+                            divergence=float(sig["divergence"]),
+                            current_shares=cur_shares,
+                            current_price=cur_price,
+                            cash=icash,
+                        )
+                        act = action.get("action")
+                        qty = int(action.get("quantity", 0) or 0)
+                        planned = "유지" if not act or qty <= 0 else f"{'매수' if act == 'BUY' else '매도'} 예정 {qty}주"
                     lines.append(
                         f"- 전략: WDR | 포지션 {pos} | 이격도 {float(sig.get('divergence', 0.0)):.2f}% | 예정 {planned}"
                     )
@@ -1190,6 +1241,104 @@ def render_telegram_sidebar(prefix: str = "coin"):
         st.caption("자동 알림은 GitHub Actions에서 실행될 때 발송됩니다. 로컬 Streamlit은 `테스트 전송`만 즉시 발송합니다.")
         st.caption("알림 미수신 시: 1) GitHub Secrets의 TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID 설정 2) Actions 스케줄 활성화 3) 워크플로우 실패 로그를 확인하세요.")
 
+
+def render_strategy_trigger_tab(mode: str, coin_portfolio: list | None = None):
+    """전략별 주문/알림 트리거 안내 탭 공통 렌더러."""
+    st.header("전략 트리거")
+    st.caption("기준: GitHub Actions 스케줄(`.github/workflows/auto_trade.yml`) + 현재 실행 로직")
+
+    def _norm_iv(iv: str) -> str:
+        x = str(iv or "day").strip().lower()
+        if x in {"1d", "d", "day", "daily"}:
+            return "day"
+        if x in {"4h", "minute240", "240", "240m"}:
+            return "minute240"
+        if x in {"1h", "minute60", "60", "60m"}:
+            return "minute60"
+        return x
+
+    def _iv_label(iv: str) -> str:
+        n = _norm_iv(iv)
+        if n == "day":
+            return "1D"
+        if n == "minute240":
+            return "4H"
+        if n == "minute60":
+            return "1H"
+        return str(iv or "기타")
+
+    def _iv_trigger(iv: str) -> str:
+        n = _norm_iv(iv)
+        if n == "day":
+            return "매일 09:00 KST"
+        if n == "minute240":
+            return "매일 01/05/09/13/17/21시 KST"
+        if n == "minute60":
+            return "매 시각(코인 스케줄 확장 시 적용)"
+        return "코인 스케줄 실행 시"
+
+    if mode == "COIN":
+        st.subheader("코인 전략 트리거")
+        st.markdown(
+            """
+- 주문 실행 워크플로우: `trade` (`TRADING_MODE=upbit`)
+- 실행 스케줄: 매일 01/05/09/13/17/21시(KST)
+- 내부 필터:
+  - `4H(minute240)` 전략은 위 6회 모두 점검/주문
+  - `1D(day)` 전략은 09:00(KST) 1회만 점검/주문
+            """
+        )
+
+        rows = []
+        for i, p in enumerate(coin_portfolio or [], start=1):
+            ticker = f"{p.get('market', 'KRW')}-{str(p.get('coin', '')).upper()}"
+            strat = str(p.get("strategy", "SMA"))
+            param = p.get("parameter", "")
+            iv = str(p.get("interval", "day"))
+            rows.append({
+                "전략": f"{i}. {ticker} {strat}({param})",
+                "주기": _iv_label(iv),
+                "주문 트리거(KST)": _iv_trigger(iv),
+                "텔레그램 발송": "전략 실행 직후 1회(총자산/종목별 BUY·SELL·HOLD)"
+            })
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("설정된 코인 전략이 없습니다.")
+
+        st.divider()
+        st.markdown("##### 코인 관련 보조 알림")
+        st.table(pd.DataFrame([
+            {"작업": "업비트 헬스체크", "시점(KST)": "00:55/04:55/08:55/12:55/16:55/20:55", "내용": "인증/잔고/시세/시그널/가상주문 점검"},
+            {"작업": "일일 자산 현황", "시점(KST)": "평일 09:00", "내용": "전체 계좌 요약(업비트/키움/KIS)"},
+        ]))
+
+    elif mode == "GOLD":
+        st.subheader("키움 금현물 전략 트리거")
+        st.table(pd.DataFrame([
+            {"전략": "키움 금현물 자동매매", "주문 트리거(KST)": "평일 15:15", "주문 조건": "장중(09:00~15:30) + 전략 시그널", "텔레그램 발송": "실행 직후(총자산/BUY·SELL·HOLD)"},
+            {"전략": "헬스체크(가상주문)", "주문 트리거(KST)": "평일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20)에서만 가상주문", "텔레그램 발송": "헬스체크 리포트"},
+        ]))
+
+    elif mode == "ISA":
+        st.subheader("ISA 위대리(WDR) 전략 트리거")
+        st.table(pd.DataFrame([
+            {"전략": "KIS ISA 위대리", "주문 트리거(KST)": "매주 금요일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20) + 위대리 시그널", "텔레그램 발송": "실행 직후(이격도/상태/주문수량)"},
+            {"전략": "헬스체크(가상주문)", "주문 트리거(KST)": "평일 15:20", "주문 조건": "주문 가능 시간에서만 가상주문", "텔레그램 발송": "헬스체크 리포트"},
+        ]))
+
+    elif mode == "PENSION":
+        st.subheader("연금저축 전략 트리거")
+        st.table(pd.DataFrame([
+            {"전략": "KIS 연금저축 LAA", "주문 트리거(KST)": "매월 25~31일 평일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20) + LAA 목표비중 리밸런싱", "텔레그램 발송": "실행 직후(리스크 상태/실행내역)"},
+            {"전략": "KIS 연금저축 듀얼모멘텀", "주문 트리거(KST)": "매월 25~31일 평일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20) + 듀얼모멘텀 상대/절대모멘텀 리밸런싱", "텔레그램 발송": "실행 직후(선택자산/목표비중/실행내역)"},
+            {"전략": "KIS 연금저축 정적배분", "주문 트리거(KST)": "매월 25~31일 평일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20) + 고정 비중 리밸런싱", "텔레그램 발송": "실행 직후(목표비중/실행내역)"},
+            {"전략": "헬스체크(가상주문)", "주문 트리거(KST)": "평일 15:20", "주문 조건": "주문 가능 시간에서만 가상주문", "텔레그램 발송": "헬스체크 리포트"},
+        ]))
+
+    else:
+        st.info("해당 모드의 트리거 정보가 없습니다.")
+
 # Cloud 환경 감지 (Streamlit Cloud에서는 HOSTNAME이 *.streamlit.app 또는 /mount/src 경로)
 IS_CLOUD = os.path.exists("/mount/src") or "streamlit.app" in os.getenv("HOSTNAME", "")
 
@@ -1501,8 +1650,8 @@ def render_gold_mode():
         return None
 
     # ── 탭 구성 ───────────────────────────────────────────
-    tab_g1, tab_g2, tab_g3, tab_g4 = st.tabs(
-        ["🚀 실시간 모니터링", "🛒 수동 주문", "📊 백테스트", "💳 수수료/세금"]
+    tab_g1, tab_g2, tab_g3, tab_g4, tab_g5 = st.tabs(
+        ["🚀 실시간 모니터링", "🛒 수동 주문", "📊 백테스트", "💳 수수료/세금", "⏰ 트리거"]
     )
 
     # ══════════════════════════════════════════════════════
@@ -2713,6 +2862,9 @@ def render_gold_mode():
         st.dataframe(compare_data, use_container_width=True, hide_index=True)
         st.caption("출처: 키움증권 금현물 수수료 안내, KRX 금시장 안내서 | 수수료는 변경될 수 있습니다.")
 
+    with tab_g5:
+        render_strategy_trigger_tab("GOLD")
+
 
 
 
@@ -2813,6 +2965,12 @@ def render_kis_isa_mode():
         key="isa_seed", disabled=IS_CLOUD,
     )
     _isa_start_default = config.get("kis_isa_start_date", "2022-03-08")
+    # 이전 계산에서 매매 ETF 상장일이 감지되었으면 자동 보정
+    _prev_res = st.session_state.get("isa_signal_result")
+    if isinstance(_prev_res, dict) and _prev_res.get("trade_first_date"):
+        _tfd = _prev_res["trade_first_date"]
+        if str(_isa_start_default) < _tfd:
+            _isa_start_default = _tfd
     isa_start_date = st.sidebar.date_input(
         "시작일",
         value=pd.to_datetime(_isa_start_default).date(),
@@ -2945,9 +3103,9 @@ def render_kis_isa_mode():
         _isa_px_cache[_c] = {"ts": _now, "val": float(_p if _p > 0 else 0.0)}
         return float(_p if _p > 0 else 0.0)
 
-    tab_i1, tab_i2, tab_i3, tab_i4, tab_i5, tab_i6 = st.tabs([
+    tab_i1, tab_i2, tab_i3, tab_i4, tab_i5, tab_i6, tab_i7 = st.tabs([
         "🚀 실시간 모니터링", "🛒 수동 주문", "📋 주문방식", "💳 수수료/세금",
-        "📊 미국 위대리 백테스트", "🔧 위대리 최적화"
+        "📊 미국 위대리 백테스트", "🔧 위대리 최적화", "⏰ 트리거"
     ])
 
     # ══════════════════════════════════════════════════════════════
@@ -3048,12 +3206,61 @@ def render_kis_isa_mode():
             # 백테스트 실행 (시작일 ~ 현재, 전체 데이터)
             bt_trade_df = _get_isa_daily_chart(str(isa_etf_code), count=5000)
             bt_res = None
+            _trade_first_date = None
+            if bt_trade_df is not None and len(bt_trade_df) > 0:
+                _trade_first_date = str(bt_trade_df.index[0].date())
+
+            # 매매 ETF 상장일 이후로 시작일 보정
+            _effective_start = str(isa_start_date)
+            if _trade_first_date and str(isa_start_date) < _trade_first_date:
+                _effective_start = _trade_first_date
+
+            # ── 참조 백테스트 비중 (매매 ETF ≠ 418660이면 QQQ→TQQQ 비중 계승) ──
+            _ref_stock_ratio = None
+            _ref_info = None
+            _REF_TRADE = "418660"  # 기준 매매 ETF (나스닥100 2X)
+            _REF_TREND = "133690"  # 기준 시그널 ETF (나스닥100)
+            if str(isa_etf_code) != _REF_TRADE and _effective_start > "2022-03-08":
+                _ref_sig_df = _get_isa_daily_chart(_REF_TREND, count=5000)
+                _ref_trade_df = _get_isa_daily_chart(_REF_TRADE, count=5000)
+                if _ref_sig_df is not None and _ref_trade_df is not None:
+                    _ref_strat = WDRStrategy(settings={
+                        "overvalue_threshold": float(wdr_ov),
+                        "undervalue_threshold": float(wdr_un),
+                    }, evaluation_mode=int(wdr_eval_mode))
+                    _ref_bt = _ref_strat.run_backtest(
+                        signal_daily_df=_ref_sig_df,
+                        trade_daily_df=_ref_trade_df,
+                        initial_balance=float(isa_seed),
+                        start_date="2022-03-08",
+                    )
+                    if _ref_bt and _ref_bt.get("equity_df") is not None:
+                        _ref_eq = _ref_bt["equity_df"]
+                        _eff_ts = pd.Timestamp(_effective_start)
+                        _ref_mask = _ref_eq.index <= _eff_ts
+                        if _ref_mask.any():
+                            _ref_row = _ref_eq.loc[_ref_mask].iloc[-1]
+                            _ref_equity = float(_ref_row["equity"])
+                            _ref_sv = float(_ref_row["shares"]) * float(_ref_row["price"])
+                            if _ref_equity > 0:
+                                _ref_stock_ratio = _ref_sv / _ref_equity
+                                _ref_info = {
+                                    "ref_date": str(_ref_eq.loc[_ref_mask].index[-1].date()),
+                                    "ref_shares": int(_ref_row["shares"]),
+                                    "ref_price": float(_ref_row["price"]),
+                                    "ref_cash": float(_ref_row["cash"]),
+                                    "ref_equity": _ref_equity,
+                                    "stock_ratio": round(_ref_stock_ratio, 4),
+                                    "cash_ratio": round(1.0 - _ref_stock_ratio, 4),
+                                }
+
             if sig_df is not None and bt_trade_df is not None:
                 bt_res = strategy.run_backtest(
                     signal_daily_df=sig_df,
                     trade_daily_df=bt_trade_df,
                     initial_balance=float(isa_seed),
-                    start_date=str(isa_start_date)
+                    start_date=_effective_start,
+                    initial_stock_ratio=_ref_stock_ratio,
                 )
 
             weekly = strategy.daily_to_weekly(sig_df)
@@ -3067,6 +3274,9 @@ def render_kis_isa_mode():
                 "balance": bal_local,
                 "bt_res": bt_res,
                 "cur_price": cur,
+                "trade_first_date": _trade_first_date,
+                "effective_start": _effective_start,
+                "ref_info": _ref_info,
             }
 
         if st.session_state.get("isa_signal_result") is None or st.session_state.get("isa_signal_params") != isa_sig_params:
@@ -3075,6 +3285,12 @@ def render_kis_isa_mode():
                 st.session_state["isa_signal_params"] = isa_sig_params
                 if isinstance(st.session_state["isa_signal_result"], dict) and st.session_state["isa_signal_result"].get("balance"):
                     st.session_state[isa_bal_key] = st.session_state["isa_signal_result"]["balance"]
+                # 매매 ETF 상장일이 설정 시작일보다 늦으면 다음 렌더에서 자동 보정됨
+                _computed = st.session_state["isa_signal_result"]
+                if isinstance(_computed, dict) and _computed.get("trade_first_date"):
+                    _tfd = _computed["trade_first_date"]
+                    if str(isa_start_date) < _tfd:
+                        st.rerun()
 
         res = st.session_state.get("isa_signal_result")
         if res:
@@ -3149,63 +3365,74 @@ def render_kis_isa_mode():
                     else:
                         _sync_reason = "백테스트와 동기화 완료"
 
-                # ── 현재가 기준 실시간 주문 계산 ──
-                # 백테스트 마지막 상태 + 현재가(=이번 주 종가 가정)로 리밸런싱 계산
-                _live_action_str = "HOLD"
-                _live_qty = 0
+                # ── 이번 주 예상 주문 (비중 기반: 백테스트 목표비율 × 실제 총자산) ──
                 _live_cur_price = res.get("cur_price", 0) or 0
-                _live_prev_price = 0.0
-                _live_change_pct = 0.0
-                _live_pnl = 0.0
 
-                if bt and _live_cur_price > 0:
-                    _live_prev_price = float(bt_last["price"])
-                    _live_pnl = (_live_cur_price - _live_prev_price) * bt_shares
-                    _live_change_pct = (_live_cur_price / _live_prev_price - 1) * 100 if _live_prev_price > 0 else 0
+                # 백테스트 목표 주식비율 계산
+                _bt_stock_ratio_pct = 0.0
+                if bt and bt_equity > 0:
+                    _bt_stock_ratio_pct = (bt_shares * float(bt_last["price"])) / bt_equity * 100
+                _actual_stock_pct = actual_eval / actual_total * 100 if actual_total > 0 else 0
 
-                    _live_strat = WDRStrategy(settings={
-                        "overvalue_threshold": float(wdr_ov),
-                        "undervalue_threshold": float(wdr_un),
-                    }, evaluation_mode=int(wdr_eval_mode))
-                    _live_order = _live_strat.get_rebalance_action(
-                        weekly_pnl=_live_pnl,
-                        divergence=float(sig["divergence"]),
-                        current_shares=bt_shares,
-                        current_price=_live_cur_price,
-                        cash=bt_cash,
-                    )
-                    _live_action_str = _live_order["action"] or "HOLD"
-                    _live_qty = int(_live_order["quantity"])
-
-                # +/- 부호 표시
-                if _live_action_str == "BUY":
-                    _qty_display = f"+{_live_qty}주 매수"
-                elif _live_action_str == "SELL":
-                    _qty_display = f"-{_live_qty}주 매도"
+                # sync 변수를 주 표시로 사용
+                if _sync_action == "BUY" and _sync_qty > 0:
+                    _qty_display = f"+{_sync_qty}주 매수"
+                elif _sync_action == "SELL" and _sync_qty > 0:
+                    _qty_display = f"-{_sync_qty}주 매도"
                 else:
-                    _qty_display = "0주 (HOLD)"
+                    _qty_display = "HOLD"
+
+                # 주문 후 예상 상태 (실제 보유 기준)
+                _post_shares = actual_shares
+                _post_cash = actual_cash_v
+                if _sync_action == "BUY" and _sync_qty > 0:
+                    _post_shares += _sync_qty
+                    _post_cash -= _sync_qty * actual_price
+                elif _sync_action == "SELL" and _sync_qty > 0:
+                    _post_shares -= _sync_qty
+                    _post_cash += _sync_qty * actual_price
+                _post_equity = _post_cash + _post_shares * actual_price if actual_price > 0 else 0
+                _post_stock_pct = (_post_shares * actual_price) / _post_equity * 100 if _post_equity > 0 else 0
+
+                # 참조 비중 안내
+                _ref_info = res.get("ref_info")
+                if _ref_info:
+                    st.caption(
+                        f"초기 비중 참조: 133690→418660 백테스트 {_ref_info['ref_date']} 시점 | "
+                        f"주식 {_ref_info['stock_ratio']*100:.1f}% · 현금 {_ref_info['cash_ratio']*100:.1f}%"
+                    )
 
                 st.info(
-                    f"**현재가**: {_live_cur_price:,.0f}원 | "
-                    f"**전주 종가**: {_live_prev_price:,.0f}원 | "
-                    f"**변동률**: {_live_change_pct:+.2f}% | "
-                    f"**주간 손익**: {_live_pnl:+,.0f}원"
+                    f"**백테스트 목표 주식비율**: {_bt_stock_ratio_pct:.1f}% | "
+                    f"**실제 주식비율**: {_actual_stock_pct:.1f}% | "
+                    f"**현재가**: {_live_cur_price:,.0f}원"
                 )
 
                 sc1, sc2 = st.columns(2)
                 with sc1:
-                    if _live_qty > 0:
-                        _color = "error" if _live_action_str == "SELL" else "success"
-                        getattr(st, _color)(f"### 📅 다음 거래일 주문: **{_qty_display}**")
+                    if _sync_qty > 0:
+                        _color = "error" if _sync_action == "SELL" else "success"
+                        getattr(st, _color)(f"### 이번 주 예상 주문: **{_qty_display}**")
                     else:
-                        st.success(f"### 📅 다음 거래일 주문: **{_qty_display}**")
-                    st.caption(f"현재가 {_live_cur_price:,.0f}원 기준 · 보유 {bt_shares}주 · 예수금 {bt_cash:,.0f}원")
+                        st.success(f"### 이번 주 예상 주문: **{_qty_display}**")
+                    st.caption(f"실제 보유 {actual_shares}주 · 예수금 {actual_cash_v:,.0f}원")
+                    if bt:
+                        _target_shares_disp = int((actual_total * _bt_stock_ratio_pct / 100) / actual_price) if actual_price > 0 else 0
+                        st.caption(f"목표 비율 {_bt_stock_ratio_pct:.1f}% → 목표 주수 {_target_shares_disp}주")
+                    if _sync_qty > 0:
+                        st.caption(
+                            f"주문 후 → {_post_shares}주 · 예수금 {_post_cash:,.0f}원 · "
+                            f"총자산 {_post_equity:,.0f}원 (주식 {_post_stock_pct:.1f}%)"
+                        )
+                    if _sync_reason and _sync_reason != "백테스트와 동기화 완료":
+                        st.caption(_sync_reason)
 
                 # 백테스트 요약 (시작일 ~ 현재)
                 if bt:
                     m = bt["metrics"]
+                    _eff_start_disp = res.get("effective_start", str(isa_start_date))
                     with sc2:
-                        st.write(f"**전략 성과 ({isa_start_date} ~ 현재)**")
+                        st.write(f"**전략 성과 ({_eff_start_disp} ~ 현재)**")
                         st.write(f"수익률: **{m['total_return']:+.2f}%** | MDD: **{m['mdd']:.2f}%** | CAGR: **{m['cagr']:.2f}%**")
                         st.write(f"최종자산: {m['final_equity']:,.0f}원 ({isa_seed/10000:.0f}만원 기준)")
 
@@ -3222,28 +3449,21 @@ def render_kis_isa_mode():
                         "실제 총자산",
                         f"{actual_total:,.0f}원" if _bal_valid else "조회 불가",
                     )
-                    shares_diff = actual_shares - bt_shares
+                    _target_shares_metric = int((actual_total * _bt_stock_ratio_pct / 100) / actual_price) if actual_price > 0 and actual_total > 0 else 0
                     ac3.metric(
-                        "보유주식 (백테/실제)",
-                        f"{bt_shares}주 / {actual_shares}주",
-                        delta=f"차이 {shares_diff:+d}주" if shares_diff != 0 else "일치",
+                        "보유주식 (목표/실제)",
+                        f"{_target_shares_metric}주 / {actual_shares}주",
+                        delta=f"차이 {actual_shares - _target_shares_metric:+d}주" if actual_shares != _target_shares_metric else "일치",
                     )
 
-                    bt_hold = bt_shares > 0
-                    actual_hold = actual_shares > 0
-                    sync = bt_hold == actual_hold
-                    if sync:
+                    _ratio_gap = abs(_bt_stock_ratio_pct - _actual_stock_pct)
+                    if _ratio_gap <= 1.0:
                         ac4.metric("포지션 동기화", "일치")
-                        ac4.caption(f"현금비율 — 백테: {bt_cash_ratio:.1f}% / 실제: {actual_cash_ratio:.1f}%")
                     else:
-                        bt_state = "HOLD" if bt_hold else "CASH"
-                        actual_state = "HOLD" if actual_hold else "CASH"
                         ac4.metric("포지션 동기화", "불일치")
-                        ac4.caption(f"백테: {bt_state} / 실제: {actual_state}")
+                    ac4.caption(f"주식비율 — 목표: {_bt_stock_ratio_pct:.1f}% / 실제: {_actual_stock_pct:.1f}%")
 
-                # ── 실제 계좌 상태 (별도 영역) ──
-                if _sync_action and _sync_qty > 0:
-                    st.warning(f"**포지션 동기화 필요**: {_sync_action} {_sync_qty}주 — {_sync_reason}")
+                # ── 실제 계좌 상태 ──
                 if not _bal_valid:
                     st.warning("계좌 잔고 조회에 실패했습니다. KIS API 키를 확인해주세요.")
                 elif actual_total <= 0:
@@ -4178,6 +4398,9 @@ def render_kis_isa_mode():
                     st.download_button("최적화 결과 CSV 다운로드", csv_data,
                                        file_name="wdr_optimization.csv", mime="text/csv")
 
+    with tab_i7:
+        render_strategy_trigger_tab("ISA")
+
 
 def render_kis_pension_mode():
     """KIS 연금저축 포트폴리오 모드 - 다중 전략 지원."""
@@ -4651,9 +4874,9 @@ def render_kis_pension_mode():
         _cache_put("orderbook", _c, _ob)
         return _ob
 
-    tab_p1, tab_p2, tab_p3, tab_p4, tab_p5, tab_p6 = st.tabs([
+    tab_p1, tab_p2, tab_p3, tab_p4, tab_p5, tab_p6, tab_p7 = st.tabs([
         "🚀 실시간 모니터링", "🧪 백테스트", "🛒 수동 주문",
-        "📖 전략 가이드", "📋 주문방식", "💳 수수료/세금"
+        "📖 전략 가이드", "📋 주문방식", "💳 수수료/세금", "⏰ 트리거"
     ])
 
     # ══════════════════════════════════════════════════════════════
@@ -6502,8 +6725,11 @@ def render_kis_pension_mode():
 | 과세이연 | 매매차익·배당 세금 인출 시까지 이연 |
 | 연금 수령 시 | 3.3~5.5% 연금소득세 (일반 15.4% 대비 유리) |
 | 중도 인출 시 | 16.5% 기타소득세 (불이익) |
-""")
+        """)
         st.caption("LAA 월간 리밸런싱 매매차익이 모두 과세이연되어 복리 효과 극대화 (일반 계좌 대비 연 1~2% 추가 수익)")
+
+    with tab_p7:
+        render_strategy_trigger_tab("PENSION")
 
 
 
@@ -7254,7 +7480,7 @@ def main():
     ]
 
     # --- Tabs ---
-    tab1, tab5, tab3, tab4 = st.tabs(["🚀 실시간 포트폴리오", "🛒 수동 주문", "📜 거래 내역", "📊 백테스트"])
+    tab1, tab5, tab3, tab4, tab6 = st.tabs(["🚀 실시간 포트폴리오", "🛒 수동 주문", "📜 거래 내역", "📊 백테스트", "⏰ 트리거"])
 
     # --- Tab 1: Live Portfolio (Default) ---
     with tab1:
@@ -8912,6 +9138,10 @@ def main():
                             else:
                                 st.dataframe(df_orders)
                                 st.caption("OHLCV 매칭 불가 - 원본 주문 데이터 표시")
+
+    # --- Tab 6: 트리거 ---
+    with tab6:
+        render_strategy_trigger_tab("COIN", coin_portfolio=portfolio_list)
 
     # --- Tab 4: 백테스트 ---
     with tab4:
