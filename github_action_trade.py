@@ -304,8 +304,12 @@ def analyze_asset(trader, item):
 
     current_price = _get_upbit_price_local_first(ticker)
     coin_sym = item['coin'].upper()
-    coin_balance = trader.get_balance(coin_sym)
-    coin_value = coin_balance * current_price if current_price else 0
+    _raw_balance = trader.get_balance(coin_sym)
+    try:
+        coin_balance = float(_raw_balance or 0.0)
+    except Exception:
+        coin_balance = 0.0
+    coin_value = coin_balance * float(current_price or 0.0)
     is_holding = coin_value >= MIN_ORDER_KRW
 
     logger.info(f"[{ticker}] Close={last_candle['close']}, {indicator_info}, Signal={signal}, Price={current_price}")
@@ -1699,7 +1703,8 @@ def _print_health_report(results: dict):
         lines.append(f"  가상주문: {_status_label(r.get('order_test', False), r.get('order_msg', ''))} {r.get('order_msg', '')}")
         lines.append("")
 
-    lines.append(f"<b>종합: {pass_count}/{total_count} 시스템 정상</b>")
+    summary_label = "시스템 정상" if pass_count == total_count else "시스템 점검 필요"
+    lines.append(f"<b>종합: {pass_count}/{total_count} {summary_label}</b>")
 
     report = "\n".join(lines)
 
