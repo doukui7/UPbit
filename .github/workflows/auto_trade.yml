@@ -2,8 +2,8 @@ name: Auto Trade
 
 on:
   schedule:
-    # 업비트: 매 4시간마다 실행 (UTC 0,4,8,12,16,20시 5분) -> KST 9,13,17,21,1,5시
-    - cron: '5 0,4,8,12,16,20 * * *'
+    # 업비트: 매 4시간마다 실행 (UTC 0,4,8,12,16,20시 정각) -> KST 9,13,17,21,1,5시
+    - cron: '0 0,4,8,12,16,20 * * *'
     # 키움 금현물: KST 15:15 (UTC 06:15) 평일만 - 장마감 동시호가
     - cron: '15 6 * * 1-5'
     # KIS ISA 위대리: 매주 금요일 KST 15:20 (UTC 06:20) - 장마감 동시호가
@@ -12,8 +12,8 @@ on:
     - cron: '20 6 25-31 * 1-5'
     # 일일 헬스체크: KST 15:20 (UTC 06:20) 평일 매일 - 주문 시간대 점검 리포트
     - cron: '20 6 * * 1-5'
-    # 업비트 헬스체크: 매 4시간마다 (매매 5분 전) KST 9,13,17,21,1,5시
-    - cron: '0 0,4,8,12,16,20 * * *'
+    # 업비트 헬스체크: 매 4시간마다 (매매 5분 전) KST 8:55,12:55,16:55,20:55,00:55,04:55
+    - cron: '55 23,3,7,11,15,19 * * *'
     # 일일 자산 현황 리포트: KST 09:00 (UTC 00:00) 평일 매일
     - cron: '0 0 * * 1-5'
     # 텔레그램 경로 테스트: 매 정각 (KST 기준 매시간 0분)
@@ -39,7 +39,7 @@ on:
 jobs:
   # ── 업비트 BTC 자동매매 ─────────────────────────────────
   trade:
-    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'trade' || github.event.inputs.run_job == 'all')) || github.event.schedule == '5 0,4,8,12,16,20 * * *'
+    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'trade' || github.event.inputs.run_job == 'all')) || github.event.schedule == '0 0,4,8,12,16,20 * * *'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -206,7 +206,7 @@ jobs:
 
   # ── 업비트 헬스체크 (4시간마다 가상주문 점검) ────────────
   health_check_upbit:
-    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'health_check_upbit' || github.event.inputs.run_job == 'all')) || github.event.schedule == '0 0,4,8,12,16,20 * * *'
+    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'health_check_upbit' || github.event.inputs.run_job == 'all')) || github.event.schedule == '55 23,3,7,11,15,19 * * *'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
