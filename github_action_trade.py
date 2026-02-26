@@ -217,6 +217,37 @@ def _send_telegram(message: str):
         logger.warning(f"텔레그램 전송 실패: {e}")
 
 
+def _mask_secret(value: str, left: int = 4, right: int = 4) -> str:
+    """민감정보 마스킹."""
+    s = str(value or "").strip()
+    if not s:
+        return "(empty)"
+    if len(s) <= left + right:
+        return "*" * len(s)
+    return f"{s[:left]}...{s[-right:]}"
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _append_step(result: dict, step: str, status: str, detail: str):
+    """
+    헬스체크 단계 로그 누적.
+    status: PASS | FAIL | SKIP | INFO
+    """
+    st = str(status or "INFO").upper()
+    detail_text = str(detail or "")
+    if len(detail_text) > 280:
+        detail_text = detail_text[:280] + "...(truncated)"
+    line = f"{step} [{st}] {detail_text}"
+    result.setdefault("steps", []).append(line)
+    logger.info(f"[{result.get('name', '헬스체크')}] {line}")
+
+
 def get_portfolio():
     """Load portfolio from PORTFOLIO env var (JSON) or fallback to defaults."""
     raw = os.getenv("PORTFOLIO")
@@ -799,51 +830,125 @@ def run_kis_isa_trade():
     logger.info(f"잔고: 예수금={cash:,.0f}원, ETF={current_shares}주 "
                 f"(≈{etf_value:,.0f}원), 총자산={total_value:,.0f}원")
 
-    # ── 4. 주간 손익 계산 (ETF 일봉 5일 전 종가 기준) ──
-    etf_chart = _get_kis_daily_local_first(trader, etf_code, count=10)
-    weekly_pnl = 0.0
-    if etf_chart is not None and len(etf_chart) >= 5 and current_shares > 0:
-        price_5d_ago = float(etf_chart['close'].iloc[-5])
-        weekly_pnl = (current_price - price_5d_ago) * current_shares
-        logger.info(f"주간 손익: {weekly_pnl:,.0f}원 "
-                    f"(현재가={current_price:,.0f}, 5일전={price_5d_ago:,.0f})")
-    else:
-        logger.info("주간 손익 계산 불가 (데이터 부족 또는 미보유)")
+    # ── 4. 백테스트 기반 목표 비율 계산 (비중 기반 매매) ──
+    isa_start_date = os.getenv("KIS_ISA_START_DATE", "2022-03-08")
+    trade_df = _get_kis_daily_local_first(trader, etf_code, count=1500)
 
-    # ── 5. 리밸런싱 액션 계산 ──
-    action = strategy.get_rebalance_action(
-        weekly_pnl=weekly_pnl,
-        divergence=signal['divergence'],
-        current_shares=current_shares,
-        current_price=current_price,
-        cash=cash,
-    )
+    bt_stock_ratio = None
+    order_action = None
+    order_qty = 0
 
-    logger.info(f"리밸런싱 판단: action={action['action']}, qty={action['quantity']}, "
-                f"state={action['state']}, weekly_pnl={action['weekly_pnl']}")
+    if trade_df is not None and len(trade_df) >= 60:
+        # effective_start = max(시작일, 매매 ETF 상장일)
+        _trade_first_date = str(trade_df.index[0].date())
+        _effective_start = isa_start_date
+        if _effective_start < _trade_first_date:
+            _effective_start = _trade_first_date
 
-    # ── 6. 매매 실행 ──
+        # 참조 백테스트 (비표준 ETF → 133690→418660 기준 initial_stock_ratio 추출)
+        _ref_stock_ratio = None
+        _REF_TRADE = "418660"
+        if str(etf_code) != _REF_TRADE and _effective_start > "2022-03-08":
+            _ref_trade_df = _get_kis_daily_local_first(trader, _REF_TRADE, count=1500)
+            if signal_df is not None and _ref_trade_df is not None:
+                _ref_bt = strategy.run_backtest(
+                    signal_daily_df=signal_df,
+                    trade_daily_df=_ref_trade_df,
+                    initial_balance=10_000_000,
+                    start_date="2022-03-08",
+                )
+                if _ref_bt and _ref_bt.get("equity_df") is not None:
+                    _ref_eq = _ref_bt["equity_df"]
+                    _eff_ts = pd.Timestamp(_effective_start)
+                    _ref_mask = _ref_eq.index <= _eff_ts
+                    if _ref_mask.any():
+                        _ref_row = _ref_eq.loc[_ref_mask].iloc[-1]
+                        _ref_equity = float(_ref_row["equity"])
+                        _ref_sv = float(_ref_row["shares"]) * float(_ref_row["price"])
+                        if _ref_equity > 0:
+                            _ref_stock_ratio = _ref_sv / _ref_equity
+                            logger.info(f"참조 백테스트 비율: {_ref_stock_ratio*100:.1f}% "
+                                        f"(133690→418660, {_effective_start} 시점)")
+
+        bt = strategy.run_backtest(
+            signal_daily_df=signal_df,
+            trade_daily_df=trade_df,
+            initial_balance=10_000_000,
+            start_date=_effective_start,
+            initial_stock_ratio=_ref_stock_ratio,
+        )
+
+        if bt and bt.get("equity_df") is not None:
+            eq_df = bt["equity_df"]
+            bt_last = eq_df.iloc[-1]
+            bt_shares = int(bt_last["shares"])
+            bt_price = float(bt_last["price"])
+            bt_equity = float(bt_last["equity"])
+            if bt_equity > 0 and bt_price > 0:
+                bt_stock_ratio = (bt_shares * bt_price) / bt_equity
+                logger.info(f"백테스트 목표비율: 주식 {bt_stock_ratio*100:.1f}% "
+                            f"(bt_shares={bt_shares}, bt_equity={bt_equity:,.0f})")
+
+    # ── 5. 비중 기반 매매 판단 ──
     MIN_ORDER_KRW_KIS = 10_000
 
-    if action['action'] == 'SELL' and action['quantity'] > 0:
-        sell_value = action['quantity'] * current_price
-        if sell_value >= MIN_ORDER_KRW_KIS:
-            logger.info(f"[SELL] {etf_code} {action['quantity']}주 "
-                        f"(≈{sell_value:,.0f}원) 동시호가 매도")
-            result = trader.smart_sell_qty_closing(etf_code, action['quantity'])
-            logger.info(f"매도 결과: {result}")
-        else:
-            logger.info(f"[SELL] 매도 금액 미달 ({sell_value:,.0f}원 < {MIN_ORDER_KRW_KIS:,}원)")
+    if bt_stock_ratio is not None:
+        target_stock_val = total_value * bt_stock_ratio
+        target_shares = int(target_stock_val / current_price) if current_price > 0 else 0
+        diff = target_shares - current_shares
 
-    elif action['action'] == 'BUY' and action['quantity'] > 0:
-        buy_value = action['quantity'] * current_price
-        if buy_value >= MIN_ORDER_KRW_KIS and buy_value <= cash:
-            logger.info(f"[BUY] {etf_code} {action['quantity']}주 "
-                        f"(≈{buy_value:,.0f}원) 동시호가 매수")
-            result = trader.execute_closing_auction_buy(etf_code, action['quantity'])
-            logger.info(f"매수 결과: {result}")
+        logger.info(f"목표비율 매매: 목표주식비율={bt_stock_ratio*100:.1f}%, "
+                    f"목표가치={target_stock_val:,.0f}원, 목표주수={target_shares}, "
+                    f"현재주수={current_shares}, 차이={diff:+d}주")
+
+        if diff > 0:
+            affordable = int(cash * 0.999 / current_price) if current_price > 0 else 0
+            order_qty = min(diff, affordable)
+            if order_qty > 0 and (order_qty * current_price) >= MIN_ORDER_KRW_KIS:
+                order_action = "BUY"
+            else:
+                logger.info(f"[BUY] 매수 불가 (필요={diff}주, 가용={affordable}주)")
+        elif diff < 0:
+            order_qty = abs(diff)
+            if (order_qty * current_price) >= MIN_ORDER_KRW_KIS:
+                order_action = "SELL"
+            else:
+                logger.info(f"[SELL] 매도 금액 미달 ({order_qty * current_price:,.0f}원 < {MIN_ORDER_KRW_KIS:,}원)")
         else:
-            logger.info(f"[BUY] 매수 불가 (필요={buy_value:,.0f}원, 예수금={cash:,.0f}원)")
+            logger.info("[HOLD] 목표 비율과 일치 - 유지")
+    else:
+        # 폴백: 백테스트 실패 시 기존 P&L 방식 사용
+        logger.warning("백테스트 실패 → P&L 기반 폴백 사용")
+        etf_chart = _get_kis_daily_local_first(trader, etf_code, count=10)
+        weekly_pnl = 0.0
+        if etf_chart is not None and len(etf_chart) >= 5 and current_shares > 0:
+            price_5d_ago = float(etf_chart['close'].iloc[-5])
+            weekly_pnl = (current_price - price_5d_ago) * current_shares
+        fb_action = strategy.get_rebalance_action(
+            weekly_pnl=weekly_pnl,
+            divergence=signal['divergence'],
+            current_shares=current_shares,
+            current_price=current_price,
+            cash=cash,
+        )
+        order_action = fb_action['action'] if fb_action['action'] else None
+        order_qty = int(fb_action['quantity'])
+        logger.info(f"폴백 판단: action={order_action}, qty={order_qty}")
+
+    # ── 6. 매매 실행 ──
+    if order_action == 'SELL' and order_qty > 0:
+        sell_value = order_qty * current_price
+        logger.info(f"[SELL] {etf_code} {order_qty}주 "
+                    f"(≈{sell_value:,.0f}원) 동시호가 매도")
+        result = trader.smart_sell_qty_closing(etf_code, order_qty)
+        logger.info(f"매도 결과: {result}")
+
+    elif order_action == 'BUY' and order_qty > 0:
+        buy_value = order_qty * current_price
+        logger.info(f"[BUY] {etf_code} {order_qty}주 "
+                    f"(≈{buy_value:,.0f}원) 동시호가 매수")
+        result = trader.execute_closing_auction_buy(etf_code, order_qty)
+        logger.info(f"매수 결과: {result}")
 
     else:
         logger.info("[HOLD] 리밸런싱 불필요 또는 수량 0 - 유지")
@@ -854,7 +959,10 @@ def run_kis_isa_trade():
     tg = [f"<b>KIS ISA 위대리</b>"]
     tg.append(f"총자산: {total_value:,.0f}원 (현금 {cash:,.0f} / ETF {current_shares}주)")
     tg.append(f"이격도: {signal['divergence']}% | 상태: {signal['state']}")
-    tg.append(f"판단: {action['action']} {action['quantity']}주")
+    if bt_stock_ratio is not None:
+        tg.append(f"목표비율: {bt_stock_ratio*100:.0f}% | 판단: {order_action or 'HOLD'} {order_qty}주")
+    else:
+        tg.append(f"판단(폴백): {order_action or 'HOLD'} {order_qty}주")
     _send_telegram("\n".join(tg))
 
 
@@ -1251,24 +1359,62 @@ def _check_kis_isa() -> dict:
         if signal_df is not None and len(signal_df) >= 260 * 5:
             sig = strategy.analyze(signal_df)
             if sig:
-                # 주간 손익 계산
-                etf_chart = _get_kis_daily_local_first(trader, etf_code, count=10)
-                weekly_pnl = 0.0
-                if etf_chart is not None and len(etf_chart) >= 5 and shares > 0:
-                    price_5d = float(etf_chart['close'].iloc[-5])
-                    weekly_pnl = (price - price_5d) * shares
+                # 비중 기반 목표비율 매매 판단
+                bt_msg = ""
+                isa_start = os.getenv("KIS_ISA_START_DATE", "2022-03-08")
+                trade_df = _get_kis_daily_local_first(trader, etf_code, count=1500)
+                if trade_df is not None and len(trade_df) >= 60:
+                    _eff_start = isa_start
+                    _tfd = str(trade_df.index[0].date())
+                    if isa_start < _tfd:
+                        _eff_start = _tfd
 
-                action = strategy.get_rebalance_action(
-                    weekly_pnl=weekly_pnl, divergence=sig['divergence'],
-                    current_shares=shares, current_price=price, cash=cash,
-                )
+                    _ref_sr = None
+                    if str(etf_code) != "418660" and _eff_start > "2022-03-08":
+                        _ref_trade = _get_kis_daily_local_first(trader, "418660", count=1500)
+                        if _ref_trade is not None:
+                            _ref_bt = strategy.run_backtest(
+                                signal_daily_df=signal_df, trade_daily_df=_ref_trade,
+                                initial_balance=10_000_000, start_date="2022-03-08",
+                            )
+                            if _ref_bt and _ref_bt.get("equity_df") is not None:
+                                _re = _ref_bt["equity_df"]
+                                _ets = pd.Timestamp(_eff_start)
+                                _rm = _re.index <= _ets
+                                if _rm.any():
+                                    _rr = _re.loc[_rm].iloc[-1]
+                                    _req = float(_rr["equity"])
+                                    if _req > 0:
+                                        _ref_sr = (float(_rr["shares"]) * float(_rr["price"])) / _req
+
+                    bt = strategy.run_backtest(
+                        signal_daily_df=signal_df, trade_daily_df=trade_df,
+                        initial_balance=10_000_000, start_date=_eff_start,
+                        initial_stock_ratio=_ref_sr,
+                    )
+                    if bt and bt.get("equity_df") is not None:
+                        _last = bt["equity_df"].iloc[-1]
+                        _bt_eq = float(_last["equity"])
+                        if _bt_eq > 0 and price > 0:
+                            _ratio = (float(_last["shares"]) * float(_last["price"])) / _bt_eq
+                            total = cash + shares * price
+                            tgt = int(total * _ratio / price)
+                            diff = tgt - shares
+                            if diff > 0:
+                                affordable = min(diff, int(cash * 0.999 / price)) if price > 0 else 0
+                                bt_msg = f"BUY {affordable}주 (목표비율 {_ratio*100:.0f}%)"
+                            elif diff < 0:
+                                bt_msg = f"SELL {abs(diff)}주 (목표비율 {_ratio*100:.0f}%)"
+                            else:
+                                bt_msg = f"HOLD (목표비율 {_ratio*100:.0f}% 일치)"
+
                 kst = timezone(timedelta(hours=9))
                 is_friday = datetime.now(kst).weekday() == 4
                 day_note = "오늘 금요일=리밸런싱일" if is_friday else "오늘 리밸런싱일 아님"
 
                 result['signal'] = True
                 result['signal_msg'] = (
-                    f"{action['action']} {action['quantity']}주 "
+                    f"{bt_msg or 'HOLD 0주'} "
                     f"(이격도={sig['divergence']}%, 상태={sig['state']}) [{day_note}]"
                 )
             else:
@@ -1494,55 +1640,99 @@ def _check_upbit() -> dict:
         'price': False, 'price_msg': '',
         'signal': False, 'signal_msg': '',
         'order_test': False, 'order_msg': '',
+        'steps': [],
     }
 
     try:
         ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY")
         SECRET_KEY = os.getenv("UPBIT_SECRET_KEY")
+        _append_step(
+            result,
+            "0. 입력값 확인",
+            "INFO",
+            f"UPBIT_ACCESS_KEY={_mask_secret(ACCESS_KEY, 5, 3)}, "
+            f"UPBIT_SECRET_KEY={_mask_secret(SECRET_KEY, 5, 3)}"
+        )
         if not ACCESS_KEY or not SECRET_KEY:
             result['auth_msg'] = 'FAIL - API 키 미설정'
+            _append_step(result, "1. 인증", "FAIL", result['auth_msg'])
             return result
 
         trader = UpbitTrader(ACCESS_KEY, SECRET_KEY)
+        _append_step(result, "1. 클라이언트 생성", "PASS", "UpbitTrader 인스턴스 생성 완료")
 
         # 1. 인증 + 2. 잔고 조회 (한 번의 API 호출로 통합)
         all_bal = trader.get_all_balances()
         if all_bal is None:
-            result['auth_msg'] = 'FAIL - 인증/잔고 조회 실패'
+            result['auth_msg'] = 'FAIL - 인증/잔고 조회 실패 (응답=None)'
+            _append_step(result, "2. 인증/잔고 API", "FAIL", result['auth_msg'])
+            return result
+        if not isinstance(all_bal, dict):
+            result['auth_msg'] = f"FAIL - 인증/잔고 조회 실패 (응답타입={type(all_bal).__name__})"
+            _append_step(result, "2. 인증/잔고 API", "FAIL", result['auth_msg'])
+            return result
+        if len(all_bal) == 0:
+            result['auth_msg'] = 'FAIL - 잔고 응답 비어있음 (권한/IP/API 오류 가능)'
+            _append_step(result, "2. 인증/잔고 API", "FAIL", result['auth_msg'])
             return result
 
-        krw = float(all_bal.get('KRW', 0))
+        krw = _safe_float(all_bal.get('KRW', 0))
         result['auth'] = True
         result['auth_msg'] = 'PASS'
+        _currencies = sorted([str(k) for k in all_bal.keys()])
+        _append_step(
+            result,
+            "2. 인증/잔고 API",
+            "PASS",
+            f"통화 {_currencies[:8]}{'...' if len(_currencies) > 8 else ''} (총 {len(_currencies)}개)"
+        )
 
-        if all_bal is not None:
-            result['balance'] = True
-            coins = {k: float(v) for k, v in all_bal.items() if k != 'KRW' and float(v) > 0}
-            if coins:
-                coin_str = ", ".join(f"{k}={v:.4f}" for k, v in coins.items())
-                result['balance_msg'] = f"KRW {krw:,.0f}원 / {coin_str}"
-            else:
-                result['balance_msg'] = f"KRW {krw:,.0f}원 / 코인 미보유"
+        result['balance'] = True
+        coins = {}
+        for k, v in all_bal.items():
+            if str(k) == 'KRW':
+                continue
+            fv = _safe_float(v, 0.0)
+            if fv > 0:
+                coins[str(k)] = fv
+
+        if coins:
+            coin_str = ", ".join(f"{k}={v:.8f}" for k, v in sorted(coins.items()))
+            result['balance_msg'] = f"KRW {krw:,.0f}원 / {coin_str}"
+            _append_step(result, "3. 잔고 파싱", "PASS", f"KRW={krw:,.0f}원, 코인 {len(coins)}종")
         else:
-            result['balance_msg'] = 'FAIL - 잔고 조회 실패'
-            return result
+            result['balance_msg'] = f"KRW {krw:,.0f}원 / 코인 미보유"
+            _append_step(result, "3. 잔고 파싱", "PASS", f"KRW={krw:,.0f}원, 코인 미보유")
 
         # 3. 시세 조회
         portfolio = get_portfolio()
-        tickers = list(set(f"{item['market']}-{item['coin'].upper()}" for item in portfolio))
-        prices = data_cache.get_current_prices_local_first(tickers, ttl_sec=5.0, allow_api_fallback=True)
-        prices = {k: v for k, v in prices.items() if float(v or 0.0) > 0}
+        tickers = list(set(f"{item['market']}-{item['coin'].upper()}" for item in portfolio if item.get("coin")))
+        if not tickers:
+            result['price_msg'] = 'SKIP - 포트폴리오 비어있음'
+            result['signal_msg'] = 'SKIP - 포트폴리오 비어있음'
+            result['order_msg'] = 'SKIP - 테스트 대상 없음'
+            _append_step(result, "4. 시세 조회", "SKIP", result['price_msg'])
+            _append_step(result, "5. 시그널 분석", "SKIP", result['signal_msg'])
+            _append_step(result, "6. 가상주문", "SKIP", result['order_msg'])
+            return result
+
+        prices_raw = data_cache.get_current_prices_local_first(tickers, ttl_sec=5.0, allow_api_fallback=True)
+        prices_raw = prices_raw if isinstance(prices_raw, dict) else {}
+        prices = {k: _safe_float(v, 0.0) for k, v in prices_raw.items() if _safe_float(v, 0.0) > 0}
 
         if prices:
             result['price'] = True
             result['price_msg'] = ", ".join(f"{t}={p:,.0f}" for t, p in prices.items())
+            _append_step(result, "4. 시세 조회", "PASS", f"요청 {len(tickers)}개 / 성공 {len(prices)}개")
         else:
             result['price_msg'] = 'FAIL - 시세 조회 실패'
+            _append_step(result, "4. 시세 조회", "FAIL", result['price_msg'])
             return result
 
         # 4. 시그널 분석
         signals = []
         signal_errors = []
+        signal_details = []
         for item in portfolio:
             _ticker = f"{item.get('market', 'KRW')}-{str(item.get('coin', '')).upper()}"
             try:
@@ -1553,8 +1743,10 @@ def _check_upbit() -> dict:
 
                 ticker = str(a.get('ticker') or _ticker)
                 signal_value = str(a.get('signal', '')).upper()
+                iv = _normalize_coin_interval(item.get("interval", "day"))
                 if signal_value in {"BUY", "SELL", "HOLD"}:
                     signals.append(f"{ticker}={signal_value}")
+                    signal_details.append(f"{ticker}:{signal_value}({iv})")
                 else:
                     signal_errors.append(f"{ticker}=ERROR({a.get('signal')})")
             except Exception as e:
@@ -1563,23 +1755,29 @@ def _check_upbit() -> dict:
         if signals and not signal_errors:
             result['signal'] = True
             result['signal_msg'] = ", ".join(signals)
+            _append_step(result, "5. 시그널 분석", "PASS", f"{len(signals)}개 성공: {' | '.join(signal_details[:8])}")
         elif signals and signal_errors:
             result['signal'] = False
             result['signal_msg'] = f"FAIL - 일부 시그널 분석 실패 ({'; '.join(signal_errors)}) | 성공: {', '.join(signals)}"
+            _append_step(result, "5. 시그널 분석", "FAIL", result['signal_msg'])
         elif signal_errors:
             result['signal_msg'] = f"FAIL - 시그널 분석 실패 ({'; '.join(signal_errors)})"
+            _append_step(result, "5. 시그널 분석", "FAIL", result['signal_msg'])
         else:
             result['signal_msg'] = 'SKIP - 포트폴리오 비어있음'
+            _append_step(result, "5. 시그널 분석", "SKIP", result['signal_msg'])
 
         # 5. 가상주문 왕복 테스트 (현재가 50% 아래 지정가 매수 → 조회 → 취소)
-        if krw < 5000:
+        if krw < MIN_ORDER_KRW:
             result['order_msg'] = f"SKIP - 가상주문 최소금액 부족 (KRW {krw:,.0f}원)"
+            _append_step(result, "6. 가상주문", "SKIP", result['order_msg'])
             return result
 
         test_ticker = tickers[0]
-        test_price = prices.get(test_ticker)
-        if not test_price:
+        test_price = _safe_float(prices.get(test_ticker), 0.0)
+        if test_price <= 0:
             result['order_msg'] = 'SKIP - 테스트 종목 시세 없음'
+            _append_step(result, "6. 가상주문", "SKIP", f"{result['order_msg']} (ticker={test_ticker})")
             return result
 
         # 현재가의 50% 가격 (업비트 호가 단위 정리)
@@ -1608,19 +1806,29 @@ def _check_upbit() -> dict:
         # 최소 주문금액(5000원) 이상 되는 수량
         min_volume = max(5000 / dummy_price, 0.0001) if dummy_price > 0 else 0.001
         min_volume = round(min_volume, 8)
+        _append_step(
+            result,
+            "6.1 가상주문 입력값",
+            "INFO",
+            f"ticker={test_ticker}, 현재가={test_price:,.0f}, 테스트가격={dummy_price:,.0f}, 수량={min_volume}"
+        )
 
         order = trader.buy_limit(test_ticker, dummy_price, min_volume)
         if not order:
             result['order_msg'] = "FAIL - 주문 실패: 응답 없음"
+            _append_step(result, "6.2 가상주문 접수", "FAIL", result['order_msg'])
             return result
         if 'error' in str(order).lower():
             result['order_msg'] = f"FAIL - 주문 실패: {order}"
+            _append_step(result, "6.2 가상주문 접수", "FAIL", result['order_msg'])
             return result
 
         order_uuid = order.get('uuid', '')
         if not order_uuid:
             result['order_msg'] = f"FAIL - 주문 UUID 없음: {order}"
+            _append_step(result, "6.2 가상주문 접수", "FAIL", result['order_msg'])
             return result
+        _append_step(result, "6.2 가상주문 접수", "PASS", f"uuid={order_uuid}")
         time.sleep(2)
 
         # 미체결 조회
@@ -1628,9 +1836,12 @@ def _check_upbit() -> dict:
         found = False
         if pending:
             found = any(o.get('uuid') == order_uuid for o in pending)
+        _append_step(result, "6.3 미체결 조회", "PASS" if found else "FAIL", f"found={found}, pending_count={len(pending) if pending else 0}")
 
         # 취소
         cancel = trader.cancel_order(order_uuid)
+        cancel_ok = bool(cancel) and ('error' not in str(cancel).lower())
+        _append_step(result, "6.4 주문 취소", "PASS" if cancel_ok else "FAIL", f"cancel={cancel}")
         time.sleep(1)
 
         # 취소 확인
@@ -1639,18 +1850,22 @@ def _check_upbit() -> dict:
         if pending_after:
             still_there = any(o.get('uuid') == order_uuid for o in pending_after)
 
-        if found and cancel and not still_there:
+        if found and cancel_ok and not still_there:
             result['order_test'] = True
             result['order_msg'] = '주문→조회→취소 정상'
-        elif found and cancel:
+            _append_step(result, "6.5 최종 판정", "PASS", result['order_msg'])
+        elif found and cancel_ok:
             result['order_test'] = True
             result['order_msg'] = '주문→조회→취소 완료 (잔여 확인 필요)'
+            _append_step(result, "6.5 최종 판정", "PASS", f"{result['order_msg']} still_there={still_there}")
         else:
-            result['order_msg'] = f"주문={bool(order_uuid)}, 조회={found}, 취소={bool(cancel)}"
+            result['order_msg'] = f"주문={bool(order_uuid)}, 조회={found}, 취소={cancel_ok}"
+            _append_step(result, "6.5 최종 판정", "FAIL", result['order_msg'])
 
     except Exception as e:
         result['order_msg'] = result.get('order_msg') or f'ERROR: {e}'
-        logger.error(f"업비트 헬스체크 오류: {e}")
+        _append_step(result, "예외", "FAIL", str(e))
+        logger.exception(f"업비트 헬스체크 오류: {e}")
 
     return result
 
@@ -1701,6 +1916,14 @@ def _print_health_report(results: dict):
         lines.append(f"  시세: {_status_label(r.get('price', False), r.get('price_msg', ''), allow_skip=False)} {r.get('price_msg', '')}")
         lines.append(f"  시그널: {_status_label(r.get('signal', False), r.get('signal_msg', ''))} {r.get('signal_msg', '')}")
         lines.append(f"  가상주문: {_status_label(r.get('order_test', False), r.get('order_msg', ''))} {r.get('order_msg', '')}")
+        step_lines = r.get('steps') if isinstance(r, dict) else None
+        if step_lines:
+            lines.append("  상세 단계:")
+            max_steps = 12
+            for s in step_lines[:max_steps]:
+                lines.append(f"    {s}")
+            if len(step_lines) > max_steps:
+                lines.append(f"    ... 생략 {len(step_lines) - max_steps}개")
         lines.append("")
 
     summary_label = "시스템 정상" if pass_count == total_count else "시스템 점검 필요"
@@ -1794,7 +2017,13 @@ def run_daily_status_report():
     if os.getenv("UPBIT_ACCESS_KEY") and os.getenv("UPBIT_SECRET_KEY"):
         try:
             trader = UpbitTrader(os.getenv("UPBIT_ACCESS_KEY"), os.getenv("UPBIT_SECRET_KEY"))
-            all_bal = trader.get_all_balances() or {}
+            all_bal = trader.get_all_balances()
+            if all_bal is None:
+                raise RuntimeError("잔고 API 실패 (응답=None)")
+            if not isinstance(all_bal, dict):
+                raise RuntimeError(f"잔고 API 응답 타입 오류 ({type(all_bal).__name__})")
+            if len(all_bal) == 0:
+                raise RuntimeError("잔고 API 응답 비어있음")
             krw = float(all_bal.get("KRW", 0.0))
             coins = {k: float(v) for k, v in all_bal.items() if k != "KRW" and float(v) > 0}
             est_coin_value = 0.0

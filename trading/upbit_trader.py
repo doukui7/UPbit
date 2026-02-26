@@ -146,8 +146,8 @@ class UpbitTrader:
                     result[currency] = balance
             return result
         except Exception as e:
-            logger.error(f"Error getting all balances: {e}")
-            return {}
+            logger.exception(f"Error getting all balances: {e}")
+            return None
 
     def get_current_price(self, ticker):
         try:
