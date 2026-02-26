@@ -249,23 +249,14 @@ def _append_step(result: dict, step: str, status: str, detail: str):
 
 
 def get_portfolio():
-    """Load portfolio from PORTFOLIO env var (JSON) or fallback to defaults."""
+    """Load portfolio from PORTFOLIO env var (JSON). Raises if not set."""
     raw = os.getenv("PORTFOLIO")
-    if raw:
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            logger.error("PORTFOLIO env var is not valid JSON. Using default.")
-
-    # Fallback: single coin from legacy env vars
-    return [{
-        "market": "KRW",
-        "coin": os.getenv("TARGET_TICKER", "BTC"),
-        "strategy": os.getenv("STRATEGY", "SMA"),
-        "parameter": int(os.getenv("SMA_PERIOD", "20")),
-        "weight": 100,
-        "interval": os.getenv("INTERVAL", "day")
-    }]
+    if not raw:
+        raise RuntimeError("PORTFOLIO 환경변수가 설정되지 않았습니다. GitHub Secrets에 PORTFOLIO를 등록하세요.")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"PORTFOLIO 환경변수가 올바른 JSON이 아닙니다: {raw[:100]}")
 
 
 def _normalize_coin_interval(interval: str) -> str:
