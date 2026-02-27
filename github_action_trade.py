@@ -287,10 +287,43 @@ def _is_coin_interval_due(interval: str, now_kst: datetime) -> bool:
     hour = int(now_kst.hour)
 
     if iv == "day":
-        return hour == 9
+        return hour in (8, 9, 10)
     if iv == "minute240":
-        return (hour % 4) == 1
+        return (hour % 4) in (0, 1, 2)
     return True
+
+
+def _wait_for_candle_boundary(now_kst: datetime, max_wait_sec: int = 720) -> datetime:
+    """
+    4H 캔들 마감 시각(KST 1/5/9/13/17/21:00)까지 대기.
+    크론이 10분 전에 트리거되면 정각까지 대기 후 실행.
+    max_wait_sec(기본 12분) 이내면 대기, 초과면 즉시 실행.
+    """
+    kst = timezone(timedelta(hours=9))
+    boundary_hours = [1, 5, 9, 13, 17, 21]
+
+    for bh in boundary_hours:
+        target = now_kst.replace(hour=bh, minute=0, second=5, microsecond=0)
+        if target > now_kst:
+            wait_sec = (target - now_kst).total_seconds()
+            if 0 < wait_sec <= max_wait_sec:
+                logger.info(f"캔들 마감 대기: {wait_sec:.0f}초 후 {bh:02d}:00 KST 실행")
+                time.sleep(wait_sec)
+                return datetime.now(kst)
+            break
+
+    # 자정 넘어가는 경우 (23:50 -> 01:00)
+    if now_kst.hour >= 21:
+        tomorrow = now_kst + timedelta(days=1)
+        target = tomorrow.replace(hour=1, minute=0, second=5, microsecond=0)
+        wait_sec = (target - now_kst).total_seconds()
+        if 0 < wait_sec <= max_wait_sec:
+            logger.info(f"캔들 마감 대기: {wait_sec:.0f}초 후 01:00 KST 실행")
+            time.sleep(wait_sec)
+            return datetime.now(kst)
+
+    logger.info(f"캔들 마감 경과, 즉시 실행 (현재: {now_kst.strftime('%H:%M')} KST)")
+    return datetime.now(kst)
 
 
 def analyze_asset(trader, item):
@@ -383,6 +416,14 @@ def run_auto_trade():
     if not due_portfolio:
         logger.info(f"=== Portfolio Auto Trade: 실행 대상 없음 (now={now_kst.strftime('%Y-%m-%d %H:%M:%S')} KST) ===")
         return
+
+
+    # 사전 조회: 잔고/포지션 확인
+    krw_pre = trader.get_balance("KRW")
+    logger.info(f"[사전조회] KRW 잔고: {krw_pre:,.0f}원, 대상: {len(due_portfolio)}개")
+
+    # 캔들 마감 대기 (정각 전 도착 시 대기 후 실행)
+    now_kst = _wait_for_candle_boundary(now_kst)
 
     logger.info(f"=== Portfolio Auto Trade ({len(due_portfolio)}/{len(portfolio)} assets due) ===")
 

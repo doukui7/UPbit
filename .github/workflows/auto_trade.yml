@@ -2,8 +2,8 @@ name: Auto Trade
 
 on:
   schedule:
-    # 업비트 자동매매: 매 4시간 (UTC 0,4,8,12,16,20) → KST 9,13,17,21,1,5시
-    - cron: '0 0,4,8,12,16,20 * * *'
+    # 업비트 자동매매: 매 4시간 캔들 마감 10분 전 (UTC 23:50,3:50,...) → KST 8:50,12:50,16:50,20:50,0:50,4:50
+    - cron: '50 23,3,7,11,15,19 * * *'
     # 키움 금현물: KST 15:05 (UTC 06:05) 평일 - 장마감 동시호가 (GA지연 대비 여유)
     - cron: '5 6 * * 1-5'
     # KIS ISA 위대리: 매주 금요일 KST 15:10 (UTC 06:10) (GA지연 대비 여유)
@@ -33,7 +33,7 @@ on:
 jobs:
   # ── 업비트 BTC 자동매매 (VM SSH 경유 - 고정 IP) ──
   trade:
-    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'trade' || github.event.inputs.run_job == 'all')) || github.event.schedule == '0 0,4,8,12,16,20 * * *'
+    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'trade' || github.event.inputs.run_job == 'all')) || github.event.schedule == '50 23,3,7,11,15,19 * * *'
     runs-on: ubuntu-latest
     steps:
       - name: Run Auto Trade via Cloud VM
