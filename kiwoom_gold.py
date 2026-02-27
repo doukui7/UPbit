@@ -37,8 +37,8 @@ class KiwoomGoldTrader:
 
     def __init__(self, is_mock=False):
         # .env 키 이름: Kiwoom_App_Key / Kiwoom_Secret_Key / KIWOOM_ACCOUNT
-        self.app_key    = os.getenv("Kiwoom_App_Key")
-        self.app_secret = os.getenv("Kiwoom_Secret_Key")
+        self.app_key    = os.getenv("Kiwoom_App_Key") or os.getenv("KIWOOM_APP_KEY")
+        self.app_secret = os.getenv("Kiwoom_Secret_Key") or os.getenv("KIWOOM_SECRET_KEY")
         self.account_no = os.getenv("KIWOOM_ACCOUNT", "")
         self.is_mock    = is_mock
         self.base_url   = self.MOCK_URL if is_mock else self.REAL_URL

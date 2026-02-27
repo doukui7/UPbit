@@ -1645,9 +1645,12 @@ def run_health_check():
         logger.info("--- 업비트 점검 완료 ---")
 
     # 키움 금현물
-    if os.getenv("Kiwoom_App_Key"):
+    kiwoom_key = os.getenv("Kiwoom_App_Key") or os.getenv("KIWOOM_APP_KEY")
+    if kiwoom_key:
         results['kiwoom_gold'] = _check_kiwoom_gold()
         logger.info("--- 키움 금현물 점검 완료 ---")
+    else:
+        logger.info("[키움 금현물] 감지 안됨 (Kiwoom_App_Key/KIWOOM_APP_KEY 없음)")
 
     # KIS ISA
     if os.getenv("KIS_ISA_APP_KEY") or os.getenv("KIS_ISA_ACCOUNT_NO"):
@@ -1722,7 +1725,7 @@ def run_daily_status_report():
             lines.append("")
 
     # Kiwoom Gold
-    if os.getenv("Kiwoom_App_Key") and os.getenv("Kiwoom_Secret_Key"):
+    if (os.getenv("Kiwoom_App_Key") or os.getenv("KIWOOM_APP_KEY")) and (os.getenv("Kiwoom_Secret_Key") or os.getenv("KIWOOM_SECRET_KEY")):
         try:
             trader = KiwoomGoldTrader(is_mock=False)
             if trader.auth():
