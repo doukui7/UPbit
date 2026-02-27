@@ -4465,12 +4465,16 @@ def render_kis_pension_mode():
 
     st.title("연금저축 포트폴리오")
     st.sidebar.header("연금저축 설정")
-    _pen_bt_start_raw = str(config.get("start_date", "2020-01-01") or "2020-01-01")
+    _pen_bt_start_raw = str(
+        config.get("kis_pension_start_date", config.get("start_date", "2020-01-01"))
+        or "2020-01-01"
+    )
     try:
         _pen_bt_start_ts = pd.Timestamp(_pen_bt_start_raw).normalize()
     except Exception:
         _pen_bt_start_raw = "2020-01-01"
         _pen_bt_start_ts = pd.Timestamp(_pen_bt_start_raw).normalize()
+    _pen_bt_cap_default = int(float(config.get("kis_pension_initial_cap", 10_000_000) or 10_000_000))
 
     kis_ak = _get_runtime_value(("KIS_PENSION_APP_KEY", "KIS_APP_KEY"), "")
     kis_sk = _get_runtime_value(("KIS_PENSION_APP_SECRET", "KIS_APP_SECRET"), "")
@@ -4493,6 +4497,26 @@ def render_kis_pension_mode():
             if len(_raw2) == 10:
                 kis_acct = _raw2[:8]
                 kis_prdt = _raw2[8:]
+
+    st.sidebar.subheader("공통 설정")
+    _pen_bt_start_date = st.sidebar.date_input(
+        "기준 시작일",
+        value=_pen_bt_start_ts.date(),
+        key="pen_common_start_date",
+        help="연금저축 전략 성과/차트/백테스트 공통 기준 시작일",
+    )
+    _pen_bt_cap = st.sidebar.number_input(
+        "초기 자본금 (KRW - 원 단위)",
+        min_value=100_000,
+        value=int(_pen_bt_cap_default),
+        step=100_000,
+        format="%d",
+        key="pen_common_initial_cap",
+        help="연금저축 전략 성과/차트/백테스트 공통 기준 초기자본",
+    )
+    _pen_bt_start_raw = str(_pen_bt_start_date)
+    _pen_bt_start_ts = pd.Timestamp(_pen_bt_start_raw).normalize()
+    st.sidebar.caption(f"설정: 시작일 {_pen_bt_start_raw} | 초기 자본 {_pen_bt_cap:,.0f} KRW")
 
     # ── 포트폴리오 편집기 ──
     st.sidebar.subheader("포트폴리오")
@@ -4720,6 +4744,8 @@ def render_kis_pension_mode():
         new_cfg = config.copy()
         new_cfg["kis_pension_account_no"] = str(kis_acct).strip()
         new_cfg["kis_pension_prdt_cd"] = str(kis_prdt).strip() or "01"
+        new_cfg["kis_pension_start_date"] = str(_pen_bt_start_raw)
+        new_cfg["kis_pension_initial_cap"] = int(_pen_bt_cap)
         # 포트폴리오 저장
         new_cfg["pension_portfolio"] = _pen_port_edited.to_dict("records")
         # LAA 설정
@@ -4989,6 +5015,7 @@ def render_kis_pension_mode():
             "kr_qqq": str(kr_qqq),
             "kr_shy": str(kr_shy),
             "bt_start": str(_pen_bt_start_raw),
+            "bt_cap": float(_pen_bt_cap),
         }
 
         def _compute_pen_signal_result():
@@ -5161,7 +5188,7 @@ def render_kis_pension_mode():
             if bt_price_data:
                 bt_result = strategy.run_backtest(
                     bt_price_data,
-                    initial_balance=10_000_000.0,
+                    initial_balance=float(_pen_bt_cap),
                     fee=0.0002,
                 )
                 _bm_ticker = "SPY"
@@ -5185,6 +5212,7 @@ def render_kis_pension_mode():
                 "risk_chart_code": _risk_chart_code,
                 "balance": bal_local,
                 "bt_start_date": str(_pen_bt_start_raw),
+                "bt_initial_cap": float(_pen_bt_cap),
                 "bt_result": bt_result,
                 "bt_benchmark_series": bt_benchmark_series,
                 "bt_benchmark_label": bt_benchmark_label,
@@ -5221,6 +5249,7 @@ def render_kis_pension_mode():
                 "kr_agg": str((_dm_settings.get("kr_etf_map", {}) or {}).get("AGG", "")),
                 "kr_bil": str((_dm_settings.get("kr_etf_map", {}) or {}).get("BIL", "")),
                 "bt_start": str(_pen_bt_start_raw),
+                "bt_cap": float(_pen_bt_cap),
             }
 
             def _compute_dm_signal_result():
@@ -5423,7 +5452,7 @@ def render_kis_pension_mode():
                 if _dm_bt_price_data:
                     _dm_bt_result = _dm_strategy.run_backtest(
                         _dm_bt_price_data,
-                        initial_balance=10_000_000.0,
+                        initial_balance=float(_pen_bt_cap),
                         fee=0.0002,
                     )
                     _dm_bm_ticker = ""
@@ -5463,6 +5492,7 @@ def render_kis_pension_mode():
                     },
                     "balance": _bal_local,
                     "bt_start_date": str(_pen_bt_start_raw),
+                    "bt_initial_cap": float(_pen_bt_cap),
                     "bt_result": _dm_bt_result,
                     "bt_benchmark_series": _dm_bm_series,
                     "bt_benchmark_label": _dm_bm_label,
@@ -5776,6 +5806,9 @@ def render_kis_pension_mode():
                     if isinstance(_laa_eq, pd.DataFrame) and not _laa_eq.empty and "equity" in _laa_eq.columns:
                         _laa_m = _laa_bt.get("metrics", {}) or {}
                         _laa_start = str(res.get("bt_start_date", _pen_bt_start_raw))
+                        _laa_bt_cap = float(res.get("bt_initial_cap", _pen_bt_cap) or _pen_bt_cap)
+                        if _laa_bt_cap <= 0:
+                            _laa_bt_cap = 1.0
                         _laa_final_eq = float(_laa_m.get("final_equity", _laa_eq["equity"].iloc[-1]))
                         _laa_total_ret = float(_laa_m.get("total_return", 0.0))
                         _laa_mdd = float(_laa_m.get("mdd", 0.0))
@@ -5803,15 +5836,16 @@ def render_kis_pension_mode():
                         st.write(
                             f"수익률: **{_laa_total_ret:+.2f}%** | MDD: **{_laa_mdd:.2f}%** | CAGR: **{_laa_cagr:.2f}%**"
                         )
-                        st.write(f"최종자산: {_laa_final_eq:,.0f}원 (1천만원 기준)")
+                        st.write(f"최종자산: {_laa_final_eq:,.0f}원 (초기자본 {_laa_bt_cap:,.0f}원 기준)")
 
                         st.divider()
                         ac1, ac2, ac3, ac4 = st.columns(4)
                         ac1.metric(
-                            "백테스트 자산 (1천만원 기준)",
+                            "백테스트 자산",
                             f"{_laa_final_eq:,.0f}원",
                             delta=f"{_laa_total_ret:+.2f}%",
                         )
+                        ac1.caption(f"초기자본 {_laa_bt_cap:,.0f}원 기준")
                         ac2.metric(
                             "실제 총자산",
                             f"{_actual_total_v:,.0f}원" if _bal_valid else "조회 불가",
@@ -5829,7 +5863,7 @@ def render_kis_pension_mode():
                             if len(_laa_bm_series) > 1 and float(_laa_bm_series.iloc[0]) > 0:
                                 _laa_bm_ret = (_laa_bm_series / float(_laa_bm_series.iloc[0]) - 1.0) * 100.0
 
-                        _eq_ret = (_laa_eq["equity"] / 10_000_000.0 - 1.0) * 100.0
+                        _eq_ret = (_laa_eq["equity"] / float(_laa_bt_cap) - 1.0) * 100.0
                         st.markdown(
                             "<div style='font-size:2.05rem; font-weight:800; line-height:1.25; margin:0.7rem 0 1.1rem 0;'>누적 수익률 (%)</div>",
                             unsafe_allow_html=True,
@@ -6009,6 +6043,9 @@ def render_kis_pension_mode():
                         if isinstance(_dm_eq, pd.DataFrame) and not _dm_eq.empty and "equity" in _dm_eq.columns:
                             _dm_m = _dm_bt.get("metrics", {}) or {}
                             _dm_start = str(_dm_res.get("bt_start_date", _pen_bt_start_raw))
+                            _dm_bt_cap = float(_dm_res.get("bt_initial_cap", _pen_bt_cap) or _pen_bt_cap)
+                            if _dm_bt_cap <= 0:
+                                _dm_bt_cap = 1.0
                             _dm_final_eq = float(_dm_m.get("final_equity", _dm_eq["equity"].iloc[-1]))
                             _dm_total_ret = float(_dm_m.get("total_return", 0.0))
                             _dm_mdd = float(_dm_m.get("mdd", 0.0))
@@ -6047,15 +6084,16 @@ def render_kis_pension_mode():
                             st.write(
                                 f"수익률: **{_dm_total_ret:+.2f}%** | MDD: **{_dm_mdd:.2f}%** | CAGR: **{_dm_cagr:.2f}%**"
                             )
-                            st.write(f"최종자산: {_dm_final_eq:,.0f}원 (1천만원 기준)")
+                            st.write(f"최종자산: {_dm_final_eq:,.0f}원 (초기자본 {_dm_bt_cap:,.0f}원 기준)")
 
                             st.divider()
                             dc1, dc2, dc3, dc4 = st.columns(4)
                             dc1.metric(
-                                "백테스트 자산 (1천만원 기준)",
+                                "백테스트 자산",
                                 f"{_dm_final_eq:,.0f}원",
                                 delta=f"{_dm_total_ret:+.2f}%",
                             )
+                            dc1.caption(f"초기자본 {_dm_bt_cap:,.0f}원 기준")
                             dc2.metric(
                                 "실제 총자산",
                                 f"{_actual_total_v:,.0f}원" if _bal_valid else "조회 불가",
@@ -6072,7 +6110,7 @@ def render_kis_pension_mode():
                                 if len(_dm_bm_series) > 1 and float(_dm_bm_series.iloc[0]) > 0:
                                     _dm_bm_ret = (_dm_bm_series / float(_dm_bm_series.iloc[0]) - 1.0) * 100.0
 
-                            _dm_eq_ret = (_dm_eq["equity"] / 10_000_000.0 - 1.0) * 100.0
+                            _dm_eq_ret = (_dm_eq["equity"] / float(_dm_bt_cap) - 1.0) * 100.0
                             st.markdown(
                                 "<div style='font-size:2.05rem; font-weight:800; line-height:1.25; margin:0.7rem 0 1.1rem 0;'>누적 수익률 (%)</div>",
                                 unsafe_allow_html=True,
@@ -6171,8 +6209,10 @@ def render_kis_pension_mode():
         else:
             _bt_strategy = st.selectbox("백테스트 전략", _bt_candidates, key="pen_bt_strategy_select")
 
-            pen_bt_cap = st.number_input("초기 자본 (KRW)", value=10_000_000, step=1_000_000, key="pen_bt_cap")
+            pen_bt_start = st.date_input("시작일", value=_pen_bt_start_ts.date(), key="pen_bt_start_date")
+            pen_bt_cap = st.number_input("초기 자본 (KRW)", value=int(_pen_bt_cap), step=1_000_000, key="pen_bt_cap")
             pen_bt_fee = st.number_input("수수료 (%)", value=0.02, format="%.2f", key="pen_bt_fee") / 100.0
+            _pen_bt_start_filter_ts = pd.Timestamp(pen_bt_start).normalize()
 
             if _bt_strategy == "LAA":
                 st.header("LAA 백테스트")
@@ -6206,6 +6246,11 @@ def render_kis_pension_mode():
                                 df_t["close"] = df_t["Close"]
                             if "close" not in df_t.columns:
                                 st.error(f"{ticker} ({_code}) 종가 컬럼이 없습니다.")
+                                price_data = None
+                                break
+                            df_t = df_t[df_t.index >= _pen_bt_start_filter_ts]
+                            if df_t.empty:
+                                st.error(f"{ticker} ({_code}) 시작일 이후 데이터가 없습니다. 시작일을 조정해 주세요.")
                                 price_data = None
                                 break
                             price_data[ticker] = df_t
@@ -6301,6 +6346,18 @@ def render_kis_pension_mode():
                                 df_t = _get_pen_daily_chart(kr_code, count=3000, use_disk_cache=True)
                                 if df_t is None or df_t.empty:
                                     st.error(f"{ticker} ({kr_code}) 로컬 데이터가 없습니다. cache 또는 data 폴더를 확인하세요.")
+                                    dm_price_data = None
+                                    break
+                                df_t = df_t.copy().sort_index()
+                                if "close" not in df_t.columns and "Close" in df_t.columns:
+                                    df_t["close"] = df_t["Close"]
+                                if "close" not in df_t.columns:
+                                    st.error(f"{ticker} ({kr_code}) 종가 컬럼이 없습니다.")
+                                    dm_price_data = None
+                                    break
+                                df_t = df_t[df_t.index >= _pen_bt_start_filter_ts]
+                                if df_t.empty:
+                                    st.error(f"{ticker} ({kr_code}) 시작일 이후 데이터가 없습니다. 시작일을 조정해 주세요.")
                                     dm_price_data = None
                                     break
                                 dm_price_data[ticker] = df_t
