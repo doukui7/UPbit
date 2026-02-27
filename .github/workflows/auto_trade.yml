@@ -105,17 +105,16 @@ jobs:
 
       - name: Run Auto Trade (KIS ISA - WDR)
         env:
-          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
-          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
-          KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
-          KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
+          KIS_ISA_APP_KEY: ${{ secrets.KIS_ISA_APP_KEY }}
+          KIS_ISA_APP_SECRET: ${{ secrets.KIS_ISA_APP_SECRET }}
+          KIS_ISA_ACCOUNT_NO: ${{ secrets.KIS_ISA_ACCOUNT_NO }}
           KIS_ISA_ETF_CODE: ${{ secrets.KIS_ISA_ETF_CODE }}
           TRADING_MODE: kis_isa
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
         run: python github_action_trade.py
 
-  # ── KIS 연금저축 듀얼모멘텀(GEM) 자동매매 ─────────────
+  # ── KIS 연금저축 LAA 자동매매 ─────────────────────────
   kis_pension:
     if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'kis_pension' || github.event.inputs.run_job == 'all')) || github.event.schedule == '20 6 25-31 * 1-5'
     runs-on: ubuntu-latest
@@ -131,15 +130,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Auto Trade (KIS Pension - Dual Momentum)
+      - name: Run Auto Trade (KIS Pension - LAA)
         env:
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
           KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
-          KIS_PENSION_ACNT_PRDT_CD: ${{ secrets.KIS_PENSION_ACNT_PRDT_CD }}
-          KR_ETF_SPY: ${{ secrets.KR_ETF_SPY }}
-          KR_ETF_EFA: ${{ secrets.KR_ETF_EFA }}
-          KR_ETF_AGG: ${{ secrets.KR_ETF_AGG }}
           TRADING_MODE: kis_pension
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
@@ -157,7 +152,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 15m
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,Kiwoom_App_Key,Kiwoom_Secret_Key,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_APP_KEY,KIS_APP_SECRET,KIS_ACCOUNT_NO,KIS_ACNT_PRDT_CD,KIS_ISA_ETF_CODE,KIS_PENSION_APP_KEY,KIS_PENSION_APP_SECRET,KIS_PENSION_ACCOUNT_NO,KIS_PENSION_ACNT_PRDT_CD,KR_ETF_SPY,KR_ETF_EFA,KR_ETF_AGG,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,Kiwoom_App_Key,Kiwoom_Secret_Key,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             cd ~/upbit
             git pull --quiet 2>/dev/null || true
@@ -177,19 +172,14 @@ jobs:
           GOLD_BUY_PERIOD: '90'
           GOLD_SELL_PERIOD: '55'
           # KIS ISA
-          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
-          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
-          KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
-          KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
+          KIS_ISA_APP_KEY: ${{ secrets.KIS_ISA_APP_KEY }}
+          KIS_ISA_APP_SECRET: ${{ secrets.KIS_ISA_APP_SECRET }}
+          KIS_ISA_ACCOUNT_NO: ${{ secrets.KIS_ISA_ACCOUNT_NO }}
           KIS_ISA_ETF_CODE: ${{ secrets.KIS_ISA_ETF_CODE }}
           # KIS 연금저축
-          KIS_PENSION_APP_KEY: ${{ secrets.KIS_PENSION_APP_KEY }}
-          KIS_PENSION_APP_SECRET: ${{ secrets.KIS_PENSION_APP_SECRET }}
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
           KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
-          KIS_PENSION_ACNT_PRDT_CD: ${{ secrets.KIS_PENSION_ACNT_PRDT_CD }}
-          KR_ETF_SPY: ${{ secrets.KR_ETF_SPY }}
-          KR_ETF_EFA: ${{ secrets.KR_ETF_EFA }}
-          KR_ETF_AGG: ${{ secrets.KR_ETF_AGG }}
           TRADING_MODE: health_check
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
@@ -206,7 +196,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 15m
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,Kiwoom_App_Key,Kiwoom_Secret_Key,KIWOOM_ACCOUNT,KIS_APP_KEY,KIS_APP_SECRET,KIS_ACCOUNT_NO,KIS_ACNT_PRDT_CD,KIS_ISA_ETF_CODE,KIS_PENSION_APP_KEY,KIS_PENSION_APP_SECRET,KIS_PENSION_ACCOUNT_NO,KIS_PENSION_ACNT_PRDT_CD,KR_ETF_SPY,KR_ETF_EFA,KR_ETF_AGG,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,Kiwoom_App_Key,Kiwoom_Secret_Key,KIWOOM_ACCOUNT,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             cd ~/upbit
             git pull --quiet 2>/dev/null || true
@@ -223,19 +213,14 @@ jobs:
           Kiwoom_Secret_Key: ${{ secrets.KIWOOM_SECRET_KEY }}
           KIWOOM_ACCOUNT: ${{ secrets.KIWOOM_ACCOUNT }}
           # KIS ISA
-          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
-          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
-          KIS_ACCOUNT_NO: ${{ secrets.KIS_ACCOUNT_NO }}
-          KIS_ACNT_PRDT_CD: ${{ secrets.KIS_ACNT_PRDT_CD }}
+          KIS_ISA_APP_KEY: ${{ secrets.KIS_ISA_APP_KEY }}
+          KIS_ISA_APP_SECRET: ${{ secrets.KIS_ISA_APP_SECRET }}
+          KIS_ISA_ACCOUNT_NO: ${{ secrets.KIS_ISA_ACCOUNT_NO }}
           KIS_ISA_ETF_CODE: ${{ secrets.KIS_ISA_ETF_CODE }}
           # KIS Pension
-          KIS_PENSION_APP_KEY: ${{ secrets.KIS_PENSION_APP_KEY }}
-          KIS_PENSION_APP_SECRET: ${{ secrets.KIS_PENSION_APP_SECRET }}
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
           KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
-          KIS_PENSION_ACNT_PRDT_CD: ${{ secrets.KIS_PENSION_ACNT_PRDT_CD }}
-          KR_ETF_SPY: ${{ secrets.KR_ETF_SPY }}
-          KR_ETF_EFA: ${{ secrets.KR_ETF_EFA }}
-          KR_ETF_AGG: ${{ secrets.KR_ETF_AGG }}
           TRADING_MODE: daily_status
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}

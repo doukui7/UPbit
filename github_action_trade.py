@@ -1643,7 +1643,7 @@ def run_health_check():
         logger.info("--- 키움 금현물 점검 완료 ---")
 
     # KIS ISA
-    if os.getenv("KIS_APP_KEY"):
+    if os.getenv("KIS_ISA_APP_KEY") or os.getenv("KIS_ISA_ACCOUNT_NO"):
         results['kis_isa'] = _check_kis_isa()
         logger.info("--- KIS ISA 점검 완료 ---")
 
