@@ -507,15 +507,20 @@ def run_auto_trade():
 
     logger.info("=== Done ===")
 
-    # 텔레그램 요약 전송
-    tg_lines = [f"<b>코인 자동매매</b> ({len(due_portfolio)}종목 실행 / 전체 {len(portfolio)}종목)"]
+    # 텔레그램 요약 전송 (같은 코인 통합 시그널)
+    from collections import OrderedDict as _OD
+    _tg_coin_groups = _OD()
+    for a in analyses:
+        _tg_coin_groups.setdefault(a['ticker'], []).append(a)
+
+    tg_lines = [f"<b>코인 자동매매</b> ({len(_tg_coin_groups)}종목)"]
     tg_lines.append(f"실행시각: {now_kst.strftime('%Y-%m-%d %H:%M')} KST")
     tg_lines.append(f"총자산: {total_portfolio_value:,.0f}원 (현금 {krw_balance:,.0f})")
-    for a in analyses:
-        action = a['signal']
-        iv = _normalize_coin_interval(a.get('interval', 'day'))
-        iv_label = "4H" if iv == "minute240" else ("1D" if iv == "day" else str(a.get('interval', 'day')))
-        tg_lines.append(f"  {a['ticker']} [{iv_label}]: {action} (보유≈{a['coin_value']:,.0f}원)")
+    for _tk, _grp in _tg_coin_groups.items():
+        _sigs = [a['signal'] for a in _grp]
+        _unified = "BUY" if all(s == "BUY" for s in _sigs) else "SELL"
+        _coin_val = _grp[0]['coin_value']
+        tg_lines.append(f"  {_tk}: {_unified} (보유≈{_coin_val:,.0f}원)")
     _send_telegram("\n".join(tg_lines))
 
 
@@ -1754,10 +1759,24 @@ def _check_upbit() -> dict:
             except Exception as e:
                 signal_errors.append(f"{_ticker}=ERROR({e})")
 
+        # 같은 코인 시그널 통합 (모두 BUY → BUY, 그 외 → SELL)
+        from collections import OrderedDict
+        _coin_sigs = OrderedDict()
+        for sd in signal_details:
+            # sd format: "KRW-BTC:HOLD(minute240)"
+            _coin_key = sd.split(":")[0]
+            _sig_val = sd.split(":")[1].split("(")[0] if ":" in sd else ""
+            _coin_sigs.setdefault(_coin_key, []).append(_sig_val)
+        unified_signals = []
+        unified_details = []
+        for _ck, _svs in _coin_sigs.items():
+            _unified = "BUY" if all(s == "BUY" for s in _svs) else "SELL"
+            unified_signals.append(f"{_ck}={_unified}")
+            unified_details.append(f"{_ck}:{_unified}")
         if signals and not signal_errors:
             result['signal'] = True
-            result['signal_msg'] = ", ".join(signals)
-            _append_step(result, "5. 시그널 분석", "PASS", f"{len(signals)}개 성공: {' | '.join(signal_details[:8])}")
+            result['signal_msg'] = ", ".join(unified_signals)
+            _append_step(result, "5. 시그널 분석", "PASS", f"{len(unified_signals)}개 코인: {' | '.join(unified_details)}")
         elif signals and signal_errors:
             result['signal'] = False
             result['signal_msg'] = f"FAIL - 일부 시그널 분석 실패 ({'; '.join(signal_errors)}) | 성공: {', '.join(signals)}"
@@ -1947,49 +1966,38 @@ def _print_health_report(results: dict):
 
 
 def run_health_check():
-    """매일 장마감 전 헬스체크 실행 (국내 시스템 + 업비트)."""
+    """전체 헬스체크 실행 (매 4시간 - 업비트 + 국내 시스템)."""
     load_dotenv()
-    logger.info("=== 일일 헬스체크 시작 ===")
+    logger.info("=== 전체 헬스체크 시작 ===")
 
     results = {}
 
-    # 업비트는 24시간 → 항상 점검
+    # 업비트 (24시간)
     if os.getenv("UPBIT_ACCESS_KEY"):
         results['upbit'] = _check_upbit()
         logger.info("--- 업비트 점검 완료 ---")
 
-    # 국내 시스템은 장 시간 내만 점검
-    if _is_kr_market_hours():
+    # 키움 금현물
+    if os.getenv("Kiwoom_App_Key"):
         results['kiwoom_gold'] = _check_kiwoom_gold()
         logger.info("--- 키움 금현물 점검 완료 ---")
 
+    # KIS ISA
+    if os.getenv("KIS_APP_KEY"):
         results['kis_isa'] = _check_kis_isa()
         logger.info("--- KIS ISA 점검 완료 ---")
 
+    # KIS 연금저축
+    if os.getenv("KIS_PENSION_ACCOUNT_NO"):
         results['kis_pension'] = _check_kis_pension()
         logger.info("--- KIS 연금저축 점검 완료 ---")
-    else:
-        logger.info("장 시간 외 → 국내 시스템(키움/KIS) 점검 생략")
 
     if results:
         _print_health_report(results)
     else:
-        logger.info("점검 대상 없음.")
+        logger.info("점검 대상 없음 (API 키 미설정).")
 
-    logger.info("=== 일일 헬스체크 완료 ===")
-
-
-def run_upbit_health_check():
-    """업비트 전용 헬스체크 (4시간마다 실행)."""
-    load_dotenv()
-    logger.info("=== 업비트 헬스체크 시작 ===")
-
-    results = {}
-    results['upbit'] = _check_upbit()
-    logger.info("--- 업비트 점검 완료 ---")
-
-    _print_health_report(results)
-    logger.info("=== 업비트 헬스체크 완료 ===")
+    logger.info("=== 전체 헬스체크 완료 ===")
 
 
 def _format_holdings_brief(holdings, max_items=3):
@@ -2541,7 +2549,8 @@ if __name__ == "__main__":
     elif mode == "health_check":
         run_health_check()
     elif mode == "health_check_upbit":
-        run_upbit_health_check()
+        # 하위호환: 기존 health_check_upbit → health_check로 통합
+        run_health_check()
     elif mode == "daily_status":
         run_daily_status_report()
     elif mode == "telegram_test_ping":

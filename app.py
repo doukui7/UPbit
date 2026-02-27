@@ -7635,42 +7635,72 @@ def main():
                             "price": rb_price, "target_krw": rb_target_krw,
                         })
 
-                    cash_assets = [a for a in asset_states if a['status'] == 'CASH']
-                    buy_signal_assets = [a for a in asset_states if a['signal'] == 'BUY']
+                    # ── 같은 코인 그룹핑 → 통합 시그널 ──
+                    from collections import OrderedDict
+                    coin_groups = OrderedDict()
+                    for a in asset_states:
+                        key = a['ticker']
+                        if key not in coin_groups:
+                            coin_groups[key] = []
+                        coin_groups[key].append(a)
+
+                    merged_assets = []
+                    for ticker, group in coin_groups.items():
+                        signals = [a['signal'] for a in group]
+                        # 통합 시그널: 모든 전략 BUY → BUY, 그 외 → SELL
+                        unified_signal = 'BUY' if all(s == 'BUY' for s in signals) else 'SELL'
+                        total_weight = sum(a['weight'] for a in group)
+                        coin_val = group[0]['coin_val']  # 같은 코인이므로 동일
+                        price = group[0]['price']
+                        status = group[0]['status']
+                        target_krw = sum(a['target_krw'] for a in group)
+                        strategies = " / ".join(f"{a['strategy']}{a['param']}({a['interval']})" for a in group)
+                        detail_signals = " / ".join(f"{a['strategy']}{a['param']}={a['signal']}" for a in group)
+                        merged_assets.append({
+                            "ticker": ticker, "weight": total_weight,
+                            "strategies": strategies, "detail_signals": detail_signals,
+                            "status": status, "signal": unified_signal,
+                            "coin_val": coin_val, "price": price,
+                            "target_krw": target_krw, "group": group,
+                        })
+
+                    cash_merged = [a for a in merged_assets if a['status'] == 'CASH']
+                    buy_merged = [a for a in merged_assets if a['signal'] == 'BUY']
 
                     rc1, rc2, rc3 = st.columns(3)
                     rc1.metric("보유 현금 (KRW)", f"{krw_balance:,.0f}")
-                    rc2.metric("CASH 자산", f"{len(cash_assets)} / {len(asset_states)}")
-                    rc3.metric("BUY 시그널", f"{len(buy_signal_assets)} / {len(asset_states)}")
+                    rc2.metric("CASH 자산", f"{len(cash_merged)} / {len(merged_assets)}")
+                    rc3.metric("BUY 시그널", f"{len(buy_merged)} / {len(merged_assets)}")
 
                     rebal_data = []
-                    for a in asset_states:
-                        action = ""
-                        if a['status'] == 'CASH' and a['signal'] == 'BUY':
-                            action = "BUY"
-                        elif a['status'] == 'CASH' and a['signal'] != 'BUY':
-                            action = "대기 (시그널 없음)"
-                        elif a['status'] == 'HOLD':
-                            action = "보유 중"
+                    for a in merged_assets:
+                        # BUY: 미보유+BUY시그널 → 매수, SELL: 보유중+SELL시그널 → 매도
+                        if a['signal'] == 'BUY' and a['status'] == 'CASH':
+                            action = "매수"
+                        elif a['signal'] == 'SELL' and a['status'] == 'HOLD':
+                            action = "매도"
+                        elif a['signal'] == 'BUY' and a['status'] == 'HOLD':
+                            action = "보유 유지"
+                        else:  # SELL + CASH
+                            action = "대기"
                         rebal_data.append({
                             "종목": a['ticker'],
-                            "전략": f"{a['strategy']} {a['param']}",
+                            "전략": a['strategies'],
                             "비중": f"{a['weight']}%",
-                            "시간봉": a['interval'],
-                            "상태": a['status'],
                             "시그널": a['signal'],
+                            "상세": a['detail_signals'],
                             "현재가치(KRW)": f"{a['coin_val']:,.0f}",
                             "목표(KRW)": f"{a['target_krw']:,.0f}",
                             "액션": action,
                         })
                     st.dataframe(pd.DataFrame(rebal_data), use_container_width=True, hide_index=True)
 
-                    buyable = [a for a in asset_states if a['status'] == 'CASH' and a['signal'] == 'BUY']
+                    buyable = [a for a in merged_assets if a['status'] == 'CASH' and a['signal'] == 'BUY']
                     if not buyable:
-                        if len(cash_assets) == 0:
+                        if len(cash_merged) == 0:
                             st.success("모든 자산이 이미 보유 중입니다.")
                         else:
-                            st.info(f"현금 자산 {len(cash_assets)}개가 있지만 BUY 시그널이 없습니다. 시그널 발생 시 매수 가능합니다.")
+                            st.info(f"현금 자산 {len(cash_merged)}개가 있지만 BUY 시그널이 없습니다. 시그널 발생 시 매수 가능합니다.")
                     else:
                         st.warning(f"**{len(buyable)}개 자산**에 BUY 시그널이 있습니다. 리밸런싱 매수를 실행할 수 있습니다.")
                         total_buy_weight = sum(a['weight'] for a in buyable)
@@ -7683,11 +7713,11 @@ def main():
                             buy_plan.append({
                                 "종목": a['ticker'], "비중": f"{a['weight']}%",
                                 "배분 금액(KRW)": f"{alloc_krw:,.0f}",
-                                "시간봉": a['interval'], "현재가": f"{a['price']:,.0f}",
-                                "_ticker": a['ticker'], "_krw": alloc_krw, "_interval": a['interval'],
+                                "전략": a['strategies'], "현재가": f"{a['price']:,.0f}",
+                                "_ticker": a['ticker'], "_krw": alloc_krw, "_group": a['group'],
                             })
                         plan_df = pd.DataFrame(buy_plan)
-                        st.dataframe(plan_df[["종목", "비중", "배분 금액(KRW)", "시간봉", "현재가"]], use_container_width=True, hide_index=True)
+                        st.dataframe(plan_df[["종목", "비중", "배분 금액(KRW)", "전략", "현재가"]], use_container_width=True, hide_index=True)
                         st.caption(f"총 배분 금액: {sum(p['_krw'] for p in buy_plan):,.0f} KRW / 보유 현금: {krw_balance:,.0f} KRW")
 
                         if st.button("🚀 리밸런싱 매수 실행", key="btn_rebalance_exec", type="primary"):
@@ -7697,7 +7727,7 @@ def main():
                             for pi, plan in enumerate(buy_plan):
                                 p_ticker = plan['_ticker']
                                 p_krw = plan['_krw']
-                                p_interval = plan['_interval']
+                                p_interval = plan['_group'][0]['interval']
                                 if p_krw < 5000:
                                     rebal_results.append({"종목": p_ticker, "결과": "금액 부족 (5,000원 미만)"})
                                     continue
