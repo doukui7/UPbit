@@ -361,10 +361,8 @@ def _is_local_price_stale(last_ts, max_age_sec=900):
 
 def get_current_price_local_first(ticker, ttl_sec=5.0, allow_api_fallback=True):
     """
-    현재가 로컬 우선 조회.
-    1) 메모리 TTL 캐시
-    2) 로컬 OHLCV 마지막 종가
-    3) (옵션) pyupbit 현재가 API
+    현재가 조회 - API 전용 (실시간).
+    메모리 TTL 캐시만 사용 (동일 요청 중복 호출 방지).
     """
     t = str(ticker or "").strip().upper()
     if not t:
@@ -376,13 +374,11 @@ def get_current_price_local_first(ticker, ttl_sec=5.0, allow_api_fallback=True):
         if isinstance(hit, dict) and (now_ts - float(hit.get("ts", 0.0))) <= float(ttl_sec):
             return float(hit.get("val", 0.0) or 0.0)
 
-    p, last_ts = _get_local_last_close_with_ts(t)
-    stale = _is_local_price_stale(last_ts, max_age_sec=900)
-    if (p <= 0 or stale) and allow_api_fallback:
-        try:
-            p = float(pyupbit.get_current_price(t) or 0.0)
-        except Exception:
-            p = 0.0
+    p = 0.0
+    try:
+        p = float(pyupbit.get_current_price(t) or 0.0)
+    except Exception:
+        p = 0.0
 
     with _MEM_CACHE_LOCK:
         _PRICE_MEM_CACHE[t] = {"ts": now_ts, "val": float(p if p > 0 else 0.0)}
@@ -418,29 +414,19 @@ def get_current_prices_local_first(tickers, ttl_sec=5.0, allow_api_fallback=True
             else:
                 pending.append(t)
 
-    # 1) 로컬 close로 먼저 채움
-    still_missing = []
-    for t in pending:
-        p, last_ts = _get_local_last_close_with_ts(t)
-        stale = _is_local_price_stale(last_ts, max_age_sec=900)
-        if p > 0 and (not stale or not allow_api_fallback):
-            out[t] = float(p)
-        else:
-            still_missing.append(t)
-
-    # 2) API 폴백
-    if still_missing and allow_api_fallback:
+    # API로 현재가 조회 (실시간)
+    if pending:
         try:
-            api_res = pyupbit.get_current_price(still_missing)
+            api_res = pyupbit.get_current_price(pending)
             if isinstance(api_res, dict):
                 for t, v in api_res.items():
                     out[str(t).upper()] = float(v or 0.0)
-            elif isinstance(api_res, (int, float)) and len(still_missing) == 1:
-                out[still_missing[0]] = float(api_res or 0.0)
+            elif isinstance(api_res, (int, float)) and len(pending) == 1:
+                out[pending[0]] = float(api_res or 0.0)
         except Exception:
             pass
 
-        for t in still_missing:
+        for t in pending:
             if out.get(t, 0.0) > 0:
                 continue
             try:
@@ -658,9 +644,8 @@ def get_gold_daily_local_first(trader=None, code="M04020000", count=2000, allow_
 
 def get_gold_current_price_local_first(trader=None, code="M04020000", allow_api_fallback=True, ttl_sec=8.0):
     """
-    Gold 현재가 로컬 우선 조회.
-    - 일봉 캐시 마지막 close 우선
-    - 부족 시 trader.get_current_price 폴백
+    Gold 현재가 조회 - API 전용 (실시간).
+    메모리 캐시(ttl_sec)만 사용하여 동일 요청 중복 호출 방지.
     """
     key = f"GOLD::{code}"
     now_ts = float(datetime.now().timestamp())
@@ -670,14 +655,7 @@ def get_gold_current_price_local_first(trader=None, code="M04020000", allow_api_
             return float(hit.get("val", 0.0) or 0.0)
 
     p = 0.0
-    d = get_gold_daily_local_first(trader=None, code=code, count=2, allow_api_fallback=False)
-    if d is not None and not d.empty:
-        try:
-            p = float(d["close"].iloc[-1] or 0.0)
-        except Exception:
-            p = 0.0
-
-    if p <= 0 and allow_api_fallback and trader is not None:
+    if trader is not None:
         try:
             p = float(trader.get_current_price(code) or 0.0)
         except Exception:

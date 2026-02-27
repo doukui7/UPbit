@@ -108,12 +108,7 @@ def _get_kis_daily_local_first(trader: KISTrader, code: str, count: int, end_dat
 
 
 def _get_kis_price_local_first(trader: KISTrader, code: str) -> float:
-    _df = _get_kis_daily_local_first(trader, code, count=3)
-    if _df is not None and not _df.empty:
-        if "close" in _df.columns:
-            return float(_df["close"].iloc[-1] or 0.0)
-        if "Close" in _df.columns:
-            return float(_df["Close"].iloc[-1] or 0.0)
+    """현재가 조회 - API 전용 (실시간). 캐시 사용 안 함."""
     try:
         return float(trader.get_current_price(str(code).strip()) or 0.0)
     except Exception:
