@@ -8,7 +8,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-# 로깅 설정
+# 濡쒓퉭 ?ㅼ젙
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("KISTrader")
 
@@ -17,22 +17,22 @@ load_dotenv()
 
 class KISTrader:
     """
-    한국투자증권 Open API 트레이더 (ISA / 연금저축 계좌 지원)
+    ?쒓뎅?ъ옄利앷텒 Open API ?몃젅?대뜑 (ISA / ?곌툑?異?怨꾩쥖 吏??
 
-    지원 기능:
-      - 국내주식/ETF 현재가 조회, 일봉 차트, 매수/매도 주문
-      - 해외주식 현재가/일봉 조회 (시그널 참조용)
-      - 계좌 잔고 조회, 미체결 주문 조회/취소
+    吏??湲곕뒫:
+      - 援?궡二쇱떇/ETF ?꾩옱媛 議고쉶, ?쇰큺 李⑦듃, 留ㅼ닔/留ㅻ룄 二쇰Ц
+      - ?댁쇅二쇱떇 ?꾩옱媛/?쇰큺 議고쉶 (?쒓렇??李몄“??
+      - 怨꾩쥖 ?붽퀬 議고쉶, 誘몄껜寃?二쇰Ц 議고쉶/痍⑥냼
 
-    TR_ID 목록 (실전/모의):
-      FHKST01010100       : 국내주식 현재가
-      FHKST03010100       : 국내주식 일봉 차트
-      TTTC0802U / VTTC0802U : 국내주식 매수
-      TTTC0801U / VTTC0801U : 국내주식 매도
-      TTTC0803U / VTTC0803U : 국내주식 정정/취소
-      TTTC8434R / VTTC8434R : 국내주식 잔고 조회
-      HHDFS76200200       : 해외주식 현재가
-      HHDFS76240000       : 해외주식 일봉 차트
+    TR_ID 紐⑸줉 (?ㅼ쟾/紐⑥쓽):
+      FHKST01010100       : 援?궡二쇱떇 ?꾩옱媛
+      FHKST03010100       : 援?궡二쇱떇 ?쇰큺 李⑦듃
+      TTTC0802U / VTTC0802U : 援?궡二쇱떇 留ㅼ닔
+      TTTC0801U / VTTC0801U : 援?궡二쇱떇 留ㅻ룄
+      TTTC0803U / VTTC0803U : 援?궡二쇱떇 ?뺤젙/痍⑥냼
+      TTTC8434R / VTTC8434R : 援?궡二쇱떇 ?붽퀬 議고쉶
+      HHDFS76200200       : ?댁쇅二쇱떇 ?꾩옱媛
+      HHDFS76240000       : ?댁쇅二쇱떇 ?쇰큺 李⑦듃
     """
     REAL_URL = "https://openapi.koreainvestment.com:9443"
     MOCK_URL = "https://openapivts.koreainvestment.com:29443"
@@ -40,26 +40,26 @@ class KISTrader:
     def __init__(self, is_mock=False):
         self.app_key = os.getenv("KIS_APP_KEY")
         self.app_secret = os.getenv("KIS_APP_SECRET")
-        self.account_no = os.getenv("KIS_ACCOUNT_NO", "")        # 계좌번호 앞 8자리
-        self.acnt_prdt_cd = os.getenv("KIS_ACNT_PRDT_CD", "01")  # 계좌상품코드 (ISA: 보통 01)
+        self.account_no = os.getenv("KIS_ACCOUNT_NO", "")        # 怨꾩쥖踰덊샇 ??8?먮━
+        self.acnt_prdt_cd = os.getenv("KIS_ACNT_PRDT_CD", "01")  # 怨꾩쥖?곹뭹肄붾뱶 (ISA: 蹂댄넻 01)
         self.is_mock = is_mock
         self.base_url = self.MOCK_URL if is_mock else self.REAL_URL
 
         self.access_token = None
         self.token_expiry = 0.0  # unix timestamp
 
-        # HTTP 커넥션 풀링
+        # HTTP 而ㅻ꽖???留?
         self._session = requests.Session()
         self._session.headers.update({"Content-Type": "application/json;charset=UTF-8"})
 
         if not (self.app_key and self.app_secret):
-            logger.warning("KIS_APP_KEY 또는 KIS_APP_SECRET 가 .env에 없습니다.")
+            logger.warning("KIS_APP_KEY ?먮뒗 KIS_APP_SECRET 媛 .env???놁뒿?덈떎.")
 
-    # ─────────────────────────────────────────────────────
-    # 내부 유틸
-    # ─────────────────────────────────────────────────────
+    # ?????????????????????????????????????????????????????
+    # ?대? ?좏떥
+    # ?????????????????????????????????????????????????????
     def _is_token_valid(self) -> bool:
-        """토큰 만료 5분 전부터 갱신."""
+        """?좏겙 留뚮즺 5遺??꾨???媛깆떊."""
         return self.access_token is not None and (self.token_expiry - time.time()) > 300
 
     def _ensure_token(self) -> bool:
@@ -81,9 +81,9 @@ class KISTrader:
 
     def _normalize_account_fields(self, account_no: str | None = None, acnt_prdt_cd: str | None = None) -> tuple[str, str]:
         """
-        계좌번호/CANO, 상품코드를 안전하게 정규화.
-        - 10자리 입력 시: 앞 8자리(CANO) + 뒤 2자리(상품코드)
-        - 8자리 입력 시: 상품코드는 인자/기존값/기본값(01) 사용
+        怨꾩쥖踰덊샇/CANO, ?곹뭹肄붾뱶瑜??덉쟾?섍쾶 ?뺢퇋??
+        - 10?먮━ ?낅젰 ?? ??8?먮━(CANO) + ??2?먮━(?곹뭹肄붾뱶)
+        - 8?먮━ ?낅젰 ?? ?곹뭹肄붾뱶???몄옄/湲곗〈媛?湲곕낯媛?01) ?ъ슜
         """
         raw_acct = "".join(ch for ch in str(account_no if account_no is not None else self.account_no) if ch.isdigit())
         raw_prdt = "".join(ch for ch in str(acnt_prdt_cd if acnt_prdt_cd is not None else self.acnt_prdt_cd) if ch.isdigit())
@@ -102,14 +102,14 @@ class KISTrader:
         return cano, prdt
 
     def _account_params(self) -> tuple[str, str]:
-        """요청 전 계좌 필드를 정규화하고 객체 상태도 동기화."""
+        """?붿껌 ??怨꾩쥖 ?꾨뱶瑜??뺢퇋?뷀븯怨?媛앹껜 ?곹깭???숆린??"""
         cano, prdt = self._normalize_account_fields()
         self.account_no = cano
         self.acnt_prdt_cd = prdt
         return cano, prdt
 
     def _hashkey(self, body: dict) -> str:
-        """주문 요청 시 필요한 hashkey 생성."""
+        """二쇰Ц ?붿껌 ???꾩슂??hashkey ?앹꽦."""
         url = f"{self.base_url}/uapi/hashkey"
         headers = {
             "Content-Type": "application/json;charset=UTF-8",
@@ -121,14 +121,14 @@ class KISTrader:
             data = res.json()
             return data.get("HASH", "")
         except Exception as e:
-            logger.error(f"hashkey 생성 오류: {e}")
+            logger.error(f"hashkey ?앹꽦 ?ㅻ쪟: {e}")
             return ""
 
-    # ─────────────────────────────────────────────────────
-    # 인증 (OAuth2)
-    # ─────────────────────────────────────────────────────
+    # ?????????????????????????????????????????????????????
+    # ?몄쬆 (OAuth2)
+    # ?????????????????????????????????????????????????????
     def auth(self) -> bool:
-        """접근 토큰 발급. 1분당 1회 제한 (EGW00133 시 대기)."""
+        """?묎렐 ?좏겙 諛쒓툒. 1遺꾨떦 1???쒗븳 (EGW00133 ???湲?."""
         if self._is_token_valid():
             return True
 
@@ -144,35 +144,35 @@ class KISTrader:
                 res = self._session.post(url, json=payload, timeout=10)
                 data = res.json()
 
-                # 1분당 1회 제한 처리
+                # 1遺꾨떦 1???쒗븳 泥섎━
                 if data.get("error_code") == "EGW00133":
-                    logger.warning("토큰 발급 대기 (1분당 1회 제한)... 65초 후 재시도")
+                    logger.warning("토큰 발급 대기(1분당 1회 제한)... 65초 후 재시도")
                     time.sleep(65)
                     continue
 
                 self.access_token = data.get("access_token")
                 if not self.access_token:
-                    logger.error(f"토큰 발급 실패: {data}")
+                    logger.error(f"?좏겙 諛쒓툒 ?ㅽ뙣: {data}")
                     return False
 
-                # 만료 시간 (보통 24시간)
+                # 留뚮즺 ?쒓컙 (蹂댄넻 24?쒓컙)
                 expires_in = int(data.get("expires_in", 86400))
                 self.token_expiry = time.time() + expires_in
 
-                logger.info(f"KIS 토큰 발급 성공 (만료: {expires_in // 3600}시간)")
+                logger.info(f"KIS ?좏겙 諛쒓툒 ?깃났 (留뚮즺: {expires_in // 3600}?쒓컙)")
                 return True
 
             except Exception as e:
-                logger.error(f"KIS 인증 오류: {e}")
+                logger.error(f"KIS ?몄쬆 ?ㅻ쪟: {e}")
                 return False
 
         return False
 
-    # ─────────────────────────────────────────────────────
-    # 국내주식/ETF 시세 조회
-    # ─────────────────────────────────────────────────────
+    # ?????????????????????????????????????????????????????
+    # 援?궡二쇱떇/ETF ?쒖꽭 議고쉶
+    # ?????????????????????????????????????????????????????
     def get_current_price(self, stock_code: str) -> float | None:
-        """국내주식/ETF 현재가 조회 (FHKST01010100)."""
+        """援?궡二쇱떇/ETF ?꾩옱媛 議고쉶 (FHKST01010100)."""
         if not self._ensure_token():
             return None
 
@@ -196,14 +196,14 @@ class KISTrader:
                 return price if price > 0 else None
             except Exception as e:
                 if _retry < 2:
-                    logger.warning(f"현재가 조회 재시도 {_retry + 1}/2 ({stock_code}): {e}")
+                    logger.warning(f"?꾩옱媛 議고쉶 ?ъ떆??{_retry + 1}/2 ({stock_code}): {e}")
                     time.sleep(0.25 + (0.25 * _retry))
                 else:
-                    logger.error(f"현재가 조회 오류 ({stock_code}): {e}")
+                    logger.error(f"?꾩옱媛 議고쉶 ?ㅻ쪟 ({stock_code}): {e}")
         return None
 
     def get_price_info(self, stock_code: str) -> dict | None:
-        """국내주식/ETF 현재가 상세 조회."""
+        """援?궡二쇱떇/ETF ?꾩옱媛 ?곸꽭 議고쉶."""
         if not self._ensure_token():
             return None
 
@@ -228,16 +228,16 @@ class KISTrader:
                 'change_rate': float(o.get("prdy_ctrt", 0)),
             }
         except Exception as e:
-            logger.error(f"현재가 상세 오류 ({stock_code}): {e}")
+            logger.error(f"?꾩옱媛 ?곸꽭 ?ㅻ쪟 ({stock_code}): {e}")
             return None
 
     def get_orderbook(self, stock_code: str) -> dict | None:
         """
-        국내주식/ETF 호가 조회 (FHKST01010200).
+        援?궡二쇱떇/ETF ?멸? 議고쉶 (FHKST01010200).
 
         Returns: {
-            'asks': [{'price': float, 'qty': int}, ...],  # 매도호가 (낮→높)
-            'bids': [{'price': float, 'qty': int}, ...],  # 매수호가 (높→낮)
+            'asks': [{'price': float, 'qty': int}, ...],  # 留ㅻ룄?멸? (??넂??
+            'bids': [{'price': float, 'qty': int}, ...],  # 留ㅼ닔?멸? (?믠넂??
             'cur_prc': float
         }
         """
@@ -257,7 +257,7 @@ class KISTrader:
             o = data.get("output1", {})
 
             if not o:
-                logger.debug(f"호가 응답 없음 ({stock_code})")
+                logger.debug(f"?멸? ?묐떟 ?놁쓬 ({stock_code})")
                 return None
 
             asks = []
@@ -283,13 +283,13 @@ class KISTrader:
             return None
 
         except Exception as e:
-            logger.error(f"호가 조회 오류 ({stock_code}): {e}")
+            logger.error(f"?멸? 議고쉶 ?ㅻ쪟 ({stock_code}): {e}")
             return None
 
     def get_daily_chart(self, stock_code: str, start_date: str = None,
                         end_date: str = None, count: int = 200) -> pd.DataFrame | None:
         """
-        국내주식/ETF 일봉 차트 (FHKST03010100).
+        援?궡二쇱떇/ETF ?쇰큺 李⑦듃 (FHKST03010100).
         Returns: DataFrame columns: [open, high, low, close, volume] index=datetime
         """
         if not self._ensure_token():
@@ -300,23 +300,23 @@ class KISTrader:
         if start_date is None:
             start_date = (datetime.now() - timedelta(days=count * 2)).strftime("%Y%m%d")
 
-        # 날짜 형식 통일
+        # ?좎쭨 ?뺤떇 ?듭씪
         start_date = start_date.replace("-", "")
         end_date = end_date.replace("-", "")
 
         url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
         all_rows = []
 
-        # 페이지네이션 (최대 100건씩)
+        # ?섏씠吏?ㅼ씠??(理쒕? 100嫄댁뵫)
         current_end = end_date
-        for _ in range(60): # 최대 6000건 (100건 x 60회)
+        for _ in range(60): # 理쒕? 6000嫄?(100嫄?x 60??
             params = {
                 "FID_COND_MRKT_DIV_CODE": "J",
                 "FID_INPUT_ISCD": stock_code,
                 "FID_INPUT_DATE_1": start_date,
                 "FID_INPUT_DATE_2": current_end,
                 "FID_PERIOD_DIV_CODE": "D",
-                "FID_ORG_ADJ_PRC": "0",  # 수정주가
+                "FID_ORG_ADJ_PRC": "0",  # ?섏젙二쇨?
             }
 
             rows = None
@@ -333,10 +333,10 @@ class KISTrader:
                     break
                 except Exception as e:
                     if _retry < 2:
-                        logger.warning(f"일봉 조회 재시도 {_retry + 1}/2 ({stock_code}): {e}")
+                        logger.warning(f"?쇰큺 議고쉶 ?ъ떆??{_retry + 1}/2 ({stock_code}): {e}")
                         time.sleep(0.7 + (0.4 * _retry))
                     else:
-                        logger.error(f"일봉 조회 오류 ({stock_code}): {e}")
+                        logger.error(f"?쇰큺 議고쉶 ?ㅻ쪟 ({stock_code}): {e}")
 
             if rows is None:
                 break
@@ -362,7 +362,7 @@ class KISTrader:
             if len(all_rows) >= count:
                 break
 
-            # 다음 페이지 (가장 오래된 날짜 - 1)
+            # ?ㅼ쓬 ?섏씠吏 (媛???ㅻ옒???좎쭨 - 1)
             oldest = min(r.get("stck_bsop_date", "99999999") for r in rows)
             if oldest <= start_date:
                 break
@@ -379,13 +379,13 @@ class KISTrader:
         df = df[~df.index.duplicated(keep="first")]
         return df.tail(count)
 
-    # ─────────────────────────────────────────────────────
-    # 해외주식 시세 조회 (시그널 참조용)
-    # ─────────────────────────────────────────────────────
+    # ?????????????????????????????????????????????????????
+    # ?댁쇅二쇱떇 ?쒖꽭 議고쉶 (?쒓렇??李몄“??
+    # ?????????????????????????????????????????????????????
     def get_overseas_price(self, symbol: str, exchange: str = "NAS") -> float | None:
         """
-        해외주식 현재가 조회 (HHDFS76200200).
-        exchange: NAS(나스닥), NYS(뉴욕), AMS(아멕스)
+        ?댁쇅二쇱떇 ?꾩옱媛 議고쉶 (HHDFS76200200).
+        exchange: NAS(?섏뒪??, NYS(?댁슃), AMS(?꾨찕??
         """
         if not self._ensure_token():
             return None
@@ -401,13 +401,13 @@ class KISTrader:
             price = float(output.get("last", 0) or output.get("base", 0))
             return price if price > 0 else None
         except Exception as e:
-            logger.error(f"해외 현재가 오류 ({symbol}): {e}")
+            logger.error(f"?댁쇅 ?꾩옱媛 ?ㅻ쪟 ({symbol}): {e}")
             return None
 
     def get_overseas_daily_chart(self, symbol: str, exchange: str = "NAS",
                                  count: int = 1500) -> pd.DataFrame | None:
         """
-        해외주식 일봉 차트 (HHDFS76240000).
+        ?댁쇅二쇱떇 ?쇰큺 李⑦듃 (HHDFS76240000).
         Returns: DataFrame columns: [open, high, low, close, volume] index=datetime
         """
         if not self._ensure_token():
@@ -415,16 +415,16 @@ class KISTrader:
 
         url = f"{self.base_url}/uapi/overseas-price/v1/quotations/dailyprice"
         all_rows = []
-        bymd = ""  # 빈 문자열 = 최신부터
+        bymd = ""  # 鍮?臾몄옄??= 理쒖떊遺??
 
-        for _ in range(100):  # 최대 10000일 (~27년)
+        for _ in range(100):  # 理쒕? 10000??(~27??
             params = {
                 "AUTH": "",
                 "EXCD": exchange,
                 "SYMB": symbol,
-                "GUBN": "0",   # 0=일별
+                "GUBN": "0",   # 0=?쇰퀎
                 "BYMD": bymd,
-                "MODP": "0",   # 수정주가
+                "MODP": "0",   # ?섏젙二쇨?
             }
 
             try:
@@ -458,14 +458,14 @@ class KISTrader:
                 if len(all_rows) >= count:
                     break
 
-                # 다음 페이지: 가장 오래된 날짜
+                # ?ㅼ쓬 ?섏씠吏: 媛???ㅻ옒???좎쭨
                 oldest = min(r.get("xymd", "99999999") for r in rows)
                 bymd = oldest
 
                 time.sleep(0.2)
 
             except Exception as e:
-                logger.error(f"해외 일봉 오류 ({symbol}): {e}")
+                logger.error(f"?댁쇅 ?쇰큺 ?ㅻ쪟 ({symbol}): {e}")
                 break
 
         if not all_rows:
@@ -477,16 +477,16 @@ class KISTrader:
         df = df[~df.index.duplicated(keep="first")]
         return df.tail(count)
 
-    # ─────────────────────────────────────────────────────
-    # 계좌
-    # ─────────────────────────────────────────────────────
+    # ?????????????????????????????????????????????????????
+    # 怨꾩쥖
+    # ?????????????????????????????????????????????????????
     def get_balance(self) -> dict | None:
         """
-        계좌 잔고 조회.
+        怨꾩쥖 ?붽퀬 議고쉶.
         Returns: {
-            "cash": float,          # 예수금 (주문가능현금)
-            "total_eval": float,    # 총 평가금액
-            "holdings": [           # 보유 종목 리스트
+            "cash": float,          # ?덉닔湲?(二쇰Ц媛?ν쁽湲?
+            "total_eval": float,    # 珥??됯?湲덉븸
+            "holdings": [           # 蹂댁쑀 醫낅ぉ 由ъ뒪??
                 {"code": str, "name": str, "qty": int, "avg_price": float,
                  "cur_price": float, "eval_amt": float, "pnl_rate": float}
             ]
@@ -517,47 +517,80 @@ class KISTrader:
                                     headers=self._headers(tr_id), timeout=10)
             data = res.json()
 
-            # API 응답 코드 확인
+            # API ?묐떟 肄붾뱶 ?뺤씤
             rt_cd = data.get("rt_cd", "")
             if rt_cd != "0":
                 msg_cd = data.get("msg_cd", "")
                 msg1 = data.get("msg1", "")
-                logger.error(f"잔고 조회 API 오류: rt_cd={rt_cd}, msg_cd={msg_cd}, msg1={msg1}")
+                logger.error(f"?붽퀬 議고쉶 API ?ㅻ쪟: rt_cd={rt_cd}, msg_cd={msg_cd}, msg1={msg1}")
                 return {"error": True, "msg_cd": msg_cd, "msg1": msg1, "rt_cd": rt_cd,
                         "cash": 0.0, "total_eval": 0.0, "holdings": []}
 
-            # 보유 종목
+            def _to_int(v, default=0):
+                try:
+                    return int(float(str(v).replace(",", "")))
+                except Exception:
+                    return default
+
+            def _to_num(v, default=0.0):
+                try:
+                    return float(str(v).replace(",", ""))
+                except Exception:
+                    return default
+
+            # 蹂댁쑀 醫낅ぉ
             holdings = []
             for item in data.get("output1", []):
-                qty = int(item.get("hldg_qty", 0))
+                qty = _to_int(item.get("hldg_qty", 0), 0)
                 if qty <= 0:
                     continue
                 holdings.append({
                     "code": item.get("pdno", ""),
                     "name": item.get("prdt_name", ""),
                     "qty": qty,
-                    "avg_price": float(item.get("pchs_avg_pric", 0)),
-                    "cur_price": float(item.get("prpr", 0)),
-                    "eval_amt": float(item.get("evlu_amt", 0)),
-                    "pnl_rate": float(item.get("evlu_pfls_rt", 0)),
+                    "avg_price": _to_num(item.get("pchs_avg_pric", 0), 0.0),
+                    "cur_price": _to_num(item.get("prpr", 0), 0.0),
+                    "eval_amt": _to_num(item.get("evlu_amt", 0), 0.0),
+                    "pnl_rate": _to_num(item.get("evlu_pfls_rt", 0), 0.0),
                 })
 
-            # 계좌 요약
+            # 怨꾩쥖 ?붿빟
             output2 = data.get("output2", [{}])
             summary = output2[0] if output2 else {}
 
+            def _first_num(keys, default=0.0):
+                for k in keys:
+                    if k in summary:
+                        val = _to_num(summary.get(k), None)
+                        if val is not None:
+                            return float(val)
+                return float(default)
+
+            cash = _first_num(["dnca_tot_amt"], 0.0)
+            buyable_cash = _first_num(
+                ["ord_psbl_cash", "ord_psbl_amt", "buy_psbl_cash", "nrcvb_buy_amt", "dnca_tot_amt"],
+                cash,
+            )
+            holdings_eval = sum(_to_num(h.get("eval_amt", 0.0), 0.0) for h in holdings)
+            stock_eval_api = _first_num(["scts_evlu_amt", "stck_evlu_amt", "tot_stln_slng_chgs"], holdings_eval)
+            stock_eval = max(stock_eval_api, holdings_eval)
+            total_eval_raw = _first_num(["tot_asst_amt", "tot_evlu_amt", "scts_evlu_amt"], 0.0)
+            total_eval = max(total_eval_raw, cash + stock_eval)
+
             return {
-                "cash": float(summary.get("dnca_tot_amt", 0)),
-                "total_eval": float(summary.get("tot_evlu_amt", 0)),
+                "cash": float(cash),
+                "buyable_cash": float(buyable_cash),
+                "stock_eval": float(stock_eval),
+                "total_eval": float(total_eval),
                 "holdings": holdings,
             }
 
         except Exception as e:
-            logger.error(f"잔고 조회 오류: {e}")
+            logger.error(f"?붽퀬 議고쉶 ?ㅻ쪟: {e}")
             return None
 
     def get_holding_qty(self, stock_code: str) -> int:
-        """특정 종목 보유 수량 조회."""
+        """?뱀젙 醫낅ぉ 蹂댁쑀 ?섎웾 議고쉶."""
         bal = self.get_balance()
         if not bal:
             return 0
@@ -566,20 +599,20 @@ class KISTrader:
                 return h["qty"]
         return 0
 
-    # ─────────────────────────────────────────────────────
-    # 주문
-    # ─────────────────────────────────────────────────────
+    # ?????????????????????????????????????????????????????
+    # 二쇰Ц
+    # ?????????????????????????????????????????????????????
     def send_order(self, order_type: str, stock_code: str, qty: int,
                    price: int = 0, ord_dvsn: str = "01") -> dict | None:
         """
-        국내주식/ETF 매수/매도 주문.
+        援?궡二쇱떇/ETF 留ㅼ닔/留ㅻ룄 二쇰Ц.
 
         Args:
-            order_type: "BUY" 또는 "SELL"
-            stock_code: 종목코드 (6자리)
-            qty: 주문 수량
-            price: 주문 가격 (시장가일 때 0)
-            ord_dvsn: "00"=지정가, "01"=시장가
+            order_type: "BUY" ?먮뒗 "SELL"
+            stock_code: 醫낅ぉ肄붾뱶 (6?먮━)
+            qty: 二쇰Ц ?섎웾
+            price: 二쇰Ц 媛寃?(?쒖옣媛????0)
+            ord_dvsn: "00"=吏?뺢?, "01"=?쒖옣媛
         """
         if not self._ensure_token():
             return None
@@ -601,7 +634,7 @@ class KISTrader:
             "ORD_UNPR": str(price) if price > 0 else "0",
         }
 
-        # hashkey 생성
+        # hashkey ?앹꽦
         hashkey = self._hashkey(body)
         headers = self._headers(tr_id, {"hashkey": hashkey})
 
@@ -615,19 +648,19 @@ class KISTrader:
             if rt_cd == "0":
                 output = data.get("output", {})
                 ord_no = output.get("ODNO", "")
-                logger.info(f"[{order_type}] 주문 성공: {stock_code} {qty}주, 주문번호={ord_no}")
+                logger.info(f"[{order_type}] 二쇰Ц ?깃났: {stock_code} {qty}二? 二쇰Ц踰덊샇={ord_no}")
                 return {"success": True, "ord_no": ord_no, "msg": msg}
             else:
-                logger.error(f"[{order_type}] 주문 실패: {msg}")
+                logger.error(f"[{order_type}] 二쇰Ц ?ㅽ뙣: {msg}")
                 return {"success": False, "msg": msg}
 
         except Exception as e:
-            logger.error(f"주문 오류: {e}")
+            logger.error(f"二쇰Ц ?ㅻ쪟: {e}")
             return None
 
     def cancel_order(self, org_ord_no: str, stock_code: str, qty: int = 0,
                      cancel_all: bool = True) -> dict | None:
-        """국내주식 주문 취소."""
+        """援?궡二쇱떇 二쇰Ц 痍⑥냼."""
         if not self._ensure_token():
             return None
         cano, prdt = self._account_params()
@@ -641,7 +674,7 @@ class KISTrader:
             "KRX_FWDG_ORD_ORGNO": "",
             "ORGN_ODNO": org_ord_no,
             "ORD_DVSN": "00",
-            "RVSE_CNCL_DVSN_CD": "02",  # 02=취소
+            "RVSE_CNCL_DVSN_CD": "02",  # 02=痍⑥냼
             "ORD_QTY": "0" if cancel_all else str(qty),
             "ORD_UNPR": "0",
             "QTY_ALL_ORD_YN": "Y" if cancel_all else "N",
@@ -655,42 +688,42 @@ class KISTrader:
             data = res.json()
             rt_cd = data.get("rt_cd", "")
             msg = data.get("msg1", "")
-            logger.info(f"취소 결과: rt_cd={rt_cd}, msg={msg}")
+            logger.info(f"痍⑥냼 寃곌낵: rt_cd={rt_cd}, msg={msg}")
             return {"success": rt_cd == "0", "msg": msg}
         except Exception as e:
-            logger.error(f"취소 오류: {e}")
+            logger.error(f"痍⑥냼 ?ㅻ쪟: {e}")
             return None
 
-    # ─────────────────────────────────────────────────────
-    # 스마트 매수/매도 (간단 래퍼)
-    # ─────────────────────────────────────────────────────
+    # ?????????????????????????????????????????????????????
+    # ?ㅻ쭏??留ㅼ닔/留ㅻ룄 (媛꾨떒 ?섑띁)
+    # ?????????????????????????????????????????????????????
     def smart_buy_krw(self, stock_code: str, krw_amount: float) -> dict | None:
-        """KRW 금액 기준 시장가 매수."""
+        """KRW 湲덉븸 湲곗? ?쒖옣媛 留ㅼ닔."""
         price = self.get_current_price(stock_code)
         if not price or price <= 0:
-            logger.error(f"매수 실패: {stock_code} 현재가 조회 불가")
+            logger.error(f"留ㅼ닔 ?ㅽ뙣: {stock_code} ?꾩옱媛 議고쉶 遺덇?")
             return None
 
         qty = int(krw_amount / price)
         if qty <= 0:
-            logger.info(f"매수 불가: {stock_code} 금액 부족 ({krw_amount:,.0f}원, 현재가={price:,.0f}원)")
+            logger.info(f"留ㅼ닔 遺덇?: {stock_code} 湲덉븸 遺議?({krw_amount:,.0f}?? ?꾩옱媛={price:,.0f}??")
             return None
 
-        logger.info(f"시장가 매수: {stock_code} {qty}주 (≈{qty * price:,.0f}원)")
+        logger.info(f"시장가 매수: {stock_code} {qty}주 (약 {qty * price:,.0f}원)")
         return self.send_order("BUY", stock_code, qty, ord_dvsn="01")
 
     def smart_sell_all(self, stock_code: str) -> dict | None:
-        """보유 수량 전량 시장가 매도."""
+        """蹂댁쑀 ?섎웾 ?꾨웾 ?쒖옣媛 留ㅻ룄."""
         qty = self.get_holding_qty(stock_code)
         if qty <= 0:
-            logger.info(f"매도 불가: {stock_code} 보유 없음")
+            logger.info(f"留ㅻ룄 遺덇?: {stock_code} 蹂댁쑀 ?놁쓬")
             return None
 
         logger.info(f"전량 시장가 매도: {stock_code} {qty}주")
         return self.send_order("SELL", stock_code, qty, ord_dvsn="01")
 
     def smart_sell_qty(self, stock_code: str, qty: int) -> dict | None:
-        """지정 수량 시장가 매도."""
+        """吏???섎웾 ?쒖옣媛 留ㅻ룄."""
         holding = self.get_holding_qty(stock_code)
         qty = min(qty, holding)
         if qty <= 0:
@@ -699,13 +732,13 @@ class KISTrader:
         logger.info(f"시장가 매도: {stock_code} {qty}/{holding}주")
         return self.send_order("SELL", stock_code, qty, ord_dvsn="01")
 
-    # ─────────────────────────────────────────────────────
-    # 미체결 조회
-    # ─────────────────────────────────────────────────────
+    # ?????????????????????????????????????????????????????
+    # 誘몄껜寃?議고쉶
+    # ?????????????????????????????????????????????????????
     def get_pending_orders(self, stock_code: str = "") -> list:
         """
-        미체결(정정/취소 가능) 주문 조회.
-        TR: TTTC8036R(실전) / VTTC8036R(모의)
+        誘몄껜寃??뺤젙/痍⑥냼 媛?? 二쇰Ц 議고쉶.
+        TR: TTTC8036R(?ㅼ쟾) / VTTC8036R(紐⑥쓽)
         """
         if not self._ensure_token():
             return []
@@ -728,7 +761,7 @@ class KISTrader:
             res = self._session.get(url, params=params, headers=headers, timeout=10)
             data = res.json()
             if data.get("rt_cd") != "0":
-                logger.debug(f"미체결조회: {data.get('msg1', '')}")
+                logger.debug(f"誘몄껜寃곗“?? {data.get('msg1', '')}")
                 return []
 
             result = []
@@ -752,14 +785,14 @@ class KISTrader:
             return result
 
         except Exception as e:
-            logger.error(f"미체결조회 오류: {e}")
+            logger.error(f"誘몄껜寃곗“???ㅻ쪟: {e}")
             return []
 
-    # ─────────────────────────────────────────────────────
-    # 장마감 동시호가 + 시간외 재주문
-    # ─────────────────────────────────────────────────────
+    # ?????????????????????????????????????????????????????
+    # ?λ쭏媛??숈떆?멸? + ?쒓컙???ъ＜臾?
+    # ?????????????????????????????????????????????????????
     def _get_limit_price(self, stock_code: str, order_type: str) -> int:
-        """동시호가 체결 보장을 위한 상한가(BUY)/하한가(SELL) 계산."""
+        """?숈떆?멸? 泥닿껐 蹂댁옣???꾪븳 ?곹븳媛(BUY)/?섑븳媛(SELL) 怨꾩궛."""
         price = self.get_current_price(stock_code)
         if not price or price <= 0:
             return 0
@@ -769,7 +802,7 @@ class KISTrader:
         else:
             raw = int(price * 0.70)
 
-        # ETF 호가단위 정렬
+        # ETF ?멸??⑥쐞 ?뺣젹
         if raw < 5000:
             tick = 5
         elif raw < 10000:
@@ -786,33 +819,33 @@ class KISTrader:
 
     def execute_closing_auction_buy(self, stock_code: str, qty: int) -> dict:
         """
-        장마감 동시호가 매수 + 미체결 시 시간외 재주문.
-        1. 상한가 지정가 주문 (ord_dvsn="00") → 동시호가 참여
-        2. 60초 대기 후 미체결 확인
-        3. 미체결 → 취소 → 시간외(ord_dvsn="06") 재주문
+        ?λ쭏媛??숈떆?멸? 留ㅼ닔 + 誘몄껜寃????쒓컙???ъ＜臾?
+        1. ?곹븳媛 吏?뺢? 二쇰Ц (ord_dvsn="00") ???숈떆?멸? 李몄뿬
+        2. 60珥??湲???誘몄껜寃??뺤씤
+        3. 誘몄껜寃???痍⑥냼 ???쒓컙??ord_dvsn="06") ?ъ＜臾?
         """
         import time as _time
 
         if qty <= 0:
-            return {"success": False, "msg": "수량 0"}
+            return {"success": False, "msg": "?섎웾 0"}
 
         limit_price = self._get_limit_price(stock_code, "BUY")
         if limit_price <= 0:
-            return {"success": False, "msg": "현재가 조회 실패"}
+            return {"success": False, "msg": "?꾩옱媛 議고쉶 ?ㅽ뙣"}
 
         logger.info(f"[동시호가 매수] {stock_code} {qty}주 @ 상한가 {limit_price:,}원")
         phase1 = self.send_order("BUY", stock_code, qty, price=limit_price, ord_dvsn="00")
 
         if not phase1 or not phase1.get("success"):
-            logger.error(f"[동시호가 매수] 주문 실패: {phase1}")
+            logger.error(f"[?숈떆?멸? 留ㅼ닔] 二쇰Ц ?ㅽ뙣: {phase1}")
             return {"success": False, "phase1_result": phase1, "filled_qty": 0,
                     "remaining_qty": qty, "method": "closing_auction_failed"}
 
         ord_no = phase1.get("ord_no", "")
-        logger.info(f"[동시호가 매수] 주문 접수. 주문번호={ord_no}. 체결 대기 60초...")
+        logger.info(f"[?숈떆?멸? 留ㅼ닔] 二쇰Ц ?묒닔. 二쇰Ц踰덊샇={ord_no}. 泥닿껐 ?湲?60珥?..")
         _time.sleep(60)
 
-        # 미체결 확인
+        # 誘몄껜寃??뺤씤
         pending = self.get_pending_orders(stock_code)
         unfilled = [p for p in pending if p["ord_no"] == ord_no and p["remaining_qty"] > 0]
 
@@ -823,20 +856,20 @@ class KISTrader:
 
         remaining = unfilled[0]["remaining_qty"]
         filled = qty - remaining
-        logger.info(f"[동시호가 매수] 미체결 {remaining}주 (체결 {filled}주). 취소 후 시간외 재주문...")
+        logger.info(f"[동시호가 매수] 미체결 {remaining}주 (체결 {filled}주). 취소 후 시간외 재주문")
 
         cancel_result = self.cancel_order(ord_no, stock_code)
         _time.sleep(3)
 
         if not cancel_result or not cancel_result.get("success"):
-            logger.error(f"[동시호가 매수] 취소 실패: {cancel_result}")
+            logger.error(f"[?숈떆?멸? 留ㅼ닔] 痍⑥냼 ?ㅽ뙣: {cancel_result}")
             return {"success": False, "phase1_result": phase1, "phase2_result": None,
                     "filled_qty": filled, "remaining_qty": remaining, "method": "cancel_failed"}
 
-        # 시간외 종가 재주문 (ord_dvsn="06", price=0)
-        logger.info(f"[시간외 매수] {stock_code} {remaining}주 (ord_dvsn=06)")
+        # ?쒓컙??醫낃? ?ъ＜臾?(ord_dvsn="06", price=0)
+        logger.info(f"[?쒓컙??留ㅼ닔] {stock_code} {remaining}二?(ord_dvsn=06)")
         phase2 = self.send_order("BUY", stock_code, remaining, price=0, ord_dvsn="06")
-        logger.info(f"[시간외 매수] 결과: {phase2}")
+        logger.info(f"[?쒓컙??留ㅼ닔] 寃곌낵: {phase2}")
 
         return {"success": True, "phase1_result": phase1, "phase2_result": phase2,
                 "filled_qty": filled, "remaining_qty": remaining,
@@ -844,30 +877,30 @@ class KISTrader:
 
     def execute_closing_auction_sell(self, stock_code: str, qty: int) -> dict:
         """
-        장마감 동시호가 매도 + 미체결 시 시간외 재주문.
-        1. 하한가 지정가 주문 (ord_dvsn="00") → 동시호가 참여
-        2. 60초 대기 후 미체결 확인
-        3. 미체결 → 취소 → 시간외(ord_dvsn="06") 재주문
+        ?λ쭏媛??숈떆?멸? 留ㅻ룄 + 誘몄껜寃????쒓컙???ъ＜臾?
+        1. ?섑븳媛 吏?뺢? 二쇰Ц (ord_dvsn="00") ???숈떆?멸? 李몄뿬
+        2. 60珥??湲???誘몄껜寃??뺤씤
+        3. 誘몄껜寃???痍⑥냼 ???쒓컙??ord_dvsn="06") ?ъ＜臾?
         """
         import time as _time
 
         if qty <= 0:
-            return {"success": False, "msg": "수량 0"}
+            return {"success": False, "msg": "?섎웾 0"}
 
         limit_price = self._get_limit_price(stock_code, "SELL")
         if limit_price <= 0:
-            return {"success": False, "msg": "현재가 조회 실패"}
+            return {"success": False, "msg": "?꾩옱媛 議고쉶 ?ㅽ뙣"}
 
         logger.info(f"[동시호가 매도] {stock_code} {qty}주 @ 하한가 {limit_price:,}원")
         phase1 = self.send_order("SELL", stock_code, qty, price=limit_price, ord_dvsn="00")
 
         if not phase1 or not phase1.get("success"):
-            logger.error(f"[동시호가 매도] 주문 실패: {phase1}")
+            logger.error(f"[?숈떆?멸? 留ㅻ룄] 二쇰Ц ?ㅽ뙣: {phase1}")
             return {"success": False, "phase1_result": phase1, "filled_qty": 0,
                     "remaining_qty": qty, "method": "closing_auction_failed"}
 
         ord_no = phase1.get("ord_no", "")
-        logger.info(f"[동시호가 매도] 주문 접수. 주문번호={ord_no}. 체결 대기 60초...")
+        logger.info(f"[동시호가 매도] 주문 접수. 주문번호={ord_no}. 체결 대기 60초")
         _time.sleep(60)
 
         pending = self.get_pending_orders(stock_code)
@@ -880,7 +913,7 @@ class KISTrader:
 
         remaining = unfilled[0]["remaining_qty"]
         filled = qty - remaining
-        logger.info(f"[동시호가 매도] 미체결 {remaining}주 (체결 {filled}주). 취소 후 시간외 재주문...")
+        logger.info(f"[동시호가 매도] 미체결 {remaining}주 (체결 {filled}주). 취소 후 시간외 재주문")
 
         cancel_result = self.cancel_order(ord_no, stock_code)
         _time.sleep(3)
@@ -898,23 +931,23 @@ class KISTrader:
                 "filled_qty": filled, "remaining_qty": remaining,
                 "method": "closing_auction+after_hours"}
 
-    # ─────────────────────────────────────────────────────
-    # 동시호가 스마트 래퍼
-    # ─────────────────────────────────────────────────────
+    # ?????????????????????????????????????????????????????
+    # ?숈떆?멸? ?ㅻ쭏???섑띁
+    # ?????????????????????????????????????????????????????
     def smart_buy_krw_closing(self, stock_code: str, krw_amount: float) -> dict | None:
-        """KRW 금액 기준 동시호가 매수."""
+        """KRW 湲덉븸 湲곗? ?숈떆?멸? 留ㅼ닔."""
         price = self.get_current_price(stock_code)
         if not price or price <= 0:
-            logger.error(f"동시호가 매수 실패: {stock_code} 현재가 조회 불가")
+            logger.error(f"?숈떆?멸? 留ㅼ닔 ?ㅽ뙣: {stock_code} ?꾩옱媛 議고쉶 遺덇?")
             return None
         qty = int(krw_amount / price)
         if qty <= 0:
-            logger.info(f"동시호가 매수 불가: 금액 부족 ({krw_amount:,.0f}원)")
+            logger.info(f"?숈떆?멸? 留ㅼ닔 遺덇?: 湲덉븸 遺議?({krw_amount:,.0f}??")
             return None
         return self.execute_closing_auction_buy(stock_code, qty)
 
     def smart_sell_qty_closing(self, stock_code: str, qty: int) -> dict | None:
-        """지정 수량 동시호가 매도."""
+        """吏???섎웾 ?숈떆?멸? 留ㅻ룄."""
         holding = self.get_holding_qty(stock_code)
         qty = min(qty, holding)
         if qty <= 0:
@@ -922,17 +955,39 @@ class KISTrader:
         return self.execute_closing_auction_sell(stock_code, qty)
 
     def smart_sell_all_closing(self, stock_code: str) -> dict | None:
-        """전량 동시호가 매도."""
+        """?꾨웾 ?숈떆?멸? 留ㅻ룄."""
         qty = self.get_holding_qty(stock_code)
         if qty <= 0:
-            logger.info(f"동시호가 매도 불가: {stock_code} 보유 없음")
+            logger.info(f"?숈떆?멸? 留ㅻ룄 遺덇?: {stock_code} 蹂댁쑀 ?놁쓬")
             return None
         return self.execute_closing_auction_sell(stock_code, qty)
+    def smart_buy_krw_after_hours(self, stock_code: str, krw_amount: float) -> dict | None:
+        """KRW 금액 기준 시간외단일가(16:00~18:00) 매수."""
+        price = self.get_current_price(stock_code)
+        if not price or price <= 0:
+            logger.error(f"시간외단일가 매수 실패: {stock_code} 현재가 조회 불가")
+            return None
+        qty = int(krw_amount / price)
+        if qty <= 0:
+            logger.info(f"시간외단일가 매수 불가: 금액 부족 ({krw_amount:,.0f}원)")
+            return None
+        logger.info(f"[시간외단일가 매수] {stock_code} {qty}주")
+        return self.send_order("BUY", stock_code, qty, price=0, ord_dvsn="06")
+
+    def smart_sell_qty_after_hours(self, stock_code: str, qty: int) -> dict | None:
+        """지정 수량 시간외단일가(16:00~18:00) 매도."""
+        holding = self.get_holding_qty(stock_code)
+        qty = min(int(qty), int(holding))
+        if qty <= 0:
+            logger.info(f"시간외단일가 매도 불가: {stock_code} 보유 수량 없음")
+            return None
+        logger.info(f"[시간외단일가 매도] {stock_code} {qty}주")
+        return self.send_order("SELL", stock_code, qty, price=0, ord_dvsn="06")
 
 
-# ─────────────────────────────────────────────────────────
-# 테스트
-# ─────────────────────────────────────────────────────────
+# ?????????????????????????????????????????????????????????
+# ?뚯뒪??
+# ?????????????????????????????????????????????????????????
 if __name__ == "__main__":
     load_dotenv()
     trader = KISTrader(is_mock=False)
@@ -959,8 +1014,9 @@ if __name__ == "__main__":
     bal = trader.get_balance()
     if bal:
         print(f"  예수금: {bal['cash']:,.0f}원")
-        print(f"  총 평가: {bal['total_eval']:,.0f}원")
+        print(f"  총평가: {bal['total_eval']:,.0f}원")
         for h in bal["holdings"]:
             print(f"  {h['name']}({h['code']}): {h['qty']}주 @ {h['cur_price']:,.0f}원")
     else:
         print("  잔고 조회 실패")
+

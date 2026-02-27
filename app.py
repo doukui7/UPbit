@@ -131,6 +131,13 @@ def _get_runtime_value(keys, default=""):
 
 def _safe_float(v, default=0.0):
     try:
+        if isinstance(v, str):
+            s = v.strip().replace(",", "")
+            if s.endswith("%"):
+                s = s[:-1]
+            if s in ("", "-", "--", "None", "null"):
+                return default
+            return float(s)
         return float(v)
     except Exception:
         return default
@@ -141,6 +148,48 @@ def _safe_int(v, default=0):
         return int(float(v))
     except Exception:
         return default
+
+
+def _compute_kis_balance_summary(balance: dict | None) -> dict:
+    bal = balance or {}
+    holdings = bal.get("holdings", []) or []
+    cash = _safe_float(bal.get("cash", 0.0), 0.0)
+    buyable_cash = _safe_float(bal.get("buyable_cash", cash), cash)
+    holdings_eval = sum(_safe_float(h.get("eval_amt", 0.0), 0.0) for h in holdings)
+    stock_eval_api = _safe_float(bal.get("stock_eval", 0.0), 0.0)
+    stock_eval = max(stock_eval_api, holdings_eval)
+    total_eval_api = _safe_float(bal.get("total_eval", 0.0), 0.0)
+    # KIS 응답 필드 해석 차이를 대비해 보유평가 합산 기반 값을 하한으로 사용
+    total_eval = max(total_eval_api, cash + stock_eval)
+    return {
+        "cash": cash,
+        "buyable_cash": buyable_cash,
+        "holdings": holdings,
+        "stock_eval": stock_eval,
+        "total_eval": total_eval,
+    }
+
+
+def _format_kis_holdings_df(holdings: list[dict]) -> pd.DataFrame:
+    df_h = pd.DataFrame(holdings or [])
+    if df_h.empty:
+        return df_h
+
+    col_order = ["code", "name", "qty", "avg_price", "cur_price", "eval_amt", "pnl_rate"]
+    cols = [c for c in col_order if c in df_h.columns]
+    df_h = df_h[cols].copy()
+    df_h = df_h.rename(
+        columns={
+            "code": "종목코드",
+            "name": "종목명",
+            "qty": "보유수량",
+            "avg_price": "평균단가",
+            "cur_price": "현재가",
+            "eval_amt": "평가금액",
+            "pnl_rate": "손익률(%)",
+        }
+    )
+    return df_h
 
 
 def _interval_label(api_key: str) -> str:
@@ -3137,21 +3186,20 @@ def render_kis_isa_mode():
             st.error(f"잔고 조회 API 오류: [{bal.get('msg_cd', '')}] {bal.get('msg1', '알 수 없는 오류')}")
             st.info(f"계좌: {kis_acct} / 상품코드: {kis_prdt} / rt_cd: {bal.get('rt_cd', '')}")
         else:
-            cash = float(bal.get("cash", 0.0))
-            holdings = bal.get("holdings", []) or []
-            total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
-            stock_eval = total_eval - cash
+            _bal_sum = _compute_kis_balance_summary(bal)
+            buyable_cash = _bal_sum["buyable_cash"]
+            holdings = _bal_sum["holdings"]
+            stock_eval = _bal_sum["stock_eval"]
+            total_eval = _bal_sum["total_eval"]
 
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("예수금", f"{cash:,.0f} KRW")
+            m1.metric("매수 가능금액", f"{buyable_cash:,.0f} KRW")
             m2.metric("주식 평가", f"{stock_eval:,.0f} KRW")
             m3.metric("총 평가", f"{total_eval:,.0f} KRW")
             m4.metric("보유 종목 수", f"{len(holdings)}")
 
             if holdings:
-                df_h = pd.DataFrame(holdings)
-                cols = [c for c in ["code", "name", "qty", "avg_price", "cur_price", "eval_amt", "pnl_rate"] if c in df_h.columns]
-                st.dataframe(df_h[cols], use_container_width=True, hide_index=True)
+                st.dataframe(_format_kis_holdings_df(holdings), use_container_width=True, hide_index=True)
 
         st.divider()
 
@@ -3700,8 +3748,10 @@ def render_kis_isa_mode():
         if not bal:
             st.warning("잔고를 먼저 조회해 주세요. (모니터링 탭에서 잔고 새로고침)")
         else:
-            cash = float(bal.get("cash", 0.0))
-            holdings = bal.get("holdings", []) or []
+            _bal_sum = _compute_kis_balance_summary(bal)
+            cash = _bal_sum["cash"]
+            buyable_cash = _bal_sum["buyable_cash"]
+            holdings = _bal_sum["holdings"]
             etf_holding = next((h for h in holdings if str(h.get("code", "")) == str(isa_etf_code)), None)
             holding_qty = int(etf_holding.get("qty", 0)) if etf_holding else 0
 
@@ -3711,10 +3761,10 @@ def render_kis_isa_mode():
             _isa_eval = _isa_cur * holding_qty if _isa_cur > 0 else 0
 
             ic1, ic2, ic3, ic4 = st.columns(4)
-            ic1.metric("현재가", f"{_isa_cur:,.0f}원" if _isa_cur > 0 else "–")
+            ic1.metric("현재가", f"{_isa_cur:,.0f}원" if _isa_cur > 0 else "-")
             ic2.metric(f"{_fmt_etf_code_name(isa_etf_code)} 보유", f"{holding_qty}주")
             ic3.metric("평가금액", f"{_isa_eval:,.0f}원")
-            ic4.metric("예수금", f"{cash:,.0f}원")
+            ic4.metric("매수 가능금액", f"{buyable_cash:,.0f}원")
 
             # ═══ 일봉 차트 (상단 전체폭) ═══
             _isa_chart_df = _get_isa_daily_chart(str(isa_etf_code), count=120)
@@ -3842,8 +3892,8 @@ def render_kis_isa_mode():
                     if st.button("매수 실행", key="isa_exec_buy", type="primary", disabled=IS_CLOUD):
                         if buy_qty <= 0:
                             st.error("매수 수량을 입력해 주세요.")
-                        elif _isa_total > cash:
-                            st.error(f"예수금 부족 (필요: {_isa_total:,}원 / 예수금: {cash:,.0f}원)")
+                        elif _isa_total > buyable_cash:
+                            st.error(f"매수 가능금액 부족 (필요: {_isa_total:,}원 / 가능: {buyable_cash:,.0f}원)")
                         else:
                             with st.spinner("매수 주문 실행 중..."):
                                 if buy_method == "동시호가 (장마감)":
@@ -4911,21 +4961,20 @@ def render_kis_pension_mode():
             st.error(f"잔고 조회 API 오류: [{bal.get('msg_cd', '')}] {bal.get('msg1', '알 수 없는 오류')}")
             st.info(f"계좌: {kis_acct} / 상품코드: {kis_prdt} / rt_cd: {bal.get('rt_cd', '')}")
         else:
-            cash = float(bal.get("cash", 0.0))
-            holdings = bal.get("holdings", []) or []
-            total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
-            stock_eval = total_eval - cash
+            _bal_sum = _compute_kis_balance_summary(bal)
+            buyable_cash = _bal_sum["buyable_cash"]
+            holdings = _bal_sum["holdings"]
+            stock_eval = _bal_sum["stock_eval"]
+            total_eval = _bal_sum["total_eval"]
 
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("예수금", f"{cash:,.0f} KRW")
+            m1.metric("매수 가능금액", f"{buyable_cash:,.0f} KRW")
             m2.metric("주식 평가", f"{stock_eval:,.0f} KRW")
             m3.metric("총 평가", f"{total_eval:,.0f} KRW")
             m4.metric("보유 종목 수", f"{len(holdings)}")
 
             if holdings:
-                df_h = pd.DataFrame(holdings)
-                cols = [c for c in ["code", "name", "qty", "avg_price", "cur_price", "eval_amt", "pnl_rate"] if c in df_h.columns]
-                st.dataframe(df_h[cols], use_container_width=True, hide_index=True)
+                st.dataframe(_format_kis_holdings_df(holdings), use_container_width=True, hide_index=True)
 
         st.divider()
 
@@ -6347,8 +6396,10 @@ def render_kis_pension_mode():
         if not bal:
             st.warning("잔고를 먼저 조회해 주세요.")
         else:
-            cash = float(bal.get("cash", 0.0))
-            holdings = bal.get("holdings", []) or []
+            _bal_sum = _compute_kis_balance_summary(bal)
+            cash = _bal_sum["cash"]
+            buyable_cash = _bal_sum["buyable_cash"]
+            holdings = _bal_sum["holdings"]
 
             # 매매 대상 ETF 선택 (활성 전략 전체 반영)
             all_etf_codes = []
@@ -6377,10 +6428,10 @@ def render_kis_pension_mode():
             _pen_eval = _pen_cur * pen_qty if _pen_cur > 0 else 0
 
             pc1, pc2, pc3, pc4 = st.columns(4)
-            pc1.metric("현재가", f"{_pen_cur:,.0f}원" if _pen_cur > 0 else "–")
+            pc1.metric("현재가", f"{_pen_cur:,.0f}원" if _pen_cur > 0 else "-")
             pc2.metric(f"{_fmt_etf_code_name(selected_pen_etf)} 보유", f"{pen_qty}주")
             pc3.metric("평가금액", f"{_pen_eval:,.0f}원")
-            pc4.metric("예수금", f"{cash:,.0f}원")
+            pc4.metric("매수 가능금액", f"{buyable_cash:,.0f}원")
 
             # ═══ 일봉 차트 (상단 전체폭) ═══
             _pen_chart_df = _get_pen_daily_chart(str(selected_pen_etf), count=120)
@@ -6508,6 +6559,8 @@ def render_kis_pension_mode():
                     if st.button("매수 실행", key="pen_exec_buy", type="primary", disabled=IS_CLOUD):
                         if pen_buy_amt <= 0:
                             st.error("매수 금액을 입력해 주세요.")
+                        elif _pen_total > buyable_cash:
+                            st.error(f"매수 가능금액 부족 (필요: {_pen_total:,}원 / 가능: {buyable_cash:,.0f}원)")
                         else:
                             with st.spinner("매수 주문 실행 중..."):
                                 if pen_buy_method == "동시호가 (장마감)":

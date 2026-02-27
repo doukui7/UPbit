@@ -607,7 +607,7 @@ def run_kiwoom_gold_trade():
 
     # 장 시간 확인
     if not _is_market_hours():
-        logger.info("장 시간 외 (09:00~16:00 KST). 매매 생략.")
+        logger.info("장 시간 외 (09:00~15:30, 16:00~18:00 KST). 매매 생략.")
         return
 
     # 트레이더 초기화 & 인증
@@ -757,20 +757,96 @@ def _is_kr_market_hours() -> bool:
     return market_open <= now <= market_close
 
 
-def _is_kr_order_window() -> bool:
-    """KST 09:00~16:00 주문 가능 시간 확인.
+def _get_kr_order_phase(now_kst: datetime | None = None) -> str:
+    """?? ?? ?? ??.
 
-    동시호가(15:20~15:30) + 시간외 종가(~16:00)까지 허용.
-    GitHub Actions 크론 지연(최대 ~1시간) 대응.
+    regular: 09:00~15:20
+    closing_auction: 15:20~15:30
+    after_hours: 16:00~18:00 (??????)
+    closed: ? ? ??/??
     """
     kst = timezone(timedelta(hours=9))
-    now = datetime.now(kst)
+    now = now_kst or datetime.now(kst)
     if now.weekday() >= 5:
-        return False
-    order_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
-    order_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
-    return order_open <= now <= order_close
+        return "closed"
 
+    t = now.time()
+    if datetime.strptime("09:00", "%H:%M").time() <= t < datetime.strptime("15:20", "%H:%M").time():
+        return "regular"
+    if datetime.strptime("15:20", "%H:%M").time() <= t < datetime.strptime("15:30", "%H:%M").time():
+        return "closing_auction"
+    if datetime.strptime("16:00", "%H:%M").time() <= t < datetime.strptime("18:00", "%H:%M").time():
+        return "after_hours"
+    return "closed"
+
+
+def _is_kr_order_window() -> bool:
+    return _get_kr_order_phase() != "closed"
+
+
+def _kr_order_phase_label(phase: str) -> str:
+    return {
+        "regular": "???",
+        "closing_auction": "????",
+        "after_hours": "??????",
+        "closed": "????",
+    }.get(str(phase), str(phase))
+
+
+def _order_success(result) -> bool:
+    if not result:
+        return False
+    if isinstance(result, dict):
+        if "success" in result:
+            return bool(result.get("success"))
+        if "rt_cd" in result:
+            return str(result.get("rt_cd")) == "0"
+    return bool(result)
+
+
+def _execute_kis_sell_qty_by_phase(trader: KISTrader, code: str, qty: int, phase: str):
+    qty = int(qty or 0)
+    if qty <= 0:
+        return None
+    if phase == "regular":
+        return trader.smart_sell_qty(code, qty)
+    if phase == "closing_auction":
+        return trader.smart_sell_qty_closing(code, qty)
+    if phase == "after_hours":
+        if hasattr(trader, "smart_sell_qty_after_hours"):
+            return trader.smart_sell_qty_after_hours(code, qty)
+        return trader.send_order("SELL", code, qty, price=0, ord_dvsn="06")
+    return None
+
+
+def _execute_kis_buy_qty_by_phase(trader: KISTrader, code: str, qty: int, phase: str):
+    qty = int(qty or 0)
+    if qty <= 0:
+        return None
+    if phase == "regular":
+        return trader.send_order("BUY", code, qty, price=0, ord_dvsn="01")
+    if phase == "closing_auction":
+        return trader.execute_closing_auction_buy(code, qty)
+    if phase == "after_hours":
+        return trader.send_order("BUY", code, qty, price=0, ord_dvsn="06")
+    return None
+
+
+def _execute_kis_buy_amount_by_phase(trader: KISTrader, code: str, krw_amount: float, phase: str):
+    amount = float(krw_amount or 0.0)
+    if amount <= 0:
+        return None
+    if phase == "regular":
+        return trader.smart_buy_krw(code, amount)
+    if phase == "closing_auction":
+        return trader.smart_buy_krw_closing(code, amount)
+    if phase == "after_hours":
+        if hasattr(trader, "smart_buy_krw_after_hours"):
+            return trader.smart_buy_krw_after_hours(code, amount)
+        price = _get_kis_price_local_first(trader, code)
+        qty = int(amount / price) if price > 0 else 0
+        return trader.send_order("BUY", code, qty, price=0, ord_dvsn="06") if qty > 0 else None
+    return None
 
 def run_kis_isa_trade():
     """
@@ -789,10 +865,11 @@ def run_kis_isa_trade():
     load_dotenv()
     logger.info("=== KIS ISA 위대리(WDR) 자동매매 시작 ===")
 
-    if not _is_kr_order_window():
-        logger.info("국내 주문 가능 시간 외 (09:00~16:00 KST). 매매 생략.")
+    order_phase = _get_kr_order_phase()
+    if order_phase == "closed":
+        logger.info("?? ?? ?? ??? ???? (09:00~15:30, 16:00~18:00 KST). ??? ?????.")
         return
-
+    logger.info(f"?? ?? ??: {_kr_order_phase_label(order_phase)} ({order_phase})")
     isa_key = _get_env_any("KIS_ISA_APP_KEY", "KIS_APP_KEY")
     isa_secret = _get_env_any("KIS_ISA_APP_SECRET", "KIS_APP_SECRET")
     isa_account_raw = _get_env_any("KIS_ISA_ACCOUNT_NO", "KIS_ACCOUNT_NO")
@@ -987,20 +1064,24 @@ def run_kis_isa_trade():
     # ── 6. 매매 실행 ──
     if order_action == 'SELL' and order_qty > 0:
         sell_value = order_qty * current_price
-        logger.info(f"[SELL] {etf_code} {order_qty}주 "
-                    f"(≈{sell_value:,.0f}원) 동시호가 매도")
-        result = trader.smart_sell_qty_closing(etf_code, order_qty)
-        logger.info(f"매도 결과: {result}")
+        logger.info(
+            f"[SELL] {etf_code} {order_qty}? "
+            f"(? {sell_value:,.0f}?, ??={_kr_order_phase_label(order_phase)})"
+        )
+        result = _execute_kis_sell_qty_by_phase(trader, etf_code, order_qty, order_phase)
+        logger.info(f"?? ??: {result}")
 
     elif order_action == 'BUY' and order_qty > 0:
         buy_value = order_qty * current_price
-        logger.info(f"[BUY] {etf_code} {order_qty}주 "
-                    f"(≈{buy_value:,.0f}원) 동시호가 매수")
-        result = trader.execute_closing_auction_buy(etf_code, order_qty)
-        logger.info(f"매수 결과: {result}")
+        logger.info(
+            f"[BUY] {etf_code} {order_qty}? "
+            f"(? {buy_value:,.0f}?, ??={_kr_order_phase_label(order_phase)})"
+        )
+        result = _execute_kis_buy_qty_by_phase(trader, etf_code, order_qty, order_phase)
+        logger.info(f"?? ??: {result}")
 
     else:
-        logger.info("[HOLD] 리밸런싱 불필요 또는 수량 0 - 유지")
+        logger.info("[HOLD] ???? ??? ?? ???? 0 - ??")
 
     logger.info("=== KIS ISA 위대리(WDR) 자동매매 완료 ===")
 
@@ -1110,7 +1191,7 @@ def _check_kiwoom_gold() -> dict:
 
         # 5. 가상주문 왕복 테스트 (하한가 매수 1g → 조회 → 취소)
         if not _is_kr_order_window():
-            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~16:00 KST)'
+            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~15:30, 16:00~18:00 KST)'
             return result
 
         limit_price = trader._get_limit_price(code, "SELL")  # 하한가 (체결 불가 가격)
@@ -1298,8 +1379,9 @@ def _check_kis_isa() -> dict:
             result['signal_msg'] = 'SKIP - 시그널 데이터 부족'
 
         # 5. 가상주문 왕복 테스트 (하한가 매수 1주 → 조회 → 취소)
-        if not _is_kr_order_window():
-            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~16:00 KST)'
+        order_phase = _get_kr_order_phase()
+        if order_phase == "closed":
+            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~15:30, 16:00~18:00 KST)'
             return result
 
         limit_price = trader._get_limit_price(etf_code, "SELL")  # 하한가
@@ -1307,7 +1389,10 @@ def _check_kis_isa() -> dict:
             result['order_msg'] = 'FAIL - 하한가 계산 실패'
             return result
 
-        order_result = trader.send_order("BUY", etf_code, qty=1, price=limit_price, ord_dvsn="00")
+        if order_phase == "after_hours":
+            order_result = trader.send_order("BUY", etf_code, qty=1, price=0, ord_dvsn="06")
+        else:
+            order_result = trader.send_order("BUY", etf_code, qty=1, price=limit_price, ord_dvsn="00")
         if not order_result or not order_result.get('success'):
             result['order_msg'] = f"FAIL - 주문 실패: {order_result}"
             return result
@@ -1974,10 +2059,11 @@ def run_kis_pension_trade():
     load_dotenv()
     logger.info("=== KIS 연금저축 LAA 자동매매 시작 ===")
 
-    if not _is_kr_order_window():
-        logger.info("국내 주문 가능 시간이 아닙니다(09:00~16:00 KST). 매매를 생략합니다.")
+    order_phase = _get_kr_order_phase()
+    if order_phase == "closed":
+        logger.info("?? ?? ?? ??? ???? (09:00~15:30, 16:00~18:00 KST). ??? ?????.")
         return
-
+    logger.info(f"?? ?? ??: {_kr_order_phase_label(order_phase)} ({order_phase})")
     pension_key = _get_env_any("KIS_PENSION_APP_KEY", "KIS_APP_KEY")
     pension_secret = _get_env_any("KIS_PENSION_APP_SECRET", "KIS_APP_SECRET")
     pension_acct_raw = _get_env_any("KIS_PENSION_ACCOUNT_NO", "KIS_ACCOUNT_NO")
@@ -2065,8 +2151,8 @@ def run_kis_pension_trade():
         qty = min(qty, int(current_qty.get(code, 0)))
         if qty <= 0:
             continue
-        result = trader.smart_sell_qty_closing(code, qty)
-        actions.append(f"SELL {code} {qty}주 ({'OK' if result else 'FAIL'})")
+        result = _execute_kis_sell_qty_by_phase(trader, code, qty, order_phase)
+        actions.append(f"SELL {code} {qty}? ({'OK' if _order_success(result) else 'FAIL'})")
         logger.info(actions[-1])
         time.sleep(0.8)
 
@@ -2094,10 +2180,10 @@ def run_kis_pension_trade():
         buy_amount = min(deficit, cash * 0.995)
         if buy_amount < min_order:
             continue
-        result = trader.smart_buy_krw_closing(code, buy_amount)
-        actions.append(f"BUY {code} {buy_amount:,.0f}원 ({'OK' if result else 'FAIL'})")
+        result = _execute_kis_buy_amount_by_phase(trader, code, buy_amount, order_phase)
+        actions.append(f"BUY {code} {buy_amount:,.0f}? ({'OK' if _order_success(result) else 'FAIL'})")
         logger.info(actions[-1])
-        if result:
+        if _order_success(result):
             cash -= buy_amount
         time.sleep(0.8)
 
@@ -2196,8 +2282,9 @@ def _check_kis_pension() -> dict:
         )
 
         # 주문 테스트: 목표 종목 중 1개로 1주 지정가 주문 후 즉시 취소
-        if not _is_kr_order_window():
-            result["order_msg"] = "SKIP - 주문 가능 시간이 아닙니다 (09:00~16:00 KST)"
+        order_phase = _get_kr_order_phase()
+        if order_phase == "closed":
+            result["order_msg"] = "SKIP - 주문 가능 시간이 아닙니다 (09:00~15:30, 16:00~18:00 KST)"
             return result
 
         test_code = next(iter(sig.get("target_weights_kr", {}).keys()), "")
@@ -2210,7 +2297,10 @@ def _check_kis_pension() -> dict:
             result["order_msg"] = "FAIL - 가격호가 계산 실패"
             return result
 
-        order_result = trader.send_order("BUY", test_code, qty=1, price=limit_price, ord_dvsn="00")
+        if order_phase == "after_hours":
+            order_result = trader.send_order("BUY", test_code, qty=1, price=0, ord_dvsn="06")
+        else:
+            order_result = trader.send_order("BUY", test_code, qty=1, price=limit_price, ord_dvsn="00")
         if not order_result or not order_result.get("success"):
             result["order_msg"] = f"FAIL - 주문 실패: {order_result}"
             return result
