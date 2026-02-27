@@ -76,8 +76,8 @@ jobs:
 
       - name: Run Auto Trade (Kiwoom Gold)
         env:
-          Kiwoom_App_Key: ${{ secrets.KIWOOM_APP_KEY }}
-          Kiwoom_Secret_Key: ${{ secrets.KIWOOM_SECRET_KEY }}
+          KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
+          KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
           KIWOOM_ACCOUNT: ${{ secrets.KIWOOM_ACCOUNT }}
           GOLD_PORTFOLIO: ${{ secrets.GOLD_PORTFOLIO }}
           GOLD_BUY_PERIOD: '90'
@@ -152,7 +152,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 15m
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,Kiwoom_App_Key,Kiwoom_Secret_Key,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             cd ~/upbit
             git pull --quiet 2>/dev/null || true
@@ -165,8 +165,8 @@ jobs:
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
           PORTFOLIO: ${{ secrets.PORTFOLIO }}
           # 키움 금현물
-          Kiwoom_App_Key: ${{ secrets.KIWOOM_APP_KEY }}
-          Kiwoom_Secret_Key: ${{ secrets.KIWOOM_SECRET_KEY }}
+          KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
+          KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
           KIWOOM_ACCOUNT: ${{ secrets.KIWOOM_ACCOUNT }}
           GOLD_PORTFOLIO: ${{ secrets.GOLD_PORTFOLIO }}
           GOLD_BUY_PERIOD: '90'
@@ -196,7 +196,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 15m
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,Kiwoom_App_Key,Kiwoom_Secret_Key,KIWOOM_ACCOUNT,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             cd ~/upbit
             git pull --quiet 2>/dev/null || true
@@ -209,8 +209,8 @@ jobs:
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
           PORTFOLIO: ${{ secrets.PORTFOLIO }}
           # Kiwoom Gold
-          Kiwoom_App_Key: ${{ secrets.KIWOOM_APP_KEY }}
-          Kiwoom_Secret_Key: ${{ secrets.KIWOOM_SECRET_KEY }}
+          KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
+          KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
           KIWOOM_ACCOUNT: ${{ secrets.KIWOOM_ACCOUNT }}
           # KIS ISA
           KIS_ISA_APP_KEY: ${{ secrets.KIS_ISA_APP_KEY }}
