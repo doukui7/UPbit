@@ -4,12 +4,12 @@ on:
   schedule:
     # 업비트 자동매매: 매 4시간 (UTC 0,4,8,12,16,20) → KST 9,13,17,21,1,5시
     - cron: '0 0,4,8,12,16,20 * * *'
-    # 키움 금현물: KST 15:15 (UTC 06:15) 평일 - 장마감 동시호가
-    - cron: '15 6 * * 1-5'
-    # KIS ISA 위대리: 매주 금요일 KST 15:20 (UTC 06:20)
-    - cron: '20 6 * * 5'
-    # KIS 연금저축: 매월 25~31일 평일 KST 15:20 (UTC 06:20)
-    - cron: '20 6 25-31 * 1-5'
+    # 키움 금현물: KST 15:05 (UTC 06:05) 평일 - 장마감 동시호가 (GA지연 대비 여유)
+    - cron: '5 6 * * 1-5'
+    # KIS ISA 위대리: 매주 금요일 KST 15:10 (UTC 06:10) (GA지연 대비 여유)
+    - cron: '10 6 * * 5'
+    # KIS 연금저축: 매월 25~31일 평일 KST 15:10 (UTC 06:10) (GA지연 대비 여유)
+    - cron: '10 6 25-31 * 1-5'
     # 전체 헬스체크: 매 4시간 (매매 5분 전) KST 8:55,12:55,16:55,20:55,00:55,04:55
     - cron: '55 23,3,7,11,15,19 * * *'
     # 일일 자산 현황 리포트: KST 09:00 (UTC 00:00) 평일
@@ -60,7 +60,7 @@ jobs:
 
   # ── 키움 금현물 자동매매 ─────────────────────────────────
   kiwoom_gold:
-    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'kiwoom_gold' || github.event.inputs.run_job == 'all')) || github.event.schedule == '15 6 * * 1-5'
+    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'kiwoom_gold' || github.event.inputs.run_job == 'all')) || github.event.schedule == '5 6 * * 1-5'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -89,7 +89,7 @@ jobs:
 
   # ── KIS ISA 위대리(WDR) 자동매매 ───────────────────────
   kis_isa:
-    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'kis_isa' || github.event.inputs.run_job == 'all')) || github.event.schedule == '20 6 * * 5'
+    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'kis_isa' || github.event.inputs.run_job == 'all')) || github.event.schedule == '10 6 * * 5'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -116,7 +116,7 @@ jobs:
 
   # ── KIS 연금저축 LAA 자동매매 ─────────────────────────
   kis_pension:
-    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'kis_pension' || github.event.inputs.run_job == 'all')) || github.event.schedule == '20 6 25-31 * 1-5'
+    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'kis_pension' || github.event.inputs.run_job == 'all')) || github.event.schedule == '10 6 25-31 * 1-5'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -527,14 +527,17 @@ def run_auto_trade():
 # 키움 금현물 자동매매
 # ─────────────────────────────────────────────────────────
 def _is_market_hours() -> bool:
-    """KST 09:00~15:30 장 시간인지 확인."""
+    """KST 09:00~16:00 장+시간외 주문 가능 시간 확인.
+
+    GitHub Actions 크론 지연(최대 ~1시간)을 고려하여 시간외 종가(~16:00)까지 허용.
+    """
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     # 주말 제외
     if now.weekday() >= 5:
         return False
     market_open  = now.replace(hour=9,  minute=0,  second=0, microsecond=0)
-    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    market_close = now.replace(hour=16, minute=0,  second=0, microsecond=0)
     return market_open <= now <= market_close
 
 
@@ -568,7 +571,7 @@ def run_kiwoom_gold_trade():
 
     # 장 시간 확인
     if not _is_market_hours():
-        logger.info("장 시간 외 (09:00~15:30 KST). 매매 생략.")
+        logger.info("장 시간 외 (09:00~16:00 KST). 매매 생략.")
         return
 
     # 트레이더 초기화 & 인증
@@ -719,13 +722,17 @@ def _is_kr_market_hours() -> bool:
 
 
 def _is_kr_order_window() -> bool:
-    """KST 09:00~15:20 주문 가능 시간 확인."""
+    """KST 09:00~16:00 주문 가능 시간 확인.
+
+    동시호가(15:20~15:30) + 시간외 종가(~16:00)까지 허용.
+    GitHub Actions 크론 지연(최대 ~1시간) 대응.
+    """
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
     if now.weekday() >= 5:
         return False
     order_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
-    order_close = now.replace(hour=15, minute=20, second=0, microsecond=0)
+    order_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
     return order_open <= now <= order_close
 
 
@@ -747,7 +754,7 @@ def run_kis_isa_trade():
     logger.info("=== KIS ISA 위대리(WDR) 자동매매 시작 ===")
 
     if not _is_kr_order_window():
-        logger.info("국내 주문 가능 시간 외 (09:00~15:20 KST). 매매 생략.")
+        logger.info("국내 주문 가능 시간 외 (09:00~16:00 KST). 매매 생략.")
         return
 
     isa_key = _get_env_any("KIS_ISA_APP_KEY", "KIS_APP_KEY")
@@ -1067,7 +1074,7 @@ def _check_kiwoom_gold() -> dict:
 
         # 5. 가상주문 왕복 테스트 (하한가 매수 1g → 조회 → 취소)
         if not _is_kr_order_window():
-            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~15:20 KST)'
+            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~16:00 KST)'
             return result
 
         limit_price = trader._get_limit_price(code, "SELL")  # 하한가 (체결 불가 가격)
@@ -1256,7 +1263,7 @@ def _check_kis_isa() -> dict:
 
         # 5. 가상주문 왕복 테스트 (하한가 매수 1주 → 조회 → 취소)
         if not _is_kr_order_window():
-            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~15:20 KST)'
+            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~16:00 KST)'
             return result
 
         limit_price = trader._get_limit_price(etf_code, "SELL")  # 하한가
@@ -1929,7 +1936,7 @@ def run_kis_pension_trade():
     logger.info("=== KIS 연금저축 LAA 자동매매 시작 ===")
 
     if not _is_kr_order_window():
-        logger.info("국내 주문 가능 시간이 아닙니다(09:00~15:20 KST). 매매를 생략합니다.")
+        logger.info("국내 주문 가능 시간이 아닙니다(09:00~16:00 KST). 매매를 생략합니다.")
         return
 
     pension_key = _get_env_any("KIS_PENSION_APP_KEY", "KIS_APP_KEY")
@@ -2151,7 +2158,7 @@ def _check_kis_pension() -> dict:
 
         # 주문 테스트: 목표 종목 중 1개로 1주 지정가 주문 후 즉시 취소
         if not _is_kr_order_window():
-            result["order_msg"] = "SKIP - 주문 가능 시간이 아닙니다 (09:00~15:20 KST)"
+            result["order_msg"] = "SKIP - 주문 가능 시간이 아닙니다 (09:00~16:00 KST)"
             return result
 
         test_code = next(iter(sig.get("target_weights_kr", {}).keys()), "")
