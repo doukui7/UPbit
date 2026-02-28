@@ -70,7 +70,16 @@ class DonchianStrategy:
 
     def get_signal(self, row, buy_period=20, sell_period=10, sell_mode="lower"):
         """
-        Generate Buy/Sell signal based on Donchian Breakout.
+        포지션 상태 판단 (Position State).
+
+        반환값:
+          'BUY'  — 매수 포지션 (close > Upper → 돌파, 보유해야 함)
+          'SELL' — 매도 포지션 (close < Lower/Midline → 이탈, 현금이어야 함)
+          'HOLD' — 중립 구간 (Upper와 Lower 사이 → 이전 포지션 유지)
+
+        ※ 실행 시그널(매수/매도/홀드)은 이전 포지션 상태와 비교하여
+          전환(transition)이 발생했을 때만 생성됩니다.
+          전환 감지는 github_action_trade.py의 _determine_signal()에서 수행합니다.
 
         sell_mode:
           "lower"   - 하단 채널 이탈 시 매도 (기본)

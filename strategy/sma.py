@@ -114,30 +114,30 @@ class SMAStrategy:
 
     def get_signal(self, row, strategy_type='SMA_CROSS', ma_period=20):
         """
-        Generate Buy/Sell signal based on strategy.
-        ma_period: Period to compare Close price against (for SMA_CROSS)
+        포지션 상태 판단 (Position State).
+
+        반환값:
+          'BUY'  — 매수 포지션 (close > SMA → 보유해야 함)
+          'SELL' — 매도 포지션 (close < SMA → 현금이어야 함)
+          'HOLD' — 데이터 부족으로 판단 불가
+
+        ※ 실행 시그널(매수/매도/홀드)은 이전 포지션 상태와 비교하여
+          전환(transition)이 발생했을 때만 생성됩니다.
+          전환 감지는 github_action_trade.py의 _determine_signal()에서 수행합니다.
         """
-        # Basic SMA Strategy: Price > SMA_period
         if strategy_type == 'SMA_CROSS':
             sma_val = row.get(f'SMA_{ma_period}')
             close = row.get('close')
-            
+
             if pd.isna(sma_val):
                 return 'HOLD'
 
-            base_signal = 'HOLD'
-            if close > sma_val:
-                return 'BUY'
-            else:
-                return 'SELL'
-            
-            return base_signal
-        
-        # GoldenToilet-like risk management (Fixed to 20/60 logic)
+            return 'BUY' if close > sma_val else 'SELL'
+
         elif strategy_type == 'GOLDEN_TOILET_RISK':
             risk_score = self.calculate_crash_risk(row)
             if risk_score >= 4: return 'SELL'
             if row.get('SMA_5_20_Cross') == 1: return 'BUY'
             return 'HOLD'
-            
+
         return 'HOLD'

@@ -377,13 +377,36 @@ class UpbitTrader:
             logger.info(f"[{ticker}] Fallback market buy: {remaining_krw:,.0f} KRW")
             result = self.buy_market(ticker, remaining_krw * 0.999)
             if isinstance(result, dict) and not result.get('error'):
-                # 시장가는 즉시 체결
+                uuid = result.get('uuid')
                 time.sleep(2)
-                current_price = self.get_current_price(ticker)
-                est_vol = remaining_krw / current_price if current_price else 0
-                total_filled_volume += est_vol
-                total_filled_krw += remaining_krw
-                logs.append({"split": "market_fallback", "status": "filled", "krw": remaining_krw})
+                # 체결 내역 조회로 정확한 수량/가격 계산
+                if uuid:
+                    detail = self.get_order_detail(uuid)
+                    if detail and isinstance(detail, dict) and detail.get('state') in ('done', 'wait'):
+                        exec_vol = float(detail.get('executed_volume', 0))
+                        trades = detail.get('trades', [])
+                        if trades and exec_vol > 0:
+                            exec_krw = sum(float(t.get('funds', 0)) for t in trades)
+                            total_filled_volume += exec_vol
+                            total_filled_krw += exec_krw
+                        elif exec_vol > 0:
+                            exec_krw = exec_vol * float(detail.get('price', 0))
+                            total_filled_volume += exec_vol
+                            total_filled_krw += exec_krw
+                        logs.append({"split": "market_fallback", "status": "filled", "volume": exec_vol, "krw": exec_krw if exec_vol > 0 else 0})
+                    else:
+                        # 조회 실패 시 추정값 사용
+                        current_price = self.get_current_price(ticker)
+                        est_vol = remaining_krw / current_price if current_price else 0
+                        total_filled_volume += est_vol
+                        total_filled_krw += remaining_krw
+                        logs.append({"split": "market_fallback", "status": "filled_est", "krw": remaining_krw})
+                else:
+                    current_price = self.get_current_price(ticker)
+                    est_vol = remaining_krw / current_price if current_price else 0
+                    total_filled_volume += est_vol
+                    total_filled_krw += remaining_krw
+                    logs.append({"split": "market_fallback", "status": "filled_est", "krw": remaining_krw})
 
         avg_price = total_filled_krw / total_filled_volume if total_filled_volume > 0 else 0
 
@@ -489,11 +512,31 @@ class UpbitTrader:
             logger.info(f"[{ticker}] Fallback market sell: {remaining_volume:.6f}")
             result = self.sell_market(ticker, remaining_volume)
             if isinstance(result, dict) and not result.get('error'):
+                uuid = result.get('uuid')
                 time.sleep(2)
-                est_krw = remaining_volume * current_price
-                total_filled_volume += remaining_volume
-                total_filled_krw += est_krw
-                logs.append({"split": "market_fallback", "status": "filled", "volume": remaining_volume})
+                # 체결 내역 조회로 정확한 수량/가격 계산
+                if uuid:
+                    detail = self.get_order_detail(uuid)
+                    if detail and isinstance(detail, dict) and detail.get('state') in ('done', 'wait'):
+                        exec_vol = float(detail.get('executed_volume', 0))
+                        trades = detail.get('trades', [])
+                        if trades and exec_vol > 0:
+                            exec_krw = sum(float(t.get('funds', 0)) for t in trades)
+                            total_filled_volume += exec_vol
+                            total_filled_krw += exec_krw
+                        elif exec_vol > 0:
+                            exec_krw = exec_vol * current_price
+                            total_filled_volume += exec_vol
+                            total_filled_krw += exec_krw
+                        logs.append({"split": "market_fallback", "status": "filled", "volume": exec_vol})
+                    else:
+                        total_filled_volume += remaining_volume
+                        total_filled_krw += remaining_volume * current_price
+                        logs.append({"split": "market_fallback", "status": "filled_est", "volume": remaining_volume})
+                else:
+                    total_filled_volume += remaining_volume
+                    total_filled_krw += remaining_volume * current_price
+                    logs.append({"split": "market_fallback", "status": "filled_est", "volume": remaining_volume})
 
         avg_price = total_filled_krw / total_filled_volume if total_filled_volume > 0 else 0
 
@@ -513,10 +556,10 @@ class UpbitTrader:
         """
         Adaptive Buy Strategy:
         - Gets Target Price (Current Candle Open).
-        - Checks slippage every 10 mins.
+        - Checks slippage every check_interval.
         - If slippage > 0.1%, buys 10% and waits.
         - If slippage <= 0.1%, buys remaining.
-        - Max 50 min loop (to avoid Action timeout).
+        - max_loop_sec: interval별 자동 결정 (SSH timeout 15분 대응)
         """
         # 1. Determine Target Price (Current Candle Open)
         try:
@@ -545,9 +588,14 @@ class UpbitTrader:
         total_filled_volume = 0
         total_filled_krw = 0
 
-        # Loop: 0, 10, 20, 30, 40 (Final check) -> Max 50 min
-        # GitHub Action timeout is usually 60 min, so 50 min is safe.
-        while (time.time() - start_time) < 3300: # 55 min limit
+        # interval별 루프 상한 (SSH command_timeout 15분 대응)
+        # day: 분석+매수 여유 → 10분, minute240: 5분, 그 외: 3분
+        max_loop_map = {"day": 600, "minute240": 300, "minute60": 180}
+        max_loop_sec = max_loop_map.get(interval, 180)
+        check_wait = min(120, max_loop_sec // 3)  # 대기 간격 (최대 2분)
+        logger.info(f"[{ticker}] Adaptive loop: max={max_loop_sec}s, check_wait={check_wait}s")
+
+        while (time.time() - start_time) < max_loop_sec:
             iteration += 1
             current_price = self.get_current_price(ticker)
             
@@ -614,19 +662,34 @@ class UpbitTrader:
             if remaining_krw < 5000:
                 break
             
-            # If we bought 10% (High Slippage), Wait 10 min
-            logger.info(f"[{ticker}] Waiting 10 minutes... (Elapsed: {(time.time()-start_time)/60:.1f}m)")
-            time.sleep(600) 
+            # 고슬리피지 시 대기 후 재시도
+            logger.info(f"[{ticker}] Waiting {check_wait}s... (Elapsed: {(time.time()-start_time)/60:.1f}m)")
+            time.sleep(check_wait)
 
-        # Timeout / Loop End
+        # Timeout / Loop End — 시장가로 빠르게 마무리 (SSH 15분 timeout 대응)
         if remaining_krw >= 5000:
-            logger.info(f"[{ticker}] Timeout. Buying remaining {remaining_krw:,.0f} KRW at Market/Smart")
-            res = self.smart_buy(ticker, remaining_krw, interval=interval)
-            filled = res.get('filled_volume', 0)
-            spent = res.get('total_krw', 0)
-            remaining_krw -= spent
-            total_filled_volume += filled
-            total_filled_krw += spent
+            logger.info(f"[{ticker}] Timeout. Buying remaining {remaining_krw:,.0f} KRW at Market")
+            result_fb = self.buy_market(ticker, remaining_krw * 0.999)
+            if isinstance(result_fb, dict) and not result_fb.get('error'):
+                uuid = result_fb.get('uuid')
+                time.sleep(2)
+                if uuid:
+                    detail = self.get_order_detail(uuid)
+                    if detail and isinstance(detail, dict):
+                        exec_vol = float(detail.get('executed_volume', 0))
+                        trades = detail.get('trades', [])
+                        if trades and exec_vol > 0:
+                            exec_krw = sum(float(t.get('funds', 0)) for t in trades)
+                        elif exec_vol > 0:
+                            exec_krw = exec_vol * float(detail.get('price', 0) or target_price)
+                        else:
+                            exec_vol = 0
+                            exec_krw = 0
+                        total_filled_volume += exec_vol
+                        total_filled_krw += exec_krw
+                        remaining_krw -= exec_krw
+            else:
+                logger.warning(f"[{ticker}] Fallback market buy failed: {result_fb}")
 
         avg_price = total_filled_krw / total_filled_volume if total_filled_volume > 0 else 0
         result = {

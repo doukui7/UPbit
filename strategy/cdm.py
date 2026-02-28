@@ -30,7 +30,7 @@ class CDMStrategy:
       - LQD → 305080 TIGER 미국채10년선물
       - HYG → 305080 TIGER 미국채10년선물 (중복)
       - TLT → 304660 KODEX 미국채울트라30년선물(H)
-      - GLD → 132030 KODEX 골드선물(H)
+      - GLD → 411060 ACE KRX금현물
       - BIL → 329750 TIGER 미국달러선물
 
     리밸런싱: 월 1회 (월말 기준)
@@ -49,7 +49,7 @@ class CDMStrategy:
             'LQD': '305080',
             'HYG': '305080',
             'TLT': '304660',
-            'GLD': '132030',
+            'GLD': '411060',
             'BIL': '329750',
         },
     }

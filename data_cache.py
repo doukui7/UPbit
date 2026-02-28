@@ -725,24 +725,72 @@ WDR_TICKER_LISTING_DATE = {
 
 def get_wdr_v10_stock_ratio(trade_etf_code: str, target_date):
     """
-    ISA 위대리 초기 비중 고정값 조회.
-    CSV를 매번 읽지 않고 티커별 시작일/비중 사전값을 반환한다.
+    위대리 V1.0.csv 파일을 읽어 특정 날짜의 현금비중(Y열)을 가져오고 주식 비중을 계산한다.
+    target_date: datetime 또는 pd.Timestamp 또는 YYYY-MM-DD 문자열
     """
-    code = str(trade_etf_code or "").strip()
-    if not code:
+    csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "위대리 V1.0.csv")
+    if not os.path.exists(csv_path):
+        # Fallback to ticker preset
+        code = str(trade_etf_code or "").strip()
+        item = WDR_TICKER_START_RATIO.get(code)
+        if item:
+            return {
+                "source": "ticker_preset",
+                "trade_etf_code": code,
+                "ref_date": str(item["ref_date"]),
+                "stock_ratio": float(item["stock_ratio"]),
+                "cash_ratio": float(item["cash_ratio"]),
+            }
         return None
 
-    item = WDR_TICKER_START_RATIO.get(code)
-    if not item:
-        return None
+    try:
+        # K열(Date, index 10), Y열(현금비중, index 24)
+        # header=None, skiprows=2 (3행부터 데이터 시작)
+        df = pd.read_csv(csv_path, header=None, skiprows=2)
+        
+        # 10번 컬럼(날짜) 파싱
+        # CSV 형식: 10.03.11(목) -> 2010.03.11
+        def parse_v10_date(s):
+            if not isinstance(s, str) or len(s) < 8: return None
+            try:
+                # 10.03.11(목) -> 2010.03.11
+                clean = s.split('(')[0]
+                return pd.to_datetime("20" + clean, format="%Y.%m.%d")
+            except: return None
 
-    return {
-        "source": "ticker_preset",
-        "trade_etf_code": code,
-        "ref_date": str(item["ref_date"]),
-        "stock_ratio": float(item["stock_ratio"]),
-        "cash_ratio": float(item["cash_ratio"]),
-    }
+        df['parsed_date'] = df[10].apply(parse_v10_date)
+        df = df.dropna(subset=['parsed_date'])
+        
+        # 24번 컬럼(현금비중) 숫자화: "50.00%" -> 0.5
+        def parse_pct(s):
+            if not isinstance(s, str): return None
+            try:
+                return float(s.replace('%', '').strip()) / 100.0
+            except: return None
+        
+        df['cash_ratio'] = df[24].apply(parse_pct)
+        df = df.dropna(subset=['cash_ratio'])
+        
+        target_ts = pd.to_datetime(target_date)
+        
+        # target_date보다 작거나 같은 날짜 중 가장 최근 것 찾기
+        mask = df['parsed_date'] <= target_ts
+        if not mask.any():
+            # 만약 타겟 날짜보다 이전 데이터가 없으면 첫 번째 데이터 사용
+            row = df.iloc[0]
+        else:
+            row = df[mask].iloc[-1]
+            
+        return {
+            "source": "csv_v1.0",
+            "trade_etf_code": trade_etf_code,
+            "ref_date": row['parsed_date'].strftime("%Y-%m-%d"),
+            "stock_ratio": round(1.0 - float(row['cash_ratio']), 4),
+            "cash_ratio": float(row['cash_ratio']),
+        }
+    except Exception as e:
+        print(f"Error parsing 위대리 V1.0.csv: {e}")
+        return None
 
 
 def get_wdr_trade_listing_date(trade_etf_code: str):

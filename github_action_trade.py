@@ -27,12 +27,73 @@ logger = logging.getLogger()
 
 MIN_ORDER_KRW = 5000
 ISA_WDR_TRADE_ETF_CODES = {"418660", "409820", "423920", "426030", "465610", "461910"}
+GOLD_KRX_ETF_CODE = "411060"
+GOLD_LEGACY_ETF_CODES = {"132030"}
+
+# ── 시그널 전환 감지를 위한 포지션 상태 파일 ──
+SIGNAL_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_state.json")
+
+
+def _load_signal_state() -> dict:
+    """전략별 이전 포지션 상태 로드."""
+    try:
+        if os.path.exists(SIGNAL_STATE_FILE):
+            with open(SIGNAL_STATE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_signal_state(state: dict):
+    """전략별 포지션 상태 저장."""
+    try:
+        with open(SIGNAL_STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"signal_state 저장 실패: {e}")
+
+
+def _make_signal_key(item: dict) -> str:
+    """포트폴리오 아이템의 고유 시그널 키 생성."""
+    ticker = f"{item.get('market', 'KRW')}-{str(item.get('coin', '')).upper()}"
+    strategy = item.get("strategy", "SMA")
+    param = item.get("parameter", 20)
+    interval = _normalize_coin_interval(item.get("interval", "day"))
+    return f"{ticker}_{strategy}_{param}_{interval}"
+
+
+def _determine_signal(position_state: str, prev_state: str | None) -> str:
+    """
+    포지션 상태 전환 감지 → 실행 시그널 결정.
+
+    규칙:
+      - position_state == 'HOLD' (중립구간) → HOLD (이전 상태 유지)
+      - prev_state is None (최초 실행)      → position_state 그대로
+      - position_state == prev_state         → HOLD (전환 없음)
+      - position_state != prev_state         → BUY 또는 SELL (전환 발생)
+    """
+    if position_state == 'HOLD':
+        return 'HOLD'
+    if prev_state is None:
+        return position_state
+    if position_state == prev_state:
+        return 'HOLD'
+    return position_state
 
 
 def _sanitize_isa_trade_etf(code: str, default: str = "418660") -> str:
     raw = str(code or "").strip()
     c = raw.split()[0] if raw else ""
     return c if c in ISA_WDR_TRADE_ETF_CODES else str(default)
+
+
+def _normalize_gold_kr_etf(code: str, default: str = GOLD_KRX_ETF_CODE) -> str:
+    raw = str(code or "").strip()
+    c = raw.split()[0] if raw else ""
+    if c in GOLD_LEGACY_ETF_CODES:
+        return str(default)
+    return c or str(default)
 
 
 def _load_user_config():
@@ -334,7 +395,7 @@ def _wait_for_candle_boundary(now_kst: datetime, max_wait_sec: int = 720) -> dat
 
 
 def analyze_asset(trader, item):
-    """1단계: 데이터 조회 → 시그널 계산 → 보유 현황 확인"""
+    """1단계: 데이터 조회 → 포지션 상태 계산 → 보유 현황 확인"""
     ticker = f"{item['market']}-{item['coin'].upper()}"
     strategy_name = item.get("strategy", "SMA")
     param = item.get("parameter", 20)
@@ -351,8 +412,8 @@ def analyze_asset(trader, item):
         logger.error(f"[{ticker}] Insufficient data (got {len(df) if df is not None else 0}, need {param + 5})")
         return None
 
-    # Generate signal
-    last_candle = df.iloc[-2]  # Last completed candle
+    # 포지션 상태 계산 (전략이 반환하는 raw state)
+    last_candle = df.iloc[-2]  # 마지막 완성 봉
 
     if strategy_name == "Donchian":
         strat = DonchianStrategy()
@@ -360,13 +421,13 @@ def analyze_asset(trader, item):
         sell_p = item.get("sell_parameter", 0) or max(5, buy_p // 2)
         df = strat.create_features(df, buy_period=buy_p, sell_period=sell_p)
         last_candle = df.iloc[-2]
-        signal = strat.get_signal(last_candle, buy_period=buy_p, sell_period=sell_p)
+        position_state = strat.get_signal(last_candle, buy_period=buy_p, sell_period=sell_p)
         indicator_info = f"Upper={last_candle.get(f'Donchian_Upper_{buy_p}', 'N/A')}, Lower={last_candle.get(f'Donchian_Lower_{sell_p}', 'N/A')}"
     else:
         strat = SMAStrategy()
         df = strat.create_features(df, periods=[param])
         last_candle = df.iloc[-2]
-        signal = strat.get_signal(last_candle, strategy_type='SMA_CROSS', ma_period=param)
+        position_state = strat.get_signal(last_candle, strategy_type='SMA_CROSS', ma_period=param)
         indicator_info = f"SMA_{param}={last_candle.get(f'SMA_{param}', 'N/A')}"
 
     current_price = _get_upbit_price_local_first(ticker)
@@ -379,19 +440,20 @@ def analyze_asset(trader, item):
     coin_value = coin_balance * float(current_price or 0.0)
     is_holding = coin_value >= MIN_ORDER_KRW
 
-    logger.info(f"[{ticker}] Close={last_candle['close']}, {indicator_info}, Signal={signal}, Price={current_price}")
+    logger.info(f"[{ticker}] Close={last_candle['close']}, {indicator_info}, State={position_state}, Price={current_price}")
     logger.info(f"[{ticker}] {coin_sym}={coin_balance:.6f} (≈{coin_value:,.0f} KRW), Holding={is_holding}")
 
     return {
         'ticker': ticker,
         'coin_sym': coin_sym,
-        'signal': signal,
+        'position_state': position_state,  # 전략 raw state: BUY/SELL/HOLD
+        'signal': position_state,          # 전환 감지 전 임시값 (run_auto_trade에서 덮어씀)
         'weight': weight,
         'coin_balance': coin_balance,
         'coin_value': coin_value,
         'current_price': current_price,
         'is_holding': is_holding,
-        'interval': interval,  # Pass interval for smart/adaptive execution
+        'interval': interval,
     }
 
 
@@ -401,11 +463,7 @@ def run_auto_trade():
     now_kst = datetime.now(kst)
 
     def _send_trade_notice(status: str, details: list[str] | None = None):
-        lines = [
-            "<b>코인 자동매매</b>",
-            f"실행시각: {now_kst.strftime('%Y-%m-%d %H:%M')} KST",
-            f"상태: {status}",
-        ]
+        lines = [f"<b>코인 자동매매 {status}</b>"]
         if details:
             lines.extend(details)
         _send_telegram("\n".join(lines))
@@ -421,44 +479,35 @@ def run_auto_trade():
     trader = UpbitTrader(ACCESS_KEY, SECRET_KEY)
     portfolio = get_portfolio()
 
-    # 전략 주기(4H/1D)별 실행 필터
-    due_portfolio = []
-    skipped_by_interval = []
-    for item in portfolio:
-        iv_raw = item.get("interval", "day")
-        if _is_coin_interval_due(iv_raw, now_kst):
-            due_portfolio.append(item)
-        else:
-            ticker = f"{item.get('market', 'KRW')}-{str(item.get('coin', '')).upper()}"
-            logger.info(f"[{ticker}] 주기 미도래로 스킵 (interval={iv_raw}, now={now_kst.strftime('%H:%M')} KST)")
-            skipped_by_interval.append(f"{ticker}({iv_raw})")
-
-    if not due_portfolio:
-        logger.info(f"=== Portfolio Auto Trade: 실행 대상 없음 (now={now_kst.strftime('%Y-%m-%d %H:%M:%S')} KST) ===")
-        details = ["원인: 주기 미도래로 실행 대상 없음"]
-        if skipped_by_interval:
-            details.append(f"스킵: {', '.join(skipped_by_interval[:6])}")
-        _send_trade_notice("스킵", details)
-        return
-
-
     # 사전 조회: 잔고/포지션 확인
     krw_pre = trader.get_balance("KRW")
-    logger.info(f"[사전조회] KRW 잔고: {krw_pre:,.0f}원, 대상: {len(due_portfolio)}개")
+    logger.info(f"[사전조회] KRW 잔고: {krw_pre:,.0f}원, 전략수: {len(portfolio)}개")
 
-    # 캔들 마감 대기 (정각 전 도착 시 대기 후 실행)
-    now_kst = _wait_for_candle_boundary(now_kst)
+    # 캔들 마감 대기 (4H 전략이 있으면 정각까지 대기)
+    has_4h = any(_normalize_coin_interval(item.get("interval", "day")) == "minute240" for item in portfolio)
+    if has_4h:
+        now_kst = _wait_for_candle_boundary(now_kst)
 
-    logger.info(f"=== Portfolio Auto Trade ({len(due_portfolio)}/{len(portfolio)} assets due) ===")
+    # 이전 포지션 상태 로드 (전환 감지용)
+    signal_state = _load_signal_state()
 
-    # ── 1단계: 전체 시그널 분석 ──
+    logger.info(f"=== Portfolio Auto Trade ({len(portfolio)} assets) ===")
+
+    # ── 1단계: 전체 포지션 상태 분석 (주기 필터 없이 전부 분석) ──
     analyses = []
     analyze_errors = []
-    for item in due_portfolio:
+    for item in portfolio:
         ticker = f"{item.get('market', 'KRW')}-{str(item.get('coin', '')).upper()}"
         try:
             result = analyze_asset(trader, item)
             if result:
+                # 전환 감지: 이전 상태와 비교하여 시그널 결정
+                key = _make_signal_key(item)
+                prev = signal_state.get(key)
+                result['signal'] = _determine_signal(result['position_state'], prev)
+                result['prev_state'] = prev
+                result['signal_key'] = key
+                logger.info(f"[{ticker}] 전환감지: prev={prev} → state={result['position_state']} → signal={result['signal']}")
                 analyses.append(result)
             else:
                 analyze_errors.append(f"{ticker}=분석결과없음")
@@ -468,7 +517,7 @@ def run_auto_trade():
 
     if not analyses:
         logger.error("No assets analyzed. Exiting.")
-        details = [f"원인: 분석 결과 없음 (대상 {len(due_portfolio)}개)"]
+        details = [f"원인: 분석 결과 없음 (대상 {len(portfolio)}개)"]
         if analyze_errors:
             details.append(f"오류: {'; '.join(analyze_errors[:8])}")
         _send_trade_notice("실패", details)
@@ -496,20 +545,29 @@ def run_auto_trade():
     logger.info(f"Portfolio Value={total_portfolio_value:,.0f} KRW (현금={krw_balance:,.0f}, 코인={total_coin_value:,.0f})")
     logger.info(f"Total weight={total_weight}% | Coin weights: {coin_weight_sum}")
 
-    # ── 2단계: 매도 먼저 실행 (목표 배분액 기준) ──
+    # ── 2단계: 매도 먼저 실행 (전환 감지 기반) ──
+    exec_results = {}  # {ticker: [result, ...]} 체결 결과 추적 (텔레그램 상세용)
+    sold_coins = set()  # 전량 매도 완료된 코인 추적 (이중 매도 방지)
     for a in analyses:
         if a['signal'] == 'SELL' and a['is_holding']:
-            # 이 전략의 목표 배분액 = 총 자산 × (weight / 100)
-            target_value = total_portfolio_value * (a['weight'] / 100)
-            # 이 전략이 관리하는 코인 비중 비율
+            # 전량 매도 완료된 코인이면 스킵
+            if a['coin_sym'] in sold_coins:
+                logger.info(f"[{a['ticker']}] 이미 전량 매도 완료 - skip")
+                continue
+
+            # 이 전략의 비례 지분 매도
             coin_total_w = coin_weight_sum.get(a['coin_sym'], a['weight'])
             sell_ratio = a['weight'] / coin_total_w
-            # 실제 보유량 중 이 전략 몫
             proportional_qty = a['coin_balance'] * sell_ratio
-            # 목표 배분액 기준 매도 수량 (보유가 더 많으면 목표량만)
-            if a['current_price'] and a['current_price'] > 0:
-                target_qty = target_value / a['current_price']
-                sell_qty = min(proportional_qty, target_qty)
+
+            # 동일 코인 모든 전략이 SELL 상태이면 전량 매도 (잔여분 cleanup)
+            all_sell_for_coin = all(
+                a2['position_state'] == 'SELL'
+                for a2 in analyses if a2['coin_sym'] == a['coin_sym']
+            )
+            if all_sell_for_coin:
+                sell_qty = a['coin_balance']
+                logger.info(f"[{a['ticker']}] 전략 전체 SELL → 전량 매도")
             else:
                 sell_qty = proportional_qty
 
@@ -519,10 +577,14 @@ def run_auto_trade():
                 continue
 
             logger.info(f"[{a['ticker']}] SELL {sell_qty:.6f}/{a['coin_balance']:.6f} {a['coin_sym']} "
-                        f"(목표={target_value:,.0f}KRW, 비중={a['weight']}%/{coin_total_w}%)")
+                        f"(비중={a['weight']}%/{coin_total_w}%)")
             try:
                 result = trader.smart_sell(a['ticker'], sell_qty, interval=a.get('interval', 'day'))
                 logger.info(f"[{a['ticker']}] Sell Result: {result}")
+                exec_results.setdefault(a['ticker'], []).append(result)
+                # 전량 매도 시 동일 코인 후속 매도 방지
+                if all_sell_for_coin:
+                    sold_coins.add(a['coin_sym'])
             except Exception as e:
                 logger.error(f"[{a['ticker']}] Sell Error: {e}")
 
@@ -532,10 +594,10 @@ def run_auto_trade():
     # 매도 체결 대기
     time.sleep(1)
 
-    # ── 3단계: 목표 배분액 기준 매수 ──
+    # ── 3단계: 목표 배분액 기준 매수 (전환 감지 기반, is_holding 필터 제거) ──
     krw_balance = trader.get_balance("KRW")  # 매도 후 갱신
 
-    buy_signals = [a for a in analyses if a['signal'] == 'BUY' and not a['is_holding']]
+    buy_signals = [a for a in analyses if a['signal'] == 'BUY']
 
     logger.info(f"KRW(매도후)={krw_balance:,.0f} | Buy signals={len(buy_signals)}")
 
@@ -558,6 +620,7 @@ def run_auto_trade():
             try:
                 result = trader.adaptive_buy(a['ticker'], buy_budget, interval=a.get('interval', 'day'))
                 logger.info(f"[{a['ticker']}] Buy Result: {result}")
+                exec_results.setdefault(a['ticker'], []).append(result)
                 krw_balance -= buy_budget  # 사용한 현금 차감
             except Exception as e:
                 logger.error(f"[{a['ticker']}] Buy Error: {e}")
@@ -565,40 +628,78 @@ def run_auto_trade():
             logger.info(f"[{a['ticker']}] BUY signal but budget insufficient "
                         f"(필요={need_value:,.0f}, 가용={krw_balance:,.0f})")
 
-    # HOLD 및 이미 보유 중인 BUY 시그널 로깅
+    # HOLD 로깅
     for a in analyses:
-        if a['signal'] == 'BUY' and a['is_holding']:
-            target_value = total_portfolio_value * (a['weight'] / 100)
-            logger.info(f"[{a['ticker']}] Already holding (≈{a['coin_value']:,.0f} KRW, 목표={target_value:,.0f}) - HOLD")
-        elif a['signal'] == 'HOLD':
-            logger.info(f"[{a['ticker']}] HOLD - no action")
+        if a['signal'] == 'HOLD':
+            logger.info(f"[{a['ticker']}] HOLD (state={a['position_state']}, prev={a.get('prev_state')}) - no action")
+
+    # ── 4단계: 포지션 상태 저장 ──
+    for a in analyses:
+        if a['position_state'] != 'HOLD':  # HOLD(중립구간)은 이전 상태 유지
+            signal_state[a['signal_key']] = a['position_state']
+    _save_signal_state(signal_state)
 
     logger.info("=== Done ===")
 
-    # 텔레그램 요약 전송 (같은 코인 통합 시그널)
+    # 텔레그램 상세 전송 (잔고 + 체결 내역)
+    updated_bal = trader.get_all_balances() or {}
+    krw_after = _safe_float(updated_bal.get('KRW', 0))
+
+    # 코인별 보유 가치 재계산
+    _coin_total_after = 0
+    _coin_bal_parts = []
+    _seen = set()
+    for a in analyses:
+        sym = a['coin_sym']
+        if sym in _seen:
+            continue
+        _seen.add(sym)
+        bal = _safe_float(updated_bal.get(sym, 0))
+        price = a['current_price'] or 0
+        val = bal * price
+        _coin_total_after += val
+        if bal > 0:
+            _coin_bal_parts.append(f"{sym} {bal:.8g} (≈{val:,.0f}원)")
+
+    total_after = krw_after + _coin_total_after
+
     from collections import OrderedDict as _OD
     _tg_coin_groups = _OD()
     for a in analyses:
-        _tg_coin_groups.setdefault(a['ticker'], []).append(a)
+        _tg_coin_groups.setdefault(a['coin_sym'], []).append(a)
 
-    tg_lines = [f"<b>코인 자동매매</b> ({len(_tg_coin_groups)}종목)"]
-    tg_lines.append(f"실행시각: {now_kst.strftime('%Y-%m-%d %H:%M')} KST")
-    tg_lines.append("상태: 완료")
-    tg_lines.append(f"총자산: {total_portfolio_value:,.0f}원 (현금 {krw_balance:,.0f})")
-    if skipped_by_interval:
-        tg_lines.append(f"주기 스킵: {', '.join(skipped_by_interval[:6])}")
-    for _tk, _grp in _tg_coin_groups.items():
-        _sigs = [a['signal'] for a in _grp]
-        if all(s == "BUY" for s in _sigs):
-            _unified = "BUY"
-        elif all(s == "SELL" for s in _sigs):
-            _unified = "SELL"
-        elif all(s == "HOLD" for s in _sigs):
-            _unified = "HOLD"
-        else:
-            _unified = "MIXED"
-        _coin_val = _grp[0]['coin_value']
-        tg_lines.append(f"  {_tk}: {_unified} (보유≈{_coin_val:,.0f}원)")
+    tg_lines = [f"<b>코인 자동매매 완료</b>"]
+    tg_lines.append("")
+
+    for _sym, _grp in _tg_coin_groups.items():
+        _actions = [a['signal'] for a in _grp]
+        _has_buy = any(s == 'BUY' for s in _actions)
+        _has_sell = any(s == 'SELL' for s in _actions)
+
+        # 체결 내역 표시
+        _ticker = _grp[0]['ticker']
+        _execs = exec_results.get(_ticker, [])
+        for ex in _execs:
+            _type = ex.get('type', '')
+            _vol = ex.get('filled_volume', 0)
+            _avg = ex.get('avg_price', 0)
+            _krw = ex.get('total_krw', 0)
+            if 'sell' in _type and _vol > 0:
+                tg_lines.append(f"{_sym} SELL {_vol:.8g} @ {_avg:,.0f} = {_krw:,.0f}원")
+            elif _vol > 0:
+                tg_lines.append(f"{_sym} BUY {_krw:,.0f}원 @ {_avg:,.0f} = {_vol:.8g}")
+
+        # 체결 없이 HOLD인 경우
+        if not _execs and not _has_buy and not _has_sell:
+            _val = _grp[0]['coin_value']
+            tg_lines.append(f"{_sym} HOLD ≈{_val:,.0f}원")
+
+    tg_lines.append("")
+    tg_lines.append(f"<b>잔고</b>")
+    tg_lines.append(f"KRW {krw_after:,.0f}원")
+    for bp in _coin_bal_parts:
+        tg_lines.append(bp)
+    tg_lines.append(f"<b>총자산 {total_after:,.0f}원</b>")
     _send_telegram("\n".join(tg_lines))
 
 
@@ -1747,72 +1848,68 @@ def _print_health_report(results: dict):
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
 
+    msg_key_map = {
+        'auth': 'auth_msg', 'balance': 'balance_msg',
+        'price': 'price_msg', 'signal': 'signal_msg',
+        'order_test': 'order_msg',
+    }
+    checks = ['auth', 'balance', 'price', 'signal', 'order_test']
+
+    def _is_ok_or_skip(ok, msg):
+        txt = str(msg or "").strip().upper()
+        return bool(ok) or txt.startswith("SKIP")
+
+    # ── 콘솔 로그: 상세 출력 (디버깅용) ──
+    for key, r in results.items():
+        name = r['name']
+        logger.info(f"=== [{name}] 헬스체크 ===")
+        for c in checks:
+            logger.info(f"  {c}: {r.get(c, False)} - {r.get(msg_key_map[c], '')}")
+        for s in (r.get('steps') or []):
+            logger.info(f"  {s}")
+
+    # ── 텔레그램: 간소화 (잔고+시그널+실패만) ──
     lines = []
-    lines.append(f"<b>헬스체크 리포트</b> ({now.strftime('%Y-%m-%d %H:%M')} KST)")
+    lines.append(f"<b>헬스체크</b> ({now.strftime('%m-%d %H:%M')} KST)")
     lines.append("")
 
     pass_count = 0
     total_count = len(results)
 
-    msg_key_map = {
-        'auth': 'auth_msg',
-        'balance': 'balance_msg',
-        'price': 'price_msg',
-        'signal': 'signal_msg',
-        'order_test': 'order_msg',
-    }
-
-    def _status_label(ok: bool, msg: str, allow_skip: bool = True) -> str:
-        txt = str(msg or "").strip().upper()
-        if ok:
-            return "PASS"
-        if allow_skip and txt.startswith("SKIP"):
-            return "SKIP"
-        return "FAIL"
-
-    def _is_ok_or_skip(ok: bool, msg: str) -> bool:
-        txt = str(msg or "").strip().upper()
-        return bool(ok) or txt.startswith("SKIP")
-
     for key, r in results.items():
         name = r['name']
-        checks = ['auth', 'balance', 'price', 'signal', 'order_test']
         all_pass = all(_is_ok_or_skip(r.get(c, False), r.get(msg_key_map[c], '')) for c in checks)
         if all_pass:
             pass_count += 1
 
-        status_icon = "PASS" if all_pass else "WARN"
-        lines.append(f"<b>[{name}]</b> {status_icon}")
-        lines.append(f"  인증: {_status_label(r.get('auth', False), r.get('auth_msg', ''), allow_skip=False)} {r.get('auth_msg', '')}")
-        lines.append(f"  잔고: {_status_label(r.get('balance', False), r.get('balance_msg', ''), allow_skip=False)} {r.get('balance_msg', '')}")
-        lines.append(f"  시세: {_status_label(r.get('price', False), r.get('price_msg', ''), allow_skip=False)} {r.get('price_msg', '')}")
-        lines.append(f"  시그널: {_status_label(r.get('signal', False), r.get('signal_msg', ''))} {r.get('signal_msg', '')}")
-        lines.append(f"  가상주문: {_status_label(r.get('order_test', False), r.get('order_msg', ''))} {r.get('order_msg', '')}")
-        step_lines = r.get('steps') if isinstance(r, dict) else None
-        if step_lines:
-            lines.append("  상세 단계:")
-            max_steps = 12
-            for s in step_lines[:max_steps]:
-                lines.append(f"    {s}")
-            if len(step_lines) > max_steps:
-                lines.append(f"    ... 생략 {len(step_lines) - max_steps}개")
+        status = "PASS" if all_pass else "WARN"
+        lines.append(f"<b>[{name}]</b> {status}")
+
+        # 잔고 (핵심 정보 - 항상 표시)
+        bal_msg = r.get('balance_msg', '')
+        if bal_msg and not bal_msg.upper().startswith(('FAIL', 'SKIP')):
+            lines.append(f"  {bal_msg}")
+
+        # 시그널 (핵심 정보 - 항상 표시)
+        sig_msg = r.get('signal_msg', '')
+        if sig_msg and not sig_msg.upper().startswith('SKIP'):
+            lines.append(f"  시그널: {sig_msg}")
+
+        # 실패 항목만 표시
+        check_labels = {'auth': '인증', 'balance': '잔고', 'price': '시세',
+                        'signal': '시그널', 'order_test': '주문테스트'}
+        for c in checks:
+            ok = r.get(c, False)
+            msg = r.get(msg_key_map[c], '')
+            if not _is_ok_or_skip(ok, msg):
+                lines.append(f"  FAIL {check_labels[c]}: {msg}")
+
         lines.append("")
 
-    summary_label = "시스템 정상" if pass_count == total_count else "시스템 점검 필요"
-    lines.append(f"<b>종합: {pass_count}/{total_count} {summary_label}</b>")
+    summary = "정상" if pass_count == total_count else "점검 필요"
+    lines.append(f"<b>종합: {pass_count}/{total_count} {summary}</b>")
 
     report = "\n".join(lines)
-
-    # 콘솔 로그 출력
-    logger.info("")
-    logger.info("=" * 60)
-    for line in lines:
-        # HTML 태그 제거하여 로그 출력
-        clean = line.replace("<b>", "").replace("</b>", "")
-        logger.info(f"  {clean}")
-    logger.info("=" * 60)
-
-    # 텔레그램 전송
     _send_telegram(report)
 
 
@@ -1875,7 +1972,7 @@ def run_daily_status_report():
     load_dotenv()
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
-    lines = [f"<b>일일 자산 현황</b> ({now.strftime('%Y-%m-%d %H:%M')} KST)", ""]
+    lines = [f"<b>일일 자산 현황</b> ({now.strftime('%m-%d %H:%M')} KST)", ""]
 
     # Upbit
     if os.getenv("UPBIT_ACCESS_KEY") and os.getenv("UPBIT_SECRET_KEY"):
@@ -1891,21 +1988,21 @@ def run_daily_status_report():
             krw = float(all_bal.get("KRW", 0.0))
             coins = {k: float(v) for k, v in all_bal.items() if k != "KRW" and float(v) > 0}
             est_coin_value = 0.0
+            coin_details = []
             for sym, qty in coins.items():
                 p = _get_upbit_price_local_first(f"KRW-{sym}")
-                if p:
-                    est_coin_value += qty * float(p)
+                val = qty * float(p) if p else 0
+                est_coin_value += val
+                coin_details.append(f"{sym} {qty:.8g} ({val:,.0f}원)")
             total = krw + est_coin_value
-            coin_text = ", ".join([f"{k} {v:.6f}" for k, v in list(coins.items())[:5]]) if coins else "없음"
-            lines.append("<b>[업비트]</b>")
-            lines.append(f"현금: {krw:,.0f} KRW")
-            lines.append(f"코인평가(추정): {est_coin_value:,.0f} KRW")
-            lines.append(f"총자산(추정): {total:,.0f} KRW")
-            lines.append(f"보유코인: {coin_text}")
+            lines.append(f"<b>[업비트]</b> 총 {total:,.0f}원")
+            lines.append(f"  KRW {krw:,.0f}원 / 코인 {est_coin_value:,.0f}원")
+            if coin_details:
+                for cd in coin_details[:5]:
+                    lines.append(f"  {cd}")
             lines.append("")
         except Exception as e:
-            lines.append("<b>[업비트]</b>")
-            lines.append(f"조회 실패: {e}")
+            lines.append(f"<b>[업비트]</b> 조회 실패: {e}")
             lines.append("")
 
     # Kiwoom Gold
@@ -1921,19 +2018,14 @@ def run_daily_status_report():
                     p = _get_gold_price_local_first(trader, GOLD_CODE_1KG) or 0
                     eval_amt = qty * float(p) if p else 0.0
                 total = cash + eval_amt
-                lines.append("<b>[키움 금현물]</b>")
-                lines.append(f"예수금: {cash:,.0f} KRW")
-                lines.append(f"금보유: {qty:.4f} g")
-                lines.append(f"금평가: {eval_amt:,.0f} KRW")
-                lines.append(f"총자산: {total:,.0f} KRW")
+                lines.append(f"<b>[키움 금현물]</b> 총 {total:,.0f}원")
+                lines.append(f"  현금 {cash:,.0f}원 / 금 {qty:.4f}g ({eval_amt:,.0f}원)")
                 lines.append("")
             else:
-                lines.append("<b>[키움 금현물]</b>")
-                lines.append("인증 실패")
+                lines.append(f"<b>[키움 금현물]</b> 인증 실패")
                 lines.append("")
         except Exception as e:
-            lines.append("<b>[키움 금현물]</b>")
-            lines.append(f"조회 실패: {e}")
+            lines.append(f"<b>[키움 금현물]</b> 조회 실패: {e}")
             lines.append("")
 
     # KIS ISA
@@ -1954,18 +2046,14 @@ def run_daily_status_report():
                 cash = float(bal.get("cash", 0.0))
                 holdings = bal.get("holdings", []) or []
                 total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
-                lines.append("<b>[KIS ISA]</b>")
-                lines.append(f"예수금: {cash:,.0f} KRW")
-                lines.append(f"총평가: {total_eval:,.0f} KRW")
-                lines.append(f"보유: {_format_holdings_brief(holdings)}")
+                lines.append(f"<b>[KIS ISA]</b> 총 {total_eval:,.0f}원")
+                lines.append(f"  예수금 {cash:,.0f}원 / 보유: {_format_holdings_brief(holdings)}")
                 lines.append("")
             else:
-                lines.append("<b>[KIS ISA]</b>")
-                lines.append("인증 실패")
+                lines.append(f"<b>[KIS ISA]</b> 인증 실패")
                 lines.append("")
         except Exception as e:
-            lines.append("<b>[KIS ISA]</b>")
-            lines.append(f"조회 실패: {e}")
+            lines.append(f"<b>[KIS ISA]</b> 조회 실패: {e}")
             lines.append("")
 
     # KIS Pension
@@ -1990,17 +2078,15 @@ def run_daily_status_report():
                 cash = float(bal.get("cash", 0.0))
                 holdings = bal.get("holdings", []) or []
                 total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
-                lines.append("<b>[KIS 연금저축]</b>")
-                lines.append(f"예수금: {cash:,.0f} KRW")
-                lines.append(f"총평가: {total_eval:,.0f} KRW")
-                lines.append(f"보유: {_format_holdings_brief(holdings)}")
+                lines.append(f"<b>[KIS 연금저축]</b> 총 {total_eval:,.0f}원")
+                lines.append(f"  예수금 {cash:,.0f}원 / 보유: {_format_holdings_brief(holdings)}")
 
                 # LAA 전략 시그널 체크 (주문 없이 분석만)
                 try:
                     kr_etf_map = {
                         "SPY": _get_env_any("KR_ETF_LAA_SPY", "KR_ETF_SPY", default="360750"),
                         "IWD": _get_env_any("KR_ETF_LAA_IWD", "KR_ETF_SPY", default="360750"),
-                        "GLD": _get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default="132030"),
+                        "GLD": _normalize_gold_kr_etf(_get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default=GOLD_KRX_ETF_CODE)),
                         "IEF": _get_env_any("KR_ETF_LAA_IEF", "KR_ETF_AGG", default="453540"),
                         "QQQ": _get_env_any("KR_ETF_LAA_QQQ", default="133690"),
                         "SHY": _get_env_any("KR_ETF_LAA_SHY", default="114470"),
@@ -2021,12 +2107,9 @@ def run_daily_status_report():
                         strategy = LAAStrategy(settings={"kr_etf_map": kr_etf_map})
                         signal = strategy.analyze(price_data)
                         if signal:
-                            risk_label = "공격(Risk-On)" if signal.get("risk_on") else "방어(Risk-Off)"
+                            risk_label = "공격" if signal.get("risk_on") else "방어"
                             risk_asset = signal.get("selected_risk_asset", "?")
                             risk_kr = signal.get("selected_risk_kr_code", "?")
-                            lines.append("")
-                            lines.append(f"<b>LAA 시그널:</b> {risk_label}")
-                            lines.append(f"리스크 자산: {risk_asset} → {risk_kr}")
 
                             # 목표 vs 현재 비교 → 예상 매매 내역
                             target_weights_kr = signal.get("target_weights_kr", {})
@@ -2061,28 +2144,23 @@ def run_daily_status_report():
                                     planned_orders.append(f"매도 {code} {abs(delta)}주")
 
                             action = "HOLD" if max_gap <= 0.03 else "REBALANCE"
-                            lines.append(f"판정: <b>{action}</b> (최대괴리 {max_gap*100:.1f}%p)")
+                            lines.append(f"  LAA {risk_label} | {risk_asset}->{risk_kr} | {action} (괴리 {max_gap*100:.1f}%p)")
                             if planned_orders:
-                                lines.append("예상 매매:")
                                 for po in planned_orders:
                                     lines.append(f"  - {po}")
-                            else:
-                                lines.append("예상 매매: 없음")
                         else:
-                            lines.append("LAA 분석 실패")
+                            lines.append("  LAA 분석 실패")
                     else:
-                        lines.append("국내 ETF 조회 실패 (시그널 체크 생략)")
+                        lines.append("  ETF 조회 실패 (시그널 생략)")
                 except Exception as sig_e:
-                    lines.append(f"시그널 체크 오류: {sig_e}")
+                    lines.append(f"  시그널 오류: {sig_e}")
 
                 lines.append("")
             else:
-                lines.append("<b>[KIS 연금저축]</b>")
-                lines.append("인증 실패")
+                lines.append(f"<b>[KIS 연금저축]</b> 인증 실패")
                 lines.append("")
         except Exception as e:
-            lines.append("<b>[KIS 연금저축]</b>")
-            lines.append(f"조회 실패: {e}")
+            lines.append(f"<b>[KIS 연금저축]</b> 조회 실패: {e}")
             lines.append("")
 
     if len(lines) <= 2:
@@ -2101,12 +2179,7 @@ def run_telegram_test_ping():
     load_dotenv()
     kst = timezone(timedelta(hours=9))
     now = datetime.now(kst)
-    msg = (
-        f"<b>텔레그램 알림 테스트</b>\n"
-        f"시각: {now.strftime('%Y-%m-%d %H:%M:%S')} KST\n"
-        f"모드: telegram_test_ping\n"
-        f"상태: 정상"
-    )
+    msg = f"<b>알림 테스트</b> {now.strftime('%m-%d %H:%M')} KST - 정상"
     logger.info("텔레그램 테스트 핑 전송")
     _send_telegram(msg)
 
@@ -2149,7 +2222,7 @@ def run_kis_pension_trade():
     kr_etf_map = {
         "SPY": _get_env_any("KR_ETF_LAA_SPY", "KR_ETF_SPY", default="360750"),
         "IWD": _get_env_any("KR_ETF_LAA_IWD", "KR_ETF_SPY", default="360750"),
-        "GLD": _get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default="132030"),
+        "GLD": _normalize_gold_kr_etf(_get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default=GOLD_KRX_ETF_CODE)),
         "IEF": _get_env_any("KR_ETF_LAA_IEF", "KR_ETF_AGG", default="453540"),
         "QQQ": _get_env_any("KR_ETF_LAA_QQQ", default="133690"),
         "SHY": _get_env_any("KR_ETF_LAA_SHY", default="114470"),
@@ -2313,7 +2386,7 @@ def _check_kis_pension() -> dict:
         kr_etf_map = {
             "SPY": _get_env_any("KR_ETF_LAA_SPY", "KR_ETF_SPY", default="360750"),
             "IWD": _get_env_any("KR_ETF_LAA_IWD", "KR_ETF_SPY", default="360750"),
-            "GLD": _get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default="132030"),
+            "GLD": _normalize_gold_kr_etf(_get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default=GOLD_KRX_ETF_CODE)),
             "IEF": _get_env_any("KR_ETF_LAA_IEF", "KR_ETF_AGG", default="453540"),
             "QQQ": _get_env_any("KR_ETF_LAA_QQQ", default="133690"),
             "SHY": _get_env_any("KR_ETF_LAA_SHY", default="114470"),
@@ -2418,14 +2491,7 @@ if __name__ == "__main__":
         logger.exception(f"치명적 예외 발생(mode={mode}): {e}")
         try:
             _send_telegram(
-                "\n".join(
-                    [
-                        "<b>자동매매 실행 실패</b>",
-                        f"모드: {mode}",
-                        f"원인: {type(e).__name__}",
-                        f"메시지: {str(e)[:300]}",
-                    ]
-                )
+                f"<b>자동매매 실행 실패</b>\n{mode}: {type(e).__name__} - {str(e)[:200]}"
             )
         except Exception:
             pass

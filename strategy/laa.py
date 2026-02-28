@@ -25,7 +25,7 @@ class LAAStrategy:
         "risk_weight": 0.25,
         "kr_etf_map": {
             "IWD": "360750",   # 대체: S&P500
-            "GLD": "132030",   # KODEX Gold선물(H)
+            "GLD": "411060",   # ACE KRX금현물
             "IEF": "453540",   # TIGER 미국채10년선물
             "QQQ": "133690",   # TIGER 미국나스닥100
             "SHY": "114470",   # KODEX 국고채3년

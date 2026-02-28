@@ -21,6 +21,17 @@ def _code_only(v) -> str:
     return str(v or "").strip().split()[0] if str(v or "").strip() else ""
 
 
+GOLD_KRX_ETF_CODE = "411060"
+GOLD_LEGACY_ETF_CODES = {"132030"}
+
+
+def _normalize_gold_kr_etf(v, default: str = GOLD_KRX_ETF_CODE) -> str:
+    c = _code_only(v)
+    if c in GOLD_LEGACY_ETF_CODES:
+        return str(default)
+    return c or str(default)
+
+
 def _collect_tickers(cfg: dict) -> list[str]:
     tickers: list[str] = []
 
@@ -37,7 +48,7 @@ def _collect_tickers(cfg: dict) -> list[str]:
         [
             _code_only(cfg.get("kr_etf_laa_spy", "360750")),
             _code_only(cfg.get("kr_etf_laa_iwd", "360750")),
-            _code_only(cfg.get("kr_etf_laa_gld", "132030")),
+            _normalize_gold_kr_etf(cfg.get("kr_etf_laa_gld", GOLD_KRX_ETF_CODE)),
             _code_only(cfg.get("kr_etf_laa_ief", "453540")),
             _code_only(cfg.get("kr_etf_laa_qqq", "133690")),
             _code_only(cfg.get("kr_etf_laa_shy", "114470")),

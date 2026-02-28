@@ -4375,6 +4375,86 @@ def render_kis_isa_mode():
                 except Exception as e:
                     st.error(f"백테스트 중 오류 발생: {e}")
 
+
+def _render_wdr_monte_carlo(strategy_obj, signal_df, trade_df, initial_balance, initial_stock_ratio, fee_rate=0.0005, extended_years=6, n_sims=300):
+    """
+    WDR 전용 몬테카를로 시뮬레이션:
+    1. 주간 로그 수익률 기반 부트스트랩
+    2. 6년(확장 가능) 시뮬레이션
+    3. 개별 시나리오 선택 가능 (유저 요청)
+    """
+    import numpy as np
+    import pandas as pd
+    import plotly.graph_objects as go
+    import streamlit as st
+
+    st.markdown(f"#### 📊 몬테카를로 시뮬레이션 ({extended_years}년 확장)")
+    
+    # 1. 원본 데이터의 주간 수익률 추출
+    _wk = strategy_obj.daily_to_weekly(trade_df)
+    if len(_wk) < 10:
+        st.warning("수익률 데이터가 부족하여 시뮬레이션을 수행할 수 없습니다.")
+        return
+
+    _returns = _wk["close"].pct_change().dropna().values
+    _log_returns = np.log(1 + _returns)
+    
+    # 2. 시뮬레이션 수행 (단순 부트스트랩)
+    _weeks = int(extended_years * 52)
+    _sim_results = []
+    
+    for _ in range(n_sims):
+        # 주간 로그 수익률 무작위 샘플링
+        _sampled = np.random.choice(_log_returns, size=_weeks, replace=True)
+        # 누적 수익률 계산
+        _cum_ret = np.exp(np.cumsum(_sampled))
+        _sim_results.append(_cum_ret * initial_balance)
+        
+    _sim_arr = np.array(_sim_results) # shape (n_sims, _weeks)
+    _final_vals = _sim_arr[:, -1]
+    
+    # 3. UI: 시나리오 선택
+    st.caption(f"총 {n_sims}개의 미래 시나리오 중 시각화할 항목을 선택하세요.")
+    _top_picks = [0, 10, 50, 100, 200] # 기본값
+    if n_sims > 200:
+        _selected_indices = st.multiselect("표시할 시나리오 인덱스", range(n_sims), default=_top_picks[:3], key="wdr_mc_select_v3")
+    else:
+        _selected_indices = st.multiselect("표시할 시나리오 인덱스", range(n_sims), default=[0, 1, 2], key="wdr_mc_select_v3")
+
+    # 4. 차트 생성
+    fig_mc = go.Figure()
+    _x = np.arange(1, _weeks + 1)
+    
+    # 선택된 개별 시나리오 추가
+    for _idx in _selected_indices:
+        fig_mc.add_trace(go.Scatter(
+            x=_x, y=_sim_arr[_idx], mode="lines", 
+            name=f"시나리오 #{_idx}", line=dict(width=1, opacity=0.5)
+        ))
+        
+    # 통계값 추가 (평균, 중간값)
+    _mean_path = np.mean(_sim_arr, axis=0)
+    _median_path = np.median(_sim_arr, axis=0)
+    
+    fig_mc.add_trace(go.Scatter(x=_x, y=_mean_path, name="평균 기대치", line=dict(color="red", width=3)))
+    fig_mc.add_trace(go.Scatter(x=_x, y=_median_path, name="중간값", line=dict(color="white", width=2, dash="dash")))
+    
+    fig_mc.update_layout(
+        title=f"{extended_years}년 후 자산 시뮬레이션 (초기자산 ${initial_balance:,.0f})",
+        xaxis_title="경과 주차 (Weeks)", yaxis_title="자산 가치 ($)",
+        height=450, template="plotly_dark",
+        margin=dict(l=0, r=0, t=60, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+    )
+    st.plotly_chart(fig_mc, use_container_width=True)
+    
+    # 5. 하위 통계
+    _final_rets = (_final_vals / initial_balance - 1) * 100
+    ms1, ms2, ms3 = st.columns(3)
+    ms1.metric("평균 최종 수익률", f"{np.mean(_final_rets):.1f}%")
+    ms2.metric("중간값 최종 수익률", f"{np.median(_final_rets):.1f}%")
+    ms3.metric("최악의 시나리오", f"{np.min(_final_rets):.1f}%")
+
     # ══════════════════════════════════════════════════════════════
     # Tab 6: 위대리 최적화 (고평가/저평가 임계값 그리드 서치)
     # ══════════════════════════════════════════════════════════════
@@ -4416,6 +4496,10 @@ def render_kis_isa_mode():
         if st.session_state.get(_opt_ticker_sync_key) != _opt_now_key:
             st.session_state["opt_wdr_start"] = _opt_listing_dt
             st.session_state[_opt_ticker_sync_key] = _opt_now_key
+            # 티커 바뀌면 이전 결과 날리기
+            st.session_state["opt_wdr_results"] = None
+            st.session_state["opt_wdr_data_trend"] = None
+            st.session_state["opt_wdr_data_trade"] = None
 
         # ── 평가 시스템 & 탐색 방식 ──
         _opt_mc1, _opt_mc2 = st.columns(2)
@@ -4469,15 +4553,19 @@ def render_kis_isa_mode():
 
         # ── 초기 주식비중 범위 ──
         st.subheader("초기 주식비중 범위")
+        opt_use_tqqq_ratio_total = st.checkbox("📈 TQQQ 비중 따라하기 (위대리 V1.0 CSV 데이터 활용)", 
+                                              value=False, key="opt_wdr_use_tqqq_ratio_total",
+                                              help="체크 시 아래 비중 범위를 무시하고 CSV에 기록된 당시 비중을 사용합니다.")
+        
         rc1, rc2, rc3 = st.columns(3)
         with rc1:
             ir_min = st.number_input("비중 최소 (%)", min_value=0.0, max_value=100.0,
-                                     value=50.0, step=5.0, key="opt_ir_min")
+                                     value=50.0, step=5.0, key="opt_ir_min", disabled=opt_use_tqqq_ratio_total)
         with rc2:
             ir_max = st.number_input("비중 최대 (%)", min_value=0.0, max_value=100.0,
-                                     value=100.0, step=5.0, key="opt_ir_max")
+                                     value=100.0, step=5.0, key="opt_ir_max", disabled=opt_use_tqqq_ratio_total)
         with rc3:
-            ir_step = st.number_input(f"비중 {_step_label}", value=10.0, step=5.0, min_value=5.0, key="opt_ir_step")
+            ir_step = st.number_input(f"비중 {_step_label}", value=10.0, step=5.0, min_value=5.0, key="opt_ir_step", disabled=opt_use_tqqq_ratio_total)
 
         # ── 매수/매도 비율 범위 ──
         st.subheader("매수/매도 비율 범위")
@@ -4551,11 +4639,16 @@ def render_kis_isa_mode():
 
                 # 작업 목록 생성
                 _opt_tasks = []
+                # TQQQ 따라하기 적용 시 고정 비중 계산
+                _fixed_ir_v = None
+                if opt_use_tqqq_ratio_total:
+                    _csv_ratio = _opt_dc.get_wdr_v10_stock_ratio(_opt_trade_code, _effective_opt_start)
+                    if _csv_ratio: _fixed_ir_v = float(_csv_ratio["stock_ratio"]) * 100.0
                 if _is_random:
                     for _ in range(_total_combos):
                         _ov_v = _snap(_opt_random.uniform(ov_min, ov_max), ov_step)
                         _un_v = _snap(_opt_random.uniform(un_min, un_max), un_step)
-                        _ir_v = _snap(_opt_random.uniform(ir_min, ir_max), ir_step)
+                        _ir_v = _fixed_ir_v if _fixed_ir_v is not None else _snap(_opt_random.uniform(ir_min, ir_max), ir_step)
                         _ratio_kw = {}
                         if _opt_ratio_enabled and opt_eval_mode == 3:
                             _ratio_kw = {
@@ -4576,11 +4669,12 @@ def render_kis_isa_mode():
                     for _ov in _ov_vals:
                         for _un in _un_vals:
                             for _ir in _ir_vals:
+                                _actual_ir = _fixed_ir_v if _fixed_ir_v is not None else _ir
                                 _opt_tasks.append((
                                     _qqq, _tqqq,
                                     _build_settings(round(float(_ov), 2), round(float(_un), 2)),
                                     int(opt_eval_mode), float(opt_cap),
-                                    _effective_opt_start, opt_fee / 100.0, round(float(_ir), 2),
+                                    _effective_opt_start, opt_fee / 100.0, round(float(_actual_ir), 2),
                                 ))
 
                 _total_combos = len(_opt_tasks)
@@ -4610,152 +4704,124 @@ def render_kis_isa_mode():
 
                     st.subheader(f"최적화 결과 ({_sort_col} 순)")
                     st.dataframe(df_opt, use_container_width=True)
+                    
+                    # 세션 상태에 모든 필요한 데이터 저장 (상태 보존의 핵심)
+                    st.session_state["opt_wdr_results"] = df_opt
+                    st.session_state["opt_wdr_data_trend"] = _qqq
+                    st.session_state["opt_wdr_data_trade"] = _tqqq
+                    st.session_state["opt_wdr_last_cap"] = opt_cap
+                    st.session_state["opt_wdr_last_fee"] = opt_fee
+                    st.session_state["opt_wdr_last_start"] = _effective_opt_start
+                    st.session_state["opt_wdr_last_sort"] = _sort_col
+                    st.session_state["opt_wdr_last_trend_label"] = _opt_trend_label
+                    st.session_state["opt_wdr_last_trade_code"] = _opt_trade_code
+                    st.session_state["opt_wdr_last_eval_mode"] = opt_eval_mode
+                    
+                    st.rerun()  # 렌더링 모드로 전환
 
-                    # ── 히트맵 (최적 비중 기준) ──
-                    _best_ir = df_opt.iloc[0]["초기비중(%)"]
-                    # 각 (고평가, 저평가) 조합별 최고 Calmar 행만 추출
-                    _hm_df = df_opt.loc[df_opt.groupby(["고평가(%)", "저평가(%)"])["Calmar"].idxmax()]
-                    hm1, hm2 = st.columns(2)
-                    with hm1:
-                        _pivot_calmar = _hm_df.pivot_table(
-                            index="저평가(%)", columns="고평가(%)", values="Calmar", aggfunc="first"
-                        ).sort_index(ascending=False)
-                        fig_hm_c = _opt_go.Figure(data=_opt_go.Heatmap(
-                            z=_pivot_calmar.values,
-                            x=[str(c) for c in _pivot_calmar.columns],
-                            y=[str(r) for r in _pivot_calmar.index],
-                            colorscale="YlOrRd", texttemplate="%{z:.2f}", textfont={"size": 10},
-                        ))
-                        fig_hm_c.update_layout(title="Calmar Ratio (각 셀 최적 비중)", xaxis_title="고평가(%)",
-                                               yaxis_title="저평가(%)", height=400)
-                        st.plotly_chart(fig_hm_c, use_container_width=True)
-                    with hm2:
-                        _pivot_cagr = _hm_df.pivot_table(
-                            index="저평가(%)", columns="고평가(%)", values="CAGR(%)", aggfunc="first"
-                        ).sort_index(ascending=False)
-                        fig_hm_g = _opt_go.Figure(data=_opt_go.Heatmap(
-                            z=_pivot_cagr.values,
-                            x=[str(c) for c in _pivot_cagr.columns],
-                            y=[str(r) for r in _pivot_cagr.index],
-                            colorscale="Viridis", texttemplate="%{z:.1f}", textfont={"size": 10},
-                        ))
-                        fig_hm_g.update_layout(title="CAGR (%) (각 셀 최적 비중)", xaxis_title="고평가(%)",
-                                               yaxis_title="저평가(%)", height=400)
-                        st.plotly_chart(fig_hm_g, use_container_width=True)
+        # ── 최적화 결과 표시 및 세부 조정 (버튼 외부로 독립) ──
+        if st.session_state.get("opt_wdr_results") is not None:
+            df_opt = st.session_state["opt_wdr_results"]
+            _qqq = st.session_state["opt_wdr_data_trend"]
+            _tqqq = st.session_state["opt_wdr_data_trade"]
+            _bt_cap = st.session_state["opt_wdr_last_cap"]
+            _bt_fee = st.session_state["opt_wdr_last_fee"]
+            _bt_start = st.session_state["opt_wdr_last_start"]
+            _sort_col = st.session_state["opt_wdr_last_sort"]
+            _l_trend_label = st.session_state["opt_wdr_last_trend_label"]
+            _l_trade_code = st.session_state["opt_wdr_last_trade_code"]
+            _l_eval_mode = st.session_state["opt_wdr_last_eval_mode"]
 
-                    # ── 파라미터 선택 백테스트 ──
-                    _top_n_wdr = min(20, len(df_opt))
-                    _sel_labels_wdr = []
-                    for _ri in range(_top_n_wdr):
-                        _r = df_opt.iloc[_ri]
-                        _lbl = f"#{_ri+1}  고평가 {_r['고평가(%)']}% / 저평가 {_r['저평가(%)']}% / 비중 {_r['초기비중(%)']}%"
-                        _lbl += f"  |  CAGR {_r['CAGR(%)']}%  |  MDD {_r['MDD(%)']}%  |  Calmar {_r['Calmar']}"
-                        _sel_labels_wdr.append(_lbl)
+            st.divider()
+            st.subheader(f"✅ 최적화 결과 분석 ({_sort_col} 순)")
+            st.dataframe(df_opt, use_container_width=True)
 
-                    _sel_idx_wdr = st.selectbox(
-                        "백테스트할 파라미터 선택", range(_top_n_wdr),
-                        format_func=lambda x: _sel_labels_wdr[x], index=0,
-                        key="wdr_opt_bt_select",
-                    )
+            # ── 히트맵 ──
+            _hm_df = df_opt.loc[df_opt.groupby(["고평가(%)", "저평가(%)"])["Calmar"].idxmax()]
+            hm1, hm2 = st.columns(2)
+            with hm1:
+                _pivot_calmar = _hm_df.pivot_table(index="저평가(%)", columns="고평가(%)", values="Calmar", aggfunc="first").sort_index(ascending=False)
+                fig_hm_c = _opt_go.Figure(data=_opt_go.Heatmap(z=_pivot_calmar.values, x=[str(c) for c in _pivot_calmar.columns], y=[str(r) for r in _pivot_calmar.index], colorscale="YlOrRd", texttemplate="%{z:.2f}", textfont={"size": 10}))
+                fig_hm_c.update_layout(title="Calmar Ratio (각 셀 최적 비중)", xaxis_title="고평가(%)", yaxis_title="저평가(%)", height=350)
+                st.plotly_chart(fig_hm_c, use_container_width=True)
+            with hm2:
+                _pivot_cagr = _hm_df.pivot_table(index="저평가(%)", columns="고평가(%)", values="CAGR(%)", aggfunc="first").sort_index(ascending=False)
+                fig_hm_g = _opt_go.Figure(data=_opt_go.Heatmap(z=_pivot_cagr.values, x=[str(c) for c in _pivot_cagr.columns], y=[str(r) for r in _pivot_cagr.index], colorscale="Viridis", texttemplate="%{z:.1f}", textfont={"size": 10}))
+                fig_hm_g.update_layout(title="CAGR (%) (각 셀 최적 비중)", xaxis_title="고평가(%)", yaxis_title="저평가(%)", height=350)
+                st.plotly_chart(fig_hm_g, use_container_width=True)
 
-                    best = df_opt.iloc[_sel_idx_wdr]
-                    _best_msg = (
-                        f"**선택 파라미터**: 고평가 {best['고평가(%)']}% / 저평가 {best['저평가(%)']}% "
-                        f"/ 초기비중 {best['초기비중(%)']}%"
-                    )
-                    if "매도_고평가" in best and pd.notna(best.get("매도_고평가")):
-                        _best_msg += (
-                            f"\n매도 ({best.get('매도_고평가', '-')}/{best.get('매도_중립', '-')}/{best.get('매도_저평가', '-')})"
-                            f" | 매수 ({best.get('매수_고평가', '-')}/{best.get('매수_중립', '-')}/{best.get('매수_저평가', '-')})"
-                        )
-                    _best_msg += (
-                        f"\n→ CAGR {best['CAGR(%)']}% | MDD {best['MDD(%)']}% | Calmar {best['Calmar']}"
-                    )
-                    st.success(_best_msg)
+            # ── 파라미터 선택 및 세부 조정 ──
+            _top_n_wdr = min(20, len(df_opt))
+            _sel_labels_wdr = []
+            for _ri in range(_top_n_wdr):
+                _r = df_opt.iloc[_ri]
+                _lbl = f"#{_ri+1}  고평가 {_r['고평가(%)']}% / 저평가 {_r['저평가(%)']}% / 비중 {_r['초기비중(%)']}% | Calmar {_r['Calmar']}"
+                _sel_labels_wdr.append(_lbl)
 
-                    # ── 선택 파라미터 백테스트 차트 ──
-                    st.subheader("선택 파라미터 백테스트")
-                    _best_settings = {
-                        "overvalue_threshold": float(best["고평가(%)"]),
-                        "undervalue_threshold": float(best["저평가(%)"]),
-                    }
-                    _ratio_map = {
-                        "매도_고평가": "sell_ratio_overvalue", "매도_중립": "sell_ratio_neutral",
-                        "매도_저평가": "sell_ratio_undervalue", "매수_고평가": "buy_ratio_overvalue",
-                        "매수_중립": "buy_ratio_neutral", "매수_저평가": "buy_ratio_undervalue",
-                    }
-                    for _kor, _eng in _ratio_map.items():
-                        if _kor in best and pd.notna(best[_kor]):
-                            _best_settings[_eng] = float(best[_kor])
+            _sel_idx_wdr = st.selectbox(
+                "백테스트할 파라미터 선택 (선택 후 아래 다이얼로 세부 수정 가능)", range(_top_n_wdr),
+                format_func=lambda x: _sel_labels_wdr[x], index=0, key="wdr_opt_res_select_v3"
+            )
+            best_row = df_opt.iloc[_sel_idx_wdr]
 
-                    _best_strat = _OptWDR(settings=_best_settings, evaluation_mode=int(opt_eval_mode))
-                    _best_bt = _best_strat.run_backtest(
-                        signal_daily_df=_qqq, trade_daily_df=_tqqq,
-                        initial_balance=float(opt_cap), start_date=_effective_opt_start,
-                        fee_rate=opt_fee / 100.0,
-                        initial_stock_ratio=float(best["초기비중(%)"]) / 100.0,
-                    )
-                    if _best_bt and _best_bt.get("equity_df") is not None:
-                        _b_eq = _best_bt["equity_df"]
-                        _b_ret = (_b_eq["equity"] / float(opt_cap) - 1) * 100
-                        _b_bm = _best_bt.get("benchmark_df")
+            st.markdown("#### ⚙️ 선택 파라미터 세부 조정")
+            st.info("💡 다이얼(숫자 입력)을 변경하면 결과와 몬테카를로 시뮬레이션이 실시간으로 갱신됩니다.")
+            
+            c_dial1, c_dial2, c_dial3 = st.columns(3)
+            with c_dial1:
+                adj_over = st.number_input("고평가 임계값 (%)", value=float(best_row["고평가(%)"]), step=0.1, key="wdr_adj_over_v3")
+                adj_under = st.number_input("저평가 임계값 (%)", value=float(best_row["저평가(%)"]), step=0.1, key="wdr_adj_under_v3")
+            with c_dial2:
+                adj_sell_ov = st.number_input("매도 비율 (고평가)", value=float(best_row.get("매도_고평가", 1.0)), step=0.05, key="wdr_adj_so_v3")
+                adj_sell_neu = st.number_input("매도 비율 (중립)", value=float(best_row.get("매도_중립", 0.0)), step=0.05, key="wdr_adj_sn_v3")
+                adj_sell_un = st.number_input("매도 비율 (저평가)", value=float(best_row.get("매도_저평가", 0.0)), step=0.05, key="wdr_adj_su_v3")
+            with c_dial3:
+                adj_buy_ov = st.number_input("매수 비율 (고평가)", value=float(best_row.get("매수_고평가", 0.0)), step=0.05, key="wdr_adj_bo_v3")
+                adj_buy_neu = st.number_input("매수 비율 (중립)", value=float(best_row.get("매수_중립", 0.0)), step=0.05, key="wdr_adj_bn_v3")
+                adj_buy_un = st.number_input("매수 비율 (저평가)", value=float(best_row.get("매수_저평가", 1.0)), step=0.05, key="wdr_adj_bu_v3")
 
-                        # 수익률 차트
-                        fig_b_eq = _opt_go.Figure()
-                        fig_b_eq.add_trace(_opt_go.Scatter(
-                            x=_b_eq.index, y=_b_ret.values, mode="lines",
-                            name="위대리 전략", line=dict(color="gold", width=2)
-                        ))
-                        if _b_bm is not None and "benchmark_return_pct" in _b_bm.columns:
-                            fig_b_eq.add_trace(_opt_go.Scatter(
-                                x=_b_bm.index, y=_b_bm["benchmark_return_pct"].values, mode="lines",
-                                name=f"{_opt_trend_label} Buy & Hold", line=dict(color="gray", width=1, dash="dot")
-                            ))
-                        fig_b_eq.update_layout(
-                            title="누적 수익률 (%)", yaxis_title="수익률 (%)", height=400,
-                            margin=dict(l=0, r=0, t=80, b=30),
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.5, xanchor="center")
-                        )
-                        fig_b_eq = _apply_return_hover_format(fig_b_eq, apply_all=True)
-                        st.plotly_chart(fig_b_eq, use_container_width=True)
+            # 비중 결정 (전역 옵션 우선)
+            _init_ratio_val = float(best_row["초기비중(%)"]) / 100.0
+            _ratio_source_msg = "최적화 결과값"
+            if st.session_state.get("opt_wdr_use_tqqq_ratio_total"):
+                _csv_info = _opt_dc.get_wdr_v10_stock_ratio(_l_trade_code, _bt_start)
+                if _csv_info:
+                    _init_ratio_val = float(_csv_info["stock_ratio"])
+                    _ratio_source_msg = f"CSV({_csv_info['ref_date']})"
 
-                        # DD 차트
-                        _b_peak = _b_eq["equity"].cummax()
-                        _b_dd = (_b_eq["equity"] - _b_peak) / _b_peak * 100
-                        fig_b_dd = _opt_go.Figure()
-                        fig_b_dd.add_trace(_opt_go.Scatter(
-                            x=_b_eq.index, y=_b_dd.values, mode="lines",
-                            name="전략 DD", line=dict(color="crimson", width=2),
-                            fill="tozeroy", fillcolor="rgba(220,20,60,0.15)"
-                        ))
-                        fig_b_dd.update_layout(
-                            title="Drawdown", yaxis_title="DD (%)", height=300,
-                            margin=dict(l=0, r=0, t=80, b=30),
-                            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.5, xanchor="center")
-                        )
-                        fig_b_dd = _apply_dd_hover_format(fig_b_dd)
-                        st.plotly_chart(fig_b_dd, use_container_width=True)
+            # 실시간 백테스트 실행
+            _best_settings = {
+                "overvalue_threshold": adj_over, "undervalue_threshold": adj_under,
+                "sell_ratio_overvalue": adj_sell_ov, "sell_ratio_neutral": adj_sell_neu, "sell_ratio_undervalue": adj_sell_un,
+                "buy_ratio_overvalue": adj_buy_ov, "buy_ratio_neutral": adj_buy_neu, "buy_ratio_undervalue": adj_buy_un
+            }
+            _best_strat = _OptWDR(settings=_best_settings, evaluation_mode=int(_l_eval_mode))
+            _res = _best_strat.run_backtest(signal_daily_df=_qqq, trade_daily_df=_tqqq, initial_balance=float(_bt_cap), start_date=_bt_start, fee_rate=_bt_fee/100.0, initial_stock_ratio=_init_ratio_val)
 
-                        # 연도별 성과
-                        if len(_b_eq) > 1:
-                            _b_yearly = []
-                            _b_eq_s = _b_eq["equity"]
-                            for _yr, _grp in _b_eq_s.groupby(_b_eq_s.index.year):
-                                if len(_grp) < 2: continue
-                                _yr_ret = (_grp.iloc[-1] / _grp.iloc[0] - 1) * 100
-                                _yr_pk = _grp.cummax()
-                                _yr_dd = ((_grp - _yr_pk) / _yr_pk * 100).min()
-                                _b_yearly.append({"연도": _yr, "수익률(%)": round(_yr_ret, 2), "MDD(%)": round(_yr_dd, 2)})
-                            if _b_yearly:
-                                with st.expander("연도별 성과"):
-                                    st.dataframe(pd.DataFrame(_b_yearly), use_container_width=True)
+            if _res and _res.get("equity_df") is not None:
+                _b_eq = _res["equity_df"]
+                _m = _res["metrics"]
+                st.success(f"**적용 파라미터**: 고평가 {adj_over}% / 저평가 {adj_under}% / 초기비중 {_init_ratio_val*100:.2f}% ({_ratio_source_msg})")
+                
+                # 메트릭 표시
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("총 수익률", f"{_m['total_return']:+.2f}%")
+                m2.metric("CAGR", f"{_m['cagr']:+.2f}%")
+                m3.metric("MDD", f"{_m['mdd']:+.2f}%")
+                m4.metric("Calmar", f"{_m['calmar']:.2f}")
 
-                    # ── CSV 다운로드 ──
-                    csv_data = df_opt.to_csv(index=True).encode("utf-8-sig")
-                    st.download_button("최적화 결과 CSV 다운로드", csv_data,
-                                       file_name="wdr_optimization.csv", mime="text/csv")
+                # 차트 출력
+                fig_res = _opt_go.Figure()
+                fig_res.add_trace(_opt_go.Scatter(x=_b_eq.index, y=(_b_eq["equity"]/_bt_cap-1)*100, name="조정 전략", line=dict(color="gold", width=2)))
+                fig_res.update_layout(title="실시간 조정 백테스트 누적 수익률 (%)", height=400, margin=dict(l=0, r=0, t=80, b=30))
+                st.plotly_chart(fig_res, use_container_width=True)
 
-    with tab_i7:
+                # 몬테카를로 (6년 확장)
+                _render_wdr_monte_carlo(strategy_obj=_best_strat, signal_df=_qqq, trade_df=_tqqq, initial_balance=float(_bt_cap), initial_stock_ratio=_init_ratio_val, fee_rate=_bt_fee/100.0, extended_years=6)
+
+            # CSV 다운로드
+            csv_data = df_opt.to_csv(index=True).encode("utf-8-sig")
+            st.download_button("최적화 전체 결과 CSV 다운로드", csv_data, file_name="wdr_optimization_all.csv", mime="text/csv")
         render_strategy_trigger_tab("ISA")
 
 
