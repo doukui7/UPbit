@@ -5157,21 +5157,14 @@ def render_kis_pension_mode():
 
             action = "HOLD" if max_gap <= 0.03 else "REBALANCE"
 
+            # 백테스트: yfinance 미국 원본 티커 사용 (국내 ETF 상장일 제약 해소)
             bt_price_data = {}
             for ticker in tickers:
-                _code = _code_only(source_map.get(ticker, ""))
-                if not _code:
-                    continue
-                _df_bt = _get_pen_daily_chart(_code, count=3000, use_disk_cache=True)
+                _df_bt = data_cache.fetch_and_cache_yf(ticker, start="2000-01-01")
                 if _df_bt is None or _df_bt.empty:
                     bt_price_data = {}
                     break
                 _df_bt = _df_bt.copy().sort_index()
-                if "close" not in _df_bt.columns and "Close" in _df_bt.columns:
-                    _df_bt["close"] = _df_bt["Close"]
-                if "close" not in _df_bt.columns:
-                    bt_price_data = {}
-                    break
                 if len(_df_bt) >= 2:
                     _last_dt = pd.to_datetime(_df_bt.index[-1]).date()
                     if _last_dt >= _today:
@@ -5198,9 +5191,6 @@ def render_kis_pension_mode():
                 )
                 if not _bm_series.empty:
                     bt_benchmark_series = _bm_series
-                    _bm_code = _code_only(source_map.get(_bm_ticker, ""))
-                    if _bm_code:
-                        bt_benchmark_label = f"{_fmt_etf_code_name(_bm_code)} Buy & Hold"
 
             return {
                 "signal": signal,
@@ -6229,28 +6219,18 @@ def render_kis_pension_mode():
                             "QQQ": _code_only(kr_qqq),
                             "SHY": _code_only(kr_shy),
                         }
+                        # 백테스트: yfinance 미국 원본 티커 사용 (국내 ETF 상장일 제약 해소)
                         price_data = {}
                         for ticker in tickers:
-                            _code = _code_only(source_map.get(ticker, ""))
-                            if not _code:
-                                st.error(f"{ticker} 국내 ETF 코드가 비어 있습니다.")
-                                price_data = None
-                                break
-                            df_t = _get_pen_daily_chart(_code, count=3000, use_disk_cache=True)
+                            df_t = data_cache.fetch_and_cache_yf(ticker, start="2000-01-01")
                             if df_t is None or df_t.empty:
-                                st.error(f"{ticker} ({_code}) 로컬 데이터가 없습니다. cache 또는 data 폴더를 확인하세요.")
+                                st.error(f"{ticker} yfinance 데이터 조회 실패")
                                 price_data = None
                                 break
                             df_t = df_t.copy().sort_index()
-                            if "close" not in df_t.columns and "Close" in df_t.columns:
-                                df_t["close"] = df_t["Close"]
-                            if "close" not in df_t.columns:
-                                st.error(f"{ticker} ({_code}) 종가 컬럼이 없습니다.")
-                                price_data = None
-                                break
                             df_t = df_t[df_t.index >= _pen_bt_start_filter_ts]
                             if df_t.empty:
-                                st.error(f"{ticker} ({_code}) 시작일 이후 데이터가 없습니다. 시작일을 조정해 주세요.")
+                                st.error(f"{ticker} 시작일 이후 데이터가 없습니다. 시작일을 조정해 주세요.")
                                 price_data = None
                                 break
                             price_data[ticker] = df_t
@@ -6268,11 +6248,7 @@ def render_kis_pension_mode():
                                 )
                                 if not _laa_bm_series.empty:
                                     st.session_state["pen_bt_laa_benchmark_series"] = _laa_bm_series
-                                    _laa_bm_code = _code_only(source_map.get(_laa_bm_ticker, ""))
-                                    if _laa_bm_code:
-                                        st.session_state["pen_bt_laa_benchmark_label"] = f"{_fmt_etf_code_name(_laa_bm_code)} Buy & Hold"
-                                    else:
-                                        st.session_state["pen_bt_laa_benchmark_label"] = f"{_laa_bm_ticker} Buy & Hold"
+                                    st.session_state["pen_bt_laa_benchmark_label"] = f"{_laa_bm_ticker} Buy & Hold"
                             else:
                                 st.error("백테스트 실행 실패 (데이터 부족)")
 
