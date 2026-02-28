@@ -1682,11 +1682,16 @@ def _check_upbit() -> dict:
 
         order = trader.buy_limit(test_ticker, dummy_price, min_volume)
         if not order:
-            result['order_msg'] = "FAIL - 주문 실패: 응답 없음"
+            result['order_msg'] = "FAIL - 주문 실패: 응답 없음 (API returned None)"
             _append_step(result, "6.2 가상주문 접수", "FAIL", result['order_msg'])
             return result
-        if 'error' in str(order).lower():
-            result['order_msg'] = f"FAIL - 주문 실패: {order}"
+        if isinstance(order, dict) and 'error' in order:
+            _err_detail = order.get('error', str(order))
+            result['order_msg'] = f"FAIL - 주문 실패: {_err_detail}"
+            _append_step(result, "6.2 가상주문 접수", "FAIL", result['order_msg'])
+            return result
+        if not isinstance(order, dict):
+            result['order_msg'] = f"FAIL - 주문 응답 형식 오류: {type(order).__name__}={str(order)[:200]}"
             _append_step(result, "6.2 가상주문 접수", "FAIL", result['order_msg'])
             return result
 
