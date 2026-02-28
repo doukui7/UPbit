@@ -600,3 +600,52 @@ class WDRStrategy:
             "calmar": m["calmar"],
             "final_equity": m["final_equity"],
         }
+
+
+def _wdr_opt_task(signal_df, trade_df, settings_override: dict, eval_mode: int,
+                  cap: float, start_date: str, fee_rate: float,
+                  initial_stock_ratio: float) -> dict | None:
+    """ProcessPool 워커용 WDR 단일 조합 백테스트.
+    settings_override: overvalue_threshold, undervalue_threshold,
+                       sell_ratio_*, buy_ratio_* 등을 포함하는 dict.
+    """
+    strat = WDRStrategy(settings=settings_override, evaluation_mode=eval_mode)
+    bt = strat.run_backtest(
+        signal_daily_df=signal_df,
+        trade_daily_df=trade_df,
+        initial_balance=cap,
+        start_date=start_date,
+        fee_rate=fee_rate,
+        initial_stock_ratio=initial_stock_ratio / 100.0 if initial_stock_ratio > 0 else None,
+    )
+    if bt and bt.get("metrics"):
+        m = bt["metrics"]
+        _key_map = {
+            "overvalue_threshold": "고평가(%)",
+            "undervalue_threshold": "저평가(%)",
+            "sell_ratio_overvalue": "매도_고평가",
+            "sell_ratio_neutral": "매도_중립",
+            "sell_ratio_undervalue": "매도_저평가",
+            "buy_ratio_overvalue": "매수_고평가",
+            "buy_ratio_neutral": "매수_중립",
+            "buy_ratio_undervalue": "매수_저평가",
+        }
+        result = {
+            "고평가(%)": settings_override.get("overvalue_threshold"),
+            "저평가(%)": settings_override.get("undervalue_threshold"),
+            "초기비중(%)": initial_stock_ratio,
+        }
+        # 비율 파라미터가 있으면 추가
+        for eng_key, kor_key in _key_map.items():
+            if eng_key in settings_override and kor_key not in result:
+                result[kor_key] = settings_override[eng_key]
+        result.update({
+            "CAGR(%)": round(m["cagr"], 2),
+            "MDD(%)": round(m["mdd"], 2),
+            "Calmar": round(m["calmar"], 3),
+            "Sharpe": round(m["sharpe"], 3),
+            "수익률(%)": round(m["total_return"], 2),
+            "최종자산": round(m["final_equity"], 0),
+        })
+        return result
+    return None

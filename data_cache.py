@@ -655,9 +655,37 @@ def get_gold_current_price_local_first(trader=None, code="M04020000", allow_api_
             return float(hit.get("val", 0.0) or 0.0)
 
     p = 0.0
-    if trader is not None:
+    if trader is not None and allow_api_fallback:
         try:
             p = float(trader.get_current_price(code) or 0.0)
+        except Exception:
+            p = 0.0
+
+    # API 실패 시 로컬 일봉(캐시/CSV) 종가를 현재가 대체값으로 사용
+    if p <= 0:
+        try:
+            daily_df = get_gold_daily_local_first(
+                trader=trader if allow_api_fallback else None,
+                code=code,
+                count=3,
+                allow_api_fallback=allow_api_fallback,
+            )
+            if daily_df is not None and not daily_df.empty:
+                p = float(daily_df["close"].iloc[-1])
+        except Exception:
+            p = 0.0
+
+    # 루트 번들 CSV 최종 fallback
+    if p <= 0:
+        try:
+            csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "krx_gold_daily.csv")
+            if os.path.exists(csv_path):
+                _df = pd.read_csv(csv_path)
+                if not _df.empty:
+                    cols = {str(c).lower(): c for c in _df.columns}
+                    close_col = cols.get("close")
+                    if close_col:
+                        p = float(_df[close_col].iloc[-1])
         except Exception:
             p = 0.0
 
@@ -674,13 +702,24 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 WDR_TICKER_START_RATIO = {
     # ISA 위대리 매매 ETF별 시작일 초기 비중(고정값)
+    # source: 위대리 V1.0 CSV 기준 (US record 매칭)
     # stock_ratio + cash_ratio = 1.0
+    "409820": {"ref_date": "2022-01-07", "stock_ratio": 0.1496, "cash_ratio": 0.8504},
     "418660": {"ref_date": "2022-02-25", "stock_ratio": 0.1531, "cash_ratio": 0.8469},
-    "409820": {"ref_date": "2021-12-10", "stock_ratio": 0.1586, "cash_ratio": 0.8414},
     "423920": {"ref_date": "2022-04-22", "stock_ratio": 0.1985, "cash_ratio": 0.8015},
     "426030": {"ref_date": "2022-05-13", "stock_ratio": 0.2204, "cash_ratio": 0.7796},
     "465610": {"ref_date": "2023-09-15", "stock_ratio": 0.7253, "cash_ratio": 0.2747},
     "461910": {"ref_date": "2023-11-10", "stock_ratio": 0.7914, "cash_ratio": 0.2086},
+}
+
+WDR_TICKER_LISTING_DATE = {
+    # KR 매매 ETF 상장일
+    "409820": "2022-01-03",
+    "418660": "2022-02-22",
+    "423920": "2022-04-19",
+    "426030": "2022-05-11",
+    "465610": "2023-09-12",
+    "461910": "2023-11-07",
 }
 
 
@@ -704,6 +743,14 @@ def get_wdr_v10_stock_ratio(trade_etf_code: str, target_date):
         "stock_ratio": float(item["stock_ratio"]),
         "cash_ratio": float(item["cash_ratio"]),
     }
+
+
+def get_wdr_trade_listing_date(trade_etf_code: str):
+    """ISA 위대리 매매 ETF 상장일(YYYY-MM-DD) 반환."""
+    code = str(trade_etf_code or "").strip()
+    if not code:
+        return None
+    return WDR_TICKER_LISTING_DATE.get(code)
 
 
 def load_bundled_csv(ticker):

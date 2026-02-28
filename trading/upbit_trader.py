@@ -135,15 +135,39 @@ class UpbitTrader:
             return 0
 
     def get_all_balances(self):
-        """모든 잔고를 한 번의 API 호출로 조회. Returns: {currency: balance}"""
+        """모든 잔고를 1번의 API 호출로 조회. Returns: {currency: balance}"""
         try:
             balances = self.upbit.get_balances()
             result = {}
-            if balances:
+
+            # pyupbit 응답이 비정형(문자열/에러 dict)인 경우 방어
+            if isinstance(balances, str):
+                logger.error(f"Unexpected balances response(str): {balances[:300]}")
+                return result
+
+            if isinstance(balances, dict):
+                if 'currency' in balances:
+                    balances = [balances]
+                else:
+                    logger.error(f"Unexpected balances response(dict): {str(balances)[:300]}")
+                    return result
+
+            if isinstance(balances, list):
                 for b in balances:
-                    currency = b.get('currency', '')
-                    balance = float(b.get('balance', 0)) + float(b.get('locked', 0))
+                    if not isinstance(b, dict):
+                        logger.warning(f"Skip invalid balance row type: {type(b).__name__}")
+                        continue
+
+                    currency = str(b.get('currency', '')).upper()
+                    if not currency:
+                        continue
+
+                    try:
+                        balance = float(b.get('balance', 0) or 0) + float(b.get('locked', 0) or 0)
+                    except Exception:
+                        balance = 0.0
                     result[currency] = balance
+
             return result
         except Exception as e:
             logger.exception(f"Error getting all balances: {e}")
@@ -166,35 +190,68 @@ class UpbitTrader:
 
     def buy_market(self, ticker, price_amount):
         try:
-            return self.upbit.buy_market_order(ticker, price_amount)
+            result = self.upbit.buy_market_order(ticker, price_amount)
+            if result is None:
+                logger.warning(f"buy_market returned None: ticker={ticker}, amount={price_amount}")
+                return {"error": "API returned None (권한/네트워크 오류 가능)"}
+            if isinstance(result, dict) and 'error' in result:
+                logger.warning(f"buy_market error: {result}")
+            return result
         except Exception as e:
+            logger.error(f"buy_market exception: {e}")
             return {"error": str(e)}
 
     def sell_market(self, ticker, volume):
         try:
-            return self.upbit.sell_market_order(ticker, volume)
+            result = self.upbit.sell_market_order(ticker, volume)
+            if result is None:
+                logger.warning(f"sell_market returned None: ticker={ticker}, volume={volume}")
+                return {"error": "API returned None (권한/네트워크 오류 가능)"}
+            if isinstance(result, dict) and 'error' in result:
+                logger.warning(f"sell_market error: {result}")
+            return result
         except Exception as e:
+            logger.error(f"sell_market exception: {e}")
             return {"error": str(e)}
 
     def buy_limit(self, ticker, price, volume):
         """지정가 매수"""
         try:
-            return self.upbit.buy_limit_order(ticker, price, volume)
+            result = self.upbit.buy_limit_order(ticker, price, volume)
+            if result is None:
+                logger.warning(f"buy_limit returned None: ticker={ticker}, price={price}, volume={volume}")
+                return {"error": "API returned None (권한/네트워크 오류 가능)"}
+            if isinstance(result, dict) and 'error' in result:
+                logger.warning(f"buy_limit error: {result}")
+            return result
         except Exception as e:
+            logger.error(f"buy_limit exception: {e}")
             return {"error": str(e)}
 
     def sell_limit(self, ticker, price, volume):
         """지정가 매도"""
         try:
-            return self.upbit.sell_limit_order(ticker, price, volume)
+            result = self.upbit.sell_limit_order(ticker, price, volume)
+            if result is None:
+                logger.warning(f"sell_limit returned None: ticker={ticker}, price={price}, volume={volume}")
+                return {"error": "API returned None (권한/네트워크 오류 가능)"}
+            if isinstance(result, dict) and 'error' in result:
+                logger.warning(f"sell_limit error: {result}")
+            return result
         except Exception as e:
+            logger.error(f"sell_limit exception: {e}")
             return {"error": str(e)}
 
     def cancel_order(self, uuid):
         """주문 취소"""
         try:
-            return self.upbit.cancel_order(uuid)
+            result = self.upbit.cancel_order(uuid)
+            if result is None:
+                logger.warning(f"cancel_order returned None: uuid={uuid}")
+                return {"error": "API returned None"}
+            return result
         except Exception as e:
+            logger.error(f"cancel_order exception: {e}")
             return {"error": str(e)}
 
     def get_order_detail(self, uuid):
@@ -646,3 +703,4 @@ class UpbitTrader:
                 return "SELL SIGNAL but Insufficient Coin"
 
         return f"HOLD (Signal: {current_signal})"
+

@@ -1,8 +1,87 @@
+import os
 import pandas as pd
 import numpy as np
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from strategy.sma import SMAStrategy
 from strategy.donchian import DonchianStrategy
 import data_cache
+
+# CPU 코어 수 기반 워커 수 (최소 2, 최대 물리코어 -1)
+_NUM_WORKERS = max(2, min((os.cpu_count() or 4) - 1, 12))
+
+
+# ── 프로세스 간 전송 가능한 top-level 시뮬레이션 함수 ──────────────
+def _simulate_task(open_arr, close_arr, signal_arr, fee, slippage,
+                   initial_balance, year_arr, meta: dict) -> dict:
+    """단일 파라미터 조합 시뮬레이션 (ProcessPool 워커용)."""
+    n = len(open_arr)
+    balance = initial_balance
+    coin_balance = 0.0
+    position = 0
+    pending = 0
+    buy_price = 0.0
+    wins = 0
+    sells = 0
+    equity = np.empty(n)
+    slip_buy = 1 + slippage / 100
+    slip_sell = 1 - slippage / 100
+    fee_mult = 1 - fee
+
+    for i in range(n):
+        op = open_arr[i]
+        cl = close_arr[i]
+        sig = signal_arr[i]
+        if pending == 1:
+            ep = op * slip_buy
+            coin_balance = balance * fee_mult / ep
+            balance = 0.0
+            position = 1
+            buy_price = ep
+            pending = 0
+        elif pending == -1:
+            ep = op * slip_sell
+            sell_ret = (ep - buy_price) / buy_price if buy_price > 0 else 0
+            balance = coin_balance * ep * fee_mult
+            coin_balance = 0.0
+            position = 0
+            sells += 1
+            if sell_ret > 0:
+                wins += 1
+            pending = 0
+        if position == 0 and sig == 1:
+            pending = 1
+        elif position == 1 and sig == -1:
+            pending = -1
+        equity[i] = coin_balance * cl if position == 1 else balance
+
+    final_eq = equity[-1]
+    total_ret = (final_eq - initial_balance) / initial_balance * 100
+    peak = np.maximum.accumulate(equity)
+    dd = (equity - peak) / peak * 100
+    mdd = dd.min()
+    avg_yearly_mdd = mdd
+    if year_arr is not None and len(year_arr) == n:
+        unique_years = np.unique(year_arr)
+        yearly_mdds = [dd[year_arr == yr].min() for yr in unique_years]
+        if yearly_mdds:
+            avg_yearly_mdd = float(np.mean(yearly_mdds))
+    win_rate = (wins / sells * 100) if sells > 0 else 0
+    returns = np.diff(equity) / equity[:-1]
+    returns = np.nan_to_num(returns)
+    std = returns.std()
+    sharpe = (returns.mean() / std * np.sqrt(365)) if std > 0 else 0
+    days_total = max(1, n)
+    cagr = 0
+    if final_eq > 0 and initial_balance > 0 and days_total > 1:
+        cagr = ((final_eq / initial_balance) ** (365 / days_total) - 1) * 100
+
+    res = {
+        "total_return": total_ret, "cagr": cagr, "mdd": mdd,
+        "avg_yearly_mdd": avg_yearly_mdd, "win_rate": win_rate,
+        "trade_count": sells, "sharpe": sharpe, "final_equity": final_eq,
+    }
+    res.update(meta)
+    return res
 
 class BacktestEngine:
     def __init__(self):
@@ -366,42 +445,46 @@ class BacktestEngine:
         year_arr_full = full_index.year.values
         year_arr = year_arr_full[start_idx:]
 
-        results = []
-        total = len(list(buy_range)) * len(list(sell_range))
-        idx = 0
+        # 작업 목록 사전 생성
+        tasks = []
+        o = open_arr_full[start_idx:]
+        c = close_arr_full[start_idx:]
+        if len(o) < 5:
+            return []
 
         for bp in buy_range:
             upper = upper_cache[bp]
             for sp in sell_range:
-                idx += 1
                 lower = lower_cache[sp]
-
-                # 벡터화 시그널 생성
                 signal_arr = np.zeros(len(close_arr_full), dtype=np.int8)
                 buy_mask = close_arr_full > upper
                 if sell_mode == "midline":
                     midline = (upper + lower) / 2
                     sell_mask = close_arr_full < midline
-                else:  # "lower" (기본)
+                else:
                     sell_mask = close_arr_full < lower
                 signal_arr[buy_mask] = 1
                 signal_arr[sell_mask] = -1
-
-                # 슬라이스 (start_date 이후)
-                o = open_arr_full[start_idx:]
-                c = close_arr_full[start_idx:]
                 s = signal_arr[start_idx:]
+                tasks.append((o, c, s, fee, slippage, initial_balance, year_arr,
+                              {"Buy Period": bp, "Sell Period": sp}))
 
-                if len(o) < 5:
-                    continue
+        total = len(tasks)
+        if total == 0:
+            return []
 
-                res = self._fast_simulate(o, c, s, fee, slippage, initial_balance, year_arr=year_arr)
-                res["Buy Period"] = bp
-                res["Sell Period"] = sp
-                results.append(res)
-
-                if progress_callback:
-                    progress_callback(idx, total, f"Buy: {bp}, Sell: {sp}")
+        results = []
+        with ProcessPoolExecutor(max_workers=_NUM_WORKERS) as pool:
+            futures = {pool.submit(_simulate_task, *t): i for i, t in enumerate(tasks)}
+            done = 0
+            for fut in as_completed(futures):
+                results.append(fut.result())
+                done += 1
+                if progress_callback and done % max(1, total // 50) == 0:
+                    results[-1]  # ensure no exception
+                    progress_callback(done, total, f"병렬 처리 중 ({_NUM_WORKERS} workers)")
+        if progress_callback:
+            progress_callback(total, total, "완료")
 
         return results
 
@@ -436,33 +519,37 @@ class BacktestEngine:
         year_arr_full = full_index.year.values
         year_arr = year_arr_full[start_idx:]
 
-        results = []
-        total = len(list(sma_range))
-        idx = 0
+        o = open_arr_full[start_idx:]
+        c = close_arr_full[start_idx:]
+        if len(o) < 5:
+            return []
 
+        tasks = []
         for p in sma_range:
-            idx += 1
             sma_vals = sma_cache[p]
-
-            # 벡터화 시그널: close > SMA = BUY, else SELL
             signal_arr = np.zeros(len(close_arr_full), dtype=np.int8)
             valid = ~np.isnan(sma_vals)
             signal_arr[valid & (close_arr_full > sma_vals)] = 1
             signal_arr[valid & (close_arr_full <= sma_vals)] = -1
-
-            o = open_arr_full[start_idx:]
-            c = close_arr_full[start_idx:]
             s = signal_arr[start_idx:]
+            tasks.append((o, c, s, fee, slippage, initial_balance, year_arr,
+                          {"SMA Period": p}))
 
-            if len(o) < 5:
-                continue
+        total = len(tasks)
+        if total == 0:
+            return []
 
-            res = self._fast_simulate(o, c, s, fee, slippage, initial_balance, year_arr=year_arr)
-            res["SMA Period"] = p
-            results.append(res)
-
-            if progress_callback:
-                progress_callback(idx, total, f"SMA: {p}")
+        results = []
+        with ProcessPoolExecutor(max_workers=_NUM_WORKERS) as pool:
+            futures = {pool.submit(_simulate_task, *t): i for i, t in enumerate(tasks)}
+            done = 0
+            for fut in as_completed(futures):
+                results.append(fut.result())
+                done += 1
+                if progress_callback and done % max(1, total // 20) == 0:
+                    progress_callback(done, total, f"병렬 처리 중 ({_NUM_WORKERS} workers)")
+        if progress_callback:
+            progress_callback(total, total, "완료")
 
         return results
 

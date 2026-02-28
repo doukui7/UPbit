@@ -30,7 +30,8 @@ ISA_WDR_TRADE_ETF_CODES = {"418660", "409820", "423920", "426030", "465610", "46
 
 
 def _sanitize_isa_trade_etf(code: str, default: str = "418660") -> str:
-    c = str(code or "").strip().split()[0]
+    raw = str(code or "").strip()
+    c = raw.split()[0] if raw else ""
     return c if c in ISA_WDR_TRADE_ETF_CODES else str(default)
 
 
