@@ -1302,6 +1302,7 @@ def render_telegram_sidebar(prefix: str = "coin"):
             """
         )
         st.caption("자동 알림은 GitHub Actions에서 실행될 때 발송됩니다. 로컬 Streamlit은 `테스트 전송`만 즉시 발송합니다.")
+        st.caption("자동 주문도 동일하게 로컬 PC에서 직접 실행하지 않고, GitHub Actions에서만 실행됩니다. (업비트는 Google VM 고정 IP 경유)")
         st.caption("알림 미수신 시: 1) GitHub Secrets의 TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID 설정 2) Actions 스케줄 활성화 3) 워크플로우 실패 로그를 확인하세요.")
 
 
@@ -1309,6 +1310,11 @@ def render_strategy_trigger_tab(mode: str, coin_portfolio: list | None = None):
     """전략별 주문/알림 트리거 안내 탭 공통 렌더러."""
     st.header("전략 트리거")
     st.caption("기준: GitHub Actions 스케줄(`.github/workflows/auto_trade.yml`) + 현재 실행 로직")
+    st.info(
+        "공통 실행 원칙: 자동매매는 로컬 PC에서 직접 주문하지 않고 "
+        "GitHub Actions에서 실행됩니다. "
+        "업비트는 IP 화이트리스트 정책 때문에 Google VM(고정 IP) 경유로 주문합니다."
+    )
 
     def _norm_iv(iv: str) -> str:
         x = str(iv or "day").strip().lower()
@@ -1346,6 +1352,7 @@ def render_strategy_trigger_tab(mode: str, coin_portfolio: list | None = None):
             """
 - 주문 실행 워크플로우: `trade` (`TRADING_MODE=upbit`)
 - 실행 스케줄: 매일 01/05/09/13/17/21시(KST)
+- 실행 경로: GitHub Actions → Google VM(고정 IP) → Upbit API
 - 내부 필터:
   - `4H(minute240)` 전략은 위 6회 모두 점검/주문
   - `1D(day)` 전략은 09:00(KST) 1회만 점검/주문
@@ -1362,7 +1369,8 @@ def render_strategy_trigger_tab(mode: str, coin_portfolio: list | None = None):
                 "전략": f"{i}. {ticker} {strat}({param})",
                 "주기": _iv_label(iv),
                 "주문 트리거(KST)": _iv_trigger(iv),
-                "텔레그램 발송": "전략 실행 직후 1회(총자산/종목별 BUY·SELL·HOLD)"
+                "텔레그램 발송": "전략 실행 직후 1회(총자산/종목별 BUY·SELL·HOLD)",
+                "실행 경로": "GitHub Actions → Google VM(고정 IP) → Upbit API",
             })
         if rows:
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
@@ -1379,24 +1387,24 @@ def render_strategy_trigger_tab(mode: str, coin_portfolio: list | None = None):
     elif mode == "GOLD":
         st.subheader("키움 금현물 전략 트리거")
         st.table(pd.DataFrame([
-            {"전략": "키움 금현물 자동매매", "주문 트리거(KST)": "평일 15:15", "주문 조건": "장중(09:00~15:30) + 전략 시그널", "텔레그램 발송": "실행 직후(총자산/BUY·SELL·HOLD)"},
-            {"전략": "헬스체크(가상주문)", "주문 트리거(KST)": "평일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20)에서만 가상주문", "텔레그램 발송": "헬스체크 리포트"},
+            {"전략": "키움 금현물 자동매매", "주문 트리거(KST)": "평일 15:15", "주문 조건": "장중(09:00~15:30) + 전략 시그널", "텔레그램 발송": "실행 직후(총자산/BUY·SELL·HOLD)", "실행 경로": "GitHub Actions → 키움 API"},
+            {"전략": "헬스체크(가상주문)", "주문 트리거(KST)": "평일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20)에서만 가상주문", "텔레그램 발송": "헬스체크 리포트", "실행 경로": "GitHub Actions → Google VM → 점검"},
         ]))
 
     elif mode == "ISA":
         st.subheader("ISA 위대리(WDR) 전략 트리거")
         st.table(pd.DataFrame([
-            {"전략": "KIS ISA 위대리", "주문 트리거(KST)": "매주 금요일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20) + 위대리 시그널", "텔레그램 발송": "실행 직후(이격도/상태/주문수량)"},
-            {"전략": "헬스체크(가상주문)", "주문 트리거(KST)": "평일 15:20", "주문 조건": "주문 가능 시간에서만 가상주문", "텔레그램 발송": "헬스체크 리포트"},
+            {"전략": "KIS ISA 위대리", "주문 트리거(KST)": "매주 금요일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20) + 위대리 시그널", "텔레그램 발송": "실행 직후(이격도/상태/주문수량)", "실행 경로": "GitHub Actions → KIS API"},
+            {"전략": "헬스체크(가상주문)", "주문 트리거(KST)": "평일 15:20", "주문 조건": "주문 가능 시간에서만 가상주문", "텔레그램 발송": "헬스체크 리포트", "실행 경로": "GitHub Actions → Google VM → 점검"},
         ]))
 
     elif mode == "PENSION":
         st.subheader("연금저축 전략 트리거")
         st.table(pd.DataFrame([
-            {"전략": "KIS 연금저축 LAA", "주문 트리거(KST)": "매월 25~31일 평일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20) + LAA 목표비중 리밸런싱", "텔레그램 발송": "실행 직후(리스크 상태/실행내역)"},
-            {"전략": "KIS 연금저축 듀얼모멘텀", "주문 트리거(KST)": "매월 25~31일 평일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20) + 듀얼모멘텀 상대/절대모멘텀 리밸런싱", "텔레그램 발송": "실행 직후(선택자산/목표비중/실행내역)"},
-            {"전략": "KIS 연금저축 정적배분", "주문 트리거(KST)": "매월 25~31일 평일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20) + 고정 비중 리밸런싱", "텔레그램 발송": "실행 직후(목표비중/실행내역)"},
-            {"전략": "헬스체크(가상주문)", "주문 트리거(KST)": "평일 15:20", "주문 조건": "주문 가능 시간에서만 가상주문", "텔레그램 발송": "헬스체크 리포트"},
+            {"전략": "KIS 연금저축 LAA", "주문 트리거(KST)": "매월 25~31일 평일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20) + LAA 목표비중 리밸런싱", "텔레그램 발송": "실행 직후(리스크 상태/실행내역)", "실행 경로": "GitHub Actions → KIS API"},
+            {"전략": "KIS 연금저축 듀얼모멘텀", "주문 트리거(KST)": "매월 25~31일 평일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20) + 듀얼모멘텀 상대/절대모멘텀 리밸런싱", "텔레그램 발송": "실행 직후(선택자산/목표비중/실행내역)", "실행 경로": "GitHub Actions → KIS API"},
+            {"전략": "KIS 연금저축 정적배분", "주문 트리거(KST)": "매월 25~31일 평일 15:20", "주문 조건": "주문 가능 시간(09:00~15:20) + 고정 비중 리밸런싱", "텔레그램 발송": "실행 직후(목표비중/실행내역)", "실행 경로": "GitHub Actions → KIS API"},
+            {"전략": "헬스체크(가상주문)", "주문 트리거(KST)": "평일 15:20", "주문 조건": "주문 가능 시간에서만 가상주문", "텔레그램 발송": "헬스체크 리포트", "실행 경로": "GitHub Actions → Google VM → 점검"},
         ]))
 
     else:
@@ -1948,7 +1956,10 @@ def render_gold_mode():
 
         # 자동매매 규칙
         with st.expander("⚖️ 자동매매 규칙", expanded=False):
-            rules_lines = ["**실행 시점**: GitHub Actions - 매 평일 KST 09:05\n"]
+            rules_lines = [
+                "**실행 시점**: GitHub Actions - 매 평일 KST 09:05",
+                "**실행 경로**: 로컬 직접 주문 미사용 → GitHub Actions → 키움 API\n",
+            ]
             for gp in gold_portfolio_list:
                 if gp['strategy'] == "Donchian":
                     rules_lines.append(f"**{gp['strategy']}({gp['buy_period']}/{gp['sell_period']})** 비중 {gp['weight']}%")
@@ -3029,18 +3040,30 @@ def render_kis_isa_mode():
         key="isa_seed", disabled=IS_CLOUD,
     )
     _isa_start_default = config.get("kis_isa_start_date", "2022-03-08")
+    _isa_listing_date = data_cache.get_wdr_trade_listing_date(str(isa_etf_code))
+    if _isa_listing_date and str(_isa_start_default) < _isa_listing_date:
+        _isa_start_default = _isa_listing_date
     # 이전 계산에서 매매 ETF 상장일이 감지되었으면 자동 보정
     _prev_res = st.session_state.get("isa_signal_result")
     if isinstance(_prev_res, dict) and _prev_res.get("trade_first_date"):
         _tfd = _prev_res["trade_first_date"]
         if str(_isa_start_default) < _tfd:
             _isa_start_default = _tfd
+
+    _isa_start_sync_key = "isa_start_sync_trade_code"
+    _isa_trade_sync_val = str(isa_etf_code)
+    if st.session_state.get(_isa_start_sync_key) != _isa_trade_sync_val:
+        st.session_state["isa_start_date"] = pd.to_datetime(_isa_start_default).date()
+        st.session_state[_isa_start_sync_key] = _isa_trade_sync_val
+
     isa_start_date = st.sidebar.date_input(
         "시작일",
         value=pd.to_datetime(_isa_start_default).date(),
         key="isa_start_date",
         disabled=IS_CLOUD,
     )
+    if _isa_listing_date:
+        st.sidebar.caption(f"시작일 자동기준: 매매 ETF 상장일({_isa_listing_date})")
 
     if not IS_CLOUD and st.sidebar.button("ISA 설정 저장", key="isa_save_cfg"):
         new_cfg = config.copy()
@@ -4010,6 +4033,7 @@ def render_kis_isa_mode():
 
         st.subheader("자동매매 흐름 (GitHub Actions)")
         st.markdown(f"""
+0. 로컬 PC에서 직접 주문하지 않고, GitHub Actions에서만 주문 실행
 1. 매주 금요일 KST 15:20 실행 (`TRADING_MODE=kis_isa`)
 2. TREND ETF({_fmt_etf_code_name(isa_trend_etf_code)}) 일봉 → 주봉 변환 → 성장 추세선 계산
 3. 이격도 기반 시장 상태 판단 (고평가/중립/저평가)
@@ -4092,6 +4116,82 @@ def render_kis_isa_mode():
             bt_un = st.number_input("저평가 임계값 (%)", min_value=-30.0, max_value=0.0,
                 value=-6.0, step=0.5, key="bt_tqqq_un")
 
+        # ── 매수/매도 비율 설정 ──
+        _bt_ratio_expand = st.expander("매수/매도 비율 설정 (%)", expanded=False)
+        with _bt_ratio_expand:
+            if us_eval_mode == 3:
+                _rh1, _rh2, _rh3 = st.columns(3)
+                with _rh1:
+                    st.markdown("**고평가**")
+                    bt_sell_ov = st.number_input("매도 비율", min_value=0.0, max_value=300.0,
+                        value=100.0, step=5.0, key="bt_sell_ov")
+                    bt_buy_ov = st.number_input("매수 비율", min_value=0.0, max_value=300.0,
+                        value=66.7, step=5.0, key="bt_buy_ov")
+                with _rh2:
+                    st.markdown("**중립**")
+                    bt_sell_n = st.number_input("매도 비율", min_value=0.0, max_value=300.0,
+                        value=66.7, step=5.0, key="bt_sell_n")
+                    bt_buy_n = st.number_input("매수 비율", min_value=0.0, max_value=300.0,
+                        value=66.7, step=5.0, key="bt_buy_n")
+                with _rh3:
+                    st.markdown("**저평가**")
+                    bt_sell_un = st.number_input("매도 비율", min_value=0.0, max_value=300.0,
+                        value=60.0, step=5.0, key="bt_sell_un")
+                    bt_buy_un = st.number_input("매수 비율", min_value=0.0, max_value=300.0,
+                        value=120.0, step=5.0, key="bt_buy_un")
+                _bt_ratio_override = {
+                    'sell_ratio_overvalue': bt_sell_ov,
+                    'sell_ratio_neutral': bt_sell_n,
+                    'sell_ratio_undervalue': bt_sell_un,
+                    'buy_ratio_overvalue': bt_buy_ov,
+                    'buy_ratio_neutral': bt_buy_n,
+                    'buy_ratio_undervalue': bt_buy_un,
+                }
+            else:  # 5단계
+                _rh1, _rh2, _rh3, _rh4, _rh5 = st.columns(5)
+                with _rh1:
+                    st.markdown("**초고평가**")
+                    bt_sell_sov = st.number_input("매도 비율", min_value=0.0, max_value=300.0,
+                        value=150.0, step=5.0, key="bt_sell_sov")
+                    bt_buy_sov = st.number_input("매수 비율", min_value=0.0, max_value=300.0,
+                        value=33.0, step=5.0, key="bt_buy_sov")
+                with _rh2:
+                    st.markdown("**고평가**")
+                    bt_sell_ov5 = st.number_input("매도 비율", min_value=0.0, max_value=300.0,
+                        value=100.0, step=5.0, key="bt_sell_ov5")
+                    bt_buy_ov5 = st.number_input("매수 비율", min_value=0.0, max_value=300.0,
+                        value=66.7, step=5.0, key="bt_buy_ov5")
+                with _rh3:
+                    st.markdown("**중립**")
+                    bt_sell_n5 = st.number_input("매도 비율", min_value=0.0, max_value=300.0,
+                        value=66.7, step=5.0, key="bt_sell_n5")
+                    bt_buy_n5 = st.number_input("매수 비율", min_value=0.0, max_value=300.0,
+                        value=66.7, step=5.0, key="bt_buy_n5")
+                with _rh4:
+                    st.markdown("**저평가**")
+                    bt_sell_un5 = st.number_input("매도 비율", min_value=0.0, max_value=300.0,
+                        value=60.0, step=5.0, key="bt_sell_un5")
+                    bt_buy_un5 = st.number_input("매수 비율", min_value=0.0, max_value=300.0,
+                        value=120.0, step=5.0, key="bt_buy_un5")
+                with _rh5:
+                    st.markdown("**초저평가**")
+                    bt_sell_sun = st.number_input("매도 비율", min_value=0.0, max_value=300.0,
+                        value=33.0, step=5.0, key="bt_sell_sun")
+                    bt_buy_sun = st.number_input("매수 비율", min_value=0.0, max_value=300.0,
+                        value=200.0, step=5.0, key="bt_buy_sun")
+                _bt_ratio_override = {
+                    'sell_ratio_super_overvalue': bt_sell_sov,
+                    'sell_ratio_overvalue': bt_sell_ov5,
+                    'sell_ratio_neutral': bt_sell_n5,
+                    'sell_ratio_undervalue': bt_sell_un5,
+                    'sell_ratio_super_undervalue': bt_sell_sun,
+                    'buy_ratio_super_overvalue': bt_buy_sov,
+                    'buy_ratio_overvalue': bt_buy_ov5,
+                    'buy_ratio_neutral': bt_buy_n5,
+                    'buy_ratio_undervalue': bt_buy_un5,
+                    'buy_ratio_super_undervalue': bt_buy_sun,
+                }
+
         if st.button("백테스트 실행", key="tqqq_wdr_run_bt", type="primary", use_container_width=True):
             with st.spinner("QQQ/TQQQ 데이터 로드 중..."):
                 start_str = str(bt_start_date)
@@ -4110,11 +4210,13 @@ def render_kis_isa_mode():
                         sig_df_full = pd.DataFrame({"close": df_sig_full["close"]}).dropna()
                         trade_df = pd.DataFrame({"close": df_trade_raw["close"]}).dropna()
 
-                        _bt_strategy = WDRStrategy(settings={
+                        _bt_settings = {
                             "overvalue_threshold": bt_ov,
                             "undervalue_threshold": bt_un,
                             "commission_rate": bt_fee / 100.0,
-                        }, evaluation_mode=us_eval_mode)
+                        }
+                        _bt_settings.update(_bt_ratio_override)
+                        _bt_strategy = WDRStrategy(settings=_bt_settings, evaluation_mode=us_eval_mode)
 
                         result = _bt_strategy.run_backtest(
                             signal_daily_df=sig_df_full,
@@ -4198,8 +4300,9 @@ def render_kis_isa_mode():
                                 fig_trend.update_layout(
                                     title=f"QQQ Growth Trend ({us_eval_mode}단계)",
                                     xaxis_title="날짜", yaxis_title="가격 ($)",
-                                    height=400, margin=dict(l=0, r=0, t=70, b=30),
-                                    legend=dict(orientation="h", yanchor="bottom", y=1.06),
+                                    height=420, margin=dict(l=0, r=0, t=90, b=30),
+                                    legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                                xanchor="center", x=0.5),
                                 )
                                 st.plotly_chart(fig_trend, use_container_width=True)
 
@@ -4217,9 +4320,10 @@ def render_kis_isa_mode():
                                 ))
                             fig_eq.update_layout(
                                 title="누적 수익률 비교 (%)",
-                                yaxis_title="수익률 (%)", height=400,
-                                margin=dict(l=0, r=0, t=70, b=30),
-                                legend=dict(orientation="h", yanchor="bottom", y=1.06)
+                                yaxis_title="수익률 (%)", height=420,
+                                margin=dict(l=0, r=0, t=90, b=30),
+                                legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                            xanchor="center", x=0.5)
                             )
                             fig_eq = _apply_return_hover_format(fig_eq, apply_all=True)
                             st.plotly_chart(fig_eq, use_container_width=True)
@@ -4242,9 +4346,10 @@ def render_kis_isa_mode():
                                     name="TQQQ B&H DD", line=dict(color="gray", width=1, dash="dot")
                                 ))
                             fig_dd.update_layout(
-                                title="Drawdown", yaxis_title="DD (%)", height=280,
-                                margin=dict(l=0, r=0, t=70, b=30),
-                                legend=dict(orientation="h", yanchor="bottom", y=1.06)
+                                title="Drawdown", yaxis_title="DD (%)", height=300,
+                                margin=dict(l=0, r=0, t=90, b=30),
+                                legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                                            xanchor="center", x=0.5)
                             )
                             fig_dd = _apply_dd_hover_format(fig_dd)
                             st.plotly_chart(fig_dd, use_container_width=True)
@@ -4277,101 +4382,242 @@ def render_kis_isa_mode():
         st.header("위대리 (WTR) 최적화")
         st.caption("고평가/저평가 임계값 그리드 서치 — Calmar 비율 최적화")
 
-        from strategy.widaeri import WDRStrategy as _OptWDR
+        from strategy.widaeri import WDRStrategy as _OptWDR, _wdr_opt_task
         import data_cache as _opt_dc
         from datetime import date as _opt_date
         import plotly.graph_objects as _opt_go
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        import os as _opt_os
+        _opt_num_workers = max(2, min((_opt_os.cpu_count() or 4) - 1, 12))
 
-        # ── 평가 시스템 ──
-        _opt_mc, _ = st.columns(2)
-        with _opt_mc:
-            opt_eval_mode = st.selectbox("평가 시스템", [3, 5], index=1,
+        # 최적화 대상 티커 (사이드바 선택값과 동일)
+        _opt_trade_code = str(isa_etf_code)
+        _opt_trend_code = str(isa_trend_etf_code)
+        _opt_trade_label = _fmt_etf_code_name(_opt_trade_code)
+        _opt_trend_label = _fmt_etf_code_name(_opt_trend_code)
+        st.caption(f"TREND ETF: {_opt_trend_label} | 매매 ETF: {_opt_trade_label}")
+
+        # 티커 변경 시 시작일/초기비중 기본값 자동 동기화
+        _opt_listing_date = _opt_dc.get_wdr_trade_listing_date(_opt_trade_code)
+        if not _opt_listing_date:
+            _opt_trade_df_probe = _get_isa_daily_chart(_opt_trade_code, count=5000)
+            if _opt_trade_df_probe is not None and len(_opt_trade_df_probe) > 0:
+                _opt_listing_date = str(_opt_trade_df_probe.index[0].date())
+        _opt_listing_dt = pd.to_datetime(_opt_listing_date).date() if _opt_listing_date else _opt_date(2012, 1, 1)
+
+        _opt_ref_ratio_info = _opt_dc.get_wdr_v10_stock_ratio(_opt_trade_code, _opt_listing_date)
+        _opt_default_init_ratio_pct = (
+            round(float(_opt_ref_ratio_info.get("stock_ratio", 0.0)) * 100.0, 2)
+            if _opt_ref_ratio_info else 0.0
+        )
+
+        _opt_ticker_sync_key = "opt_wdr_ticker_sync_key"
+        _opt_now_key = f"{_opt_trend_code}|{_opt_trade_code}"
+        if st.session_state.get(_opt_ticker_sync_key) != _opt_now_key:
+            st.session_state["opt_wdr_start"] = _opt_listing_dt
+            st.session_state[_opt_ticker_sync_key] = _opt_now_key
+
+        # ── 평가 시스템 & 탐색 방식 ──
+        _opt_mc1, _opt_mc2 = st.columns(2)
+        with _opt_mc1:
+            opt_eval_mode = st.selectbox("평가 시스템", [3, 5], index=0,
                                          format_func=lambda x: f"{x}단계", key="opt_wdr_eval_mode")
+        with _opt_mc2:
+            opt_search_mode = st.selectbox("탐색 방식", ["그리드 서치", "랜덤 서치"],
+                                            key="opt_wdr_search_mode")
+        _is_random = opt_search_mode == "랜덤 서치"
 
-        # ── 파라미터 범위 ──
-        st.subheader("파라미터 범위")
+        if _is_random:
+            _rnd_col1, _rnd_col2 = st.columns(2)
+            with _rnd_col1:
+                opt_n_trials = st.number_input("탐색 횟수", min_value=50, max_value=10000,
+                                                value=500, step=50, key="opt_wdr_n_trials")
+            with _rnd_col2:
+                opt_sort_by = st.selectbox("최적화 목표", ["Calmar", "Sharpe", "CAGR"],
+                                            key="opt_wdr_sort_by")
+
+        _step_label = "스텝" if not _is_random else "단위"
+
+        # ── 임계값 범위 ──
+        st.subheader("임계값 범위")
         oc1, oc2, oc3 = st.columns(3)
         with oc1:
-            opt_start = st.date_input("시작일", value=_opt_date(2012, 1, 1),
-                                      min_value=_opt_date(1999, 3, 10), key="opt_wdr_start")
+            opt_start = st.date_input(
+                "시작일", value=_opt_listing_dt, min_value=_opt_listing_dt,
+                key="opt_wdr_start", help="매매 ETF 상장일 기준으로 자동 보정됩니다.",
+            )
             opt_end = st.date_input("종료일", value=_opt_date.today(), key="opt_wdr_end")
+            if _opt_listing_date:
+                st.caption(f"상장일 기준 자동 시작: {_opt_listing_date}")
         with oc2:
             ov_min = st.number_input("고평가 최소 (%)", value=2.0, step=0.5, key="opt_ov_min")
             ov_max = st.number_input("고평가 최대 (%)", value=10.0, step=0.5, key="opt_ov_max")
-            ov_step = st.number_input("고평가 스텝", value=1.0, step=0.5, min_value=0.5, key="opt_ov_step")
+            ov_step = st.number_input(f"고평가 {_step_label}", value=1.0, step=0.5, min_value=0.5, key="opt_ov_step")
         with oc3:
             un_min = st.number_input("저평가 최소 (%)", value=-12.0, step=0.5, key="opt_un_min")
             un_max = st.number_input("저평가 최대 (%)", value=-3.0, step=0.5, key="opt_un_max")
-            un_step = st.number_input("저평가 스텝", value=1.0, step=0.5, min_value=0.5, key="opt_un_step")
+            un_step = st.number_input(f"저평가 {_step_label}", value=1.0, step=0.5, min_value=0.5, key="opt_un_step")
 
+        # ── 초기자본 / 수수료 ──
         oc4, oc5 = st.columns(2)
         with oc4:
-            opt_cap = st.number_input("초기 자본 ($)", min_value=1000, value=10000, step=1000, key="opt_wdr_cap")
+            opt_cap = st.number_input("초기 자본 (원)", min_value=1_000_000, value=int(isa_seed),
+                                      step=1_000_000, key="opt_wdr_cap")
         with oc5:
             opt_fee = st.number_input("매매 수수료 (%)", min_value=0.0, max_value=1.0,
-                                      value=0.1, step=0.01, format="%.2f", key="opt_wdr_fee")
+                                      value=0.05, step=0.01, format="%.2f", key="opt_wdr_fee")
 
-        # 조합 수 계산
+        # ── 초기 주식비중 범위 ──
+        st.subheader("초기 주식비중 범위")
+        rc1, rc2, rc3 = st.columns(3)
+        with rc1:
+            ir_min = st.number_input("비중 최소 (%)", min_value=0.0, max_value=100.0,
+                                     value=50.0, step=5.0, key="opt_ir_min")
+        with rc2:
+            ir_max = st.number_input("비중 최대 (%)", min_value=0.0, max_value=100.0,
+                                     value=100.0, step=5.0, key="opt_ir_max")
+        with rc3:
+            ir_step = st.number_input(f"비중 {_step_label}", value=10.0, step=5.0, min_value=5.0, key="opt_ir_step")
+
+        # ── 매수/매도 비율 범위 ──
+        st.subheader("매수/매도 비율 범위")
+        _opt_ratio_enabled = st.checkbox("매수/매도 비율도 최적화", value=False, key="opt_wdr_ratio_opt")
+        if _opt_ratio_enabled:
+            if opt_eval_mode == 3:
+                _ratio_step = st.number_input(f"비율 {_step_label}", value=10.0, step=5.0, min_value=5.0, key="opt_ratio_step")
+                st.markdown("##### 고평가 구간")
+                _r3c1, _r3c2 = st.columns(2)
+                with _r3c1:
+                    sell_ov_min = st.number_input("매도비율 최소", value=60.0, step=_ratio_step, key="opt_sell_ov_min")
+                    sell_ov_max = st.number_input("매도비율 최대", value=150.0, step=_ratio_step, key="opt_sell_ov_max")
+                with _r3c2:
+                    buy_ov_min = st.number_input("매수비율 최소", value=30.0, step=_ratio_step, key="opt_buy_ov_min")
+                    buy_ov_max = st.number_input("매수비율 최대", value=100.0, step=_ratio_step, key="opt_buy_ov_max")
+                st.markdown("##### 중립 구간")
+                _r3c3, _r3c4 = st.columns(2)
+                with _r3c3:
+                    sell_n_min = st.number_input("매도비율 최소", value=30.0, step=_ratio_step, key="opt_sell_n_min")
+                    sell_n_max = st.number_input("매도비율 최대", value=100.0, step=_ratio_step, key="opt_sell_n_max")
+                with _r3c4:
+                    buy_n_min = st.number_input("매수비율 최소", value=30.0, step=_ratio_step, key="opt_buy_n_min")
+                    buy_n_max = st.number_input("매수비율 최대", value=100.0, step=_ratio_step, key="opt_buy_n_max")
+                st.markdown("##### 저평가 구간")
+                _r3c5, _r3c6 = st.columns(2)
+                with _r3c5:
+                    sell_un_min = st.number_input("매도비율 최소", value=30.0, step=_ratio_step, key="opt_sell_un_min")
+                    sell_un_max = st.number_input("매도비율 최대", value=100.0, step=_ratio_step, key="opt_sell_un_max")
+                with _r3c6:
+                    buy_un_min = st.number_input("매수비율 최소", value=60.0, step=_ratio_step, key="opt_buy_un_min")
+                    buy_un_max = st.number_input("매수비율 최대", value=200.0, step=_ratio_step, key="opt_buy_un_max")
+            else:
+                st.info("5단계 비율 최적화는 랜덤 서치에서만 지원됩니다.")
+
+        # ── 조합 수 / 탐색 횟수 계산 ──
         import numpy as _opt_np
-        _ov_vals = _opt_np.arange(ov_min, ov_max + ov_step * 0.01, ov_step)
-        _un_vals = _opt_np.arange(un_min, un_max + un_step * 0.01, un_step)
-        _total_combos = len(_ov_vals) * len(_un_vals)
-        st.info(f"총 {_total_combos}개 조합 (고평가 {len(_ov_vals)}개 × 저평가 {len(_un_vals)}개)")
+        import random as _opt_random
+
+        if _is_random:
+            _total_combos = int(opt_n_trials)
+            st.info(f"랜덤 서치: {_total_combos}회 탐색 | 병렬 워커: {_opt_num_workers}")
+        else:
+            _ov_vals = _opt_np.arange(ov_min, ov_max + ov_step * 0.01, ov_step)
+            _un_vals = _opt_np.arange(un_min, un_max + un_step * 0.01, un_step)
+            _ir_vals = _opt_np.arange(ir_min, ir_max + ir_step * 0.01, ir_step)
+            _total_combos = len(_ov_vals) * len(_un_vals) * len(_ir_vals)
+            st.info(f"그리드 서치: 총 {_total_combos}개 조합 (고평가 {len(_ov_vals)}개 × 저평가 {len(_un_vals)}개 × 비중 {len(_ir_vals)}개) | 병렬 워커: {_opt_num_workers}")
 
         if st.button("최적화 시작", key="opt_wdr_run", type="primary"):
-            # QQQ / TQQQ 데이터 로드
-            _qqq = _opt_dc.get_daily_chart_cached("QQQ", period="max")
-            _tqqq = _opt_dc.get_daily_chart_cached("TQQQ", period="max")
-            if _qqq is None or _tqqq is None or len(_qqq) < 200:
-                st.error("QQQ/TQQQ 데이터를 불러올 수 없습니다.")
+            # 사이드바 선택 티커 데이터 로드 (TREND/매매 ETF)
+            _qqq = _get_isa_daily_chart(_opt_trend_code, count=5000)
+            _tqqq = _get_isa_daily_chart(_opt_trade_code, count=5000)
+            if _qqq is None or _tqqq is None or len(_qqq) < 200 or len(_tqqq) < 60:
+                st.error(f"데이터를 불러올 수 없습니다. ({_opt_trend_code}/{_opt_trade_code})")
             else:
+                _effective_opt_start = str(opt_start)
+                if _opt_listing_date and _effective_opt_start < _opt_listing_date:
+                    _effective_opt_start = _opt_listing_date
+
+                st.caption(f"적용 시작일: {_effective_opt_start} | 병렬 워커: {_opt_num_workers}")
+
+                def _build_settings(ov_v, un_v, **ratio_kw):
+                    """settings dict 생성."""
+                    s = {"overvalue_threshold": ov_v, "undervalue_threshold": un_v}
+                    s.update(ratio_kw)
+                    return s
+
+                def _snap(val, step):
+                    """값을 단위(step) 배수로 반올림."""
+                    return round(round(val / step) * step, 4)
+
+                # 작업 목록 생성
+                _opt_tasks = []
+                if _is_random:
+                    for _ in range(_total_combos):
+                        _ov_v = _snap(_opt_random.uniform(ov_min, ov_max), ov_step)
+                        _un_v = _snap(_opt_random.uniform(un_min, un_max), un_step)
+                        _ir_v = _snap(_opt_random.uniform(ir_min, ir_max), ir_step)
+                        _ratio_kw = {}
+                        if _opt_ratio_enabled and opt_eval_mode == 3:
+                            _ratio_kw = {
+                                "sell_ratio_overvalue": _snap(_opt_random.uniform(sell_ov_min, sell_ov_max), _ratio_step),
+                                "sell_ratio_neutral": _snap(_opt_random.uniform(sell_n_min, sell_n_max), _ratio_step),
+                                "sell_ratio_undervalue": _snap(_opt_random.uniform(sell_un_min, sell_un_max), _ratio_step),
+                                "buy_ratio_overvalue": _snap(_opt_random.uniform(buy_ov_min, buy_ov_max), _ratio_step),
+                                "buy_ratio_neutral": _snap(_opt_random.uniform(buy_n_min, buy_n_max), _ratio_step),
+                                "buy_ratio_undervalue": _snap(_opt_random.uniform(buy_un_min, buy_un_max), _ratio_step),
+                            }
+                        _opt_tasks.append((
+                            _qqq, _tqqq,
+                            _build_settings(_ov_v, _un_v, **_ratio_kw),
+                            int(opt_eval_mode), float(opt_cap),
+                            _effective_opt_start, opt_fee / 100.0, _ir_v,
+                        ))
+                else:
+                    for _ov in _ov_vals:
+                        for _un in _un_vals:
+                            for _ir in _ir_vals:
+                                _opt_tasks.append((
+                                    _qqq, _tqqq,
+                                    _build_settings(round(float(_ov), 2), round(float(_un), 2)),
+                                    int(opt_eval_mode), float(opt_cap),
+                                    _effective_opt_start, opt_fee / 100.0, round(float(_ir), 2),
+                                ))
+
+                _total_combos = len(_opt_tasks)
                 results = []
                 prog = st.progress(0)
                 done = 0
-                for _ov in _ov_vals:
-                    for _un in _un_vals:
-                        _ov_r = round(float(_ov), 2)
-                        _un_r = round(float(_un), 2)
-                        strat = _OptWDR(settings={
-                            "overvalue_threshold": _ov_r,
-                            "undervalue_threshold": _un_r,
-                        }, evaluation_mode=int(opt_eval_mode))
-                        bt = strat.run_backtest(
-                            signal_daily_df=_qqq,
-                            trade_daily_df=_tqqq,
-                            initial_balance=float(opt_cap),
-                            start_date=str(opt_start),
-                            fee_rate=opt_fee / 100.0,
-                        )
-                        if bt and bt.get("metrics"):
-                            m = bt["metrics"]
-                            results.append({
-                                "고평가(%)": _ov_r,
-                                "저평가(%)": _un_r,
-                                "CAGR(%)": round(m["cagr"] * 100, 2),
-                                "MDD(%)": round(m["mdd"] * 100, 2),
-                                "Calmar": round(m["calmar"], 3),
-                                "Sharpe": round(m["sharpe"], 3),
-                                "수익률(%)": round(m["total_return"] * 100, 2),
-                                "최종자산": round(m["final_equity"], 0),
-                            })
+                with ProcessPoolExecutor(max_workers=_opt_num_workers) as _pool:
+                    _futs = [_pool.submit(_wdr_opt_task, *t) for t in _opt_tasks]
+                    for _f in as_completed(_futs):
+                        r = _f.result()
+                        if r is not None:
+                            results.append(r)
                         done += 1
-                        prog.progress(done / _total_combos)
+                        if done % max(1, _total_combos // 50) == 0:
+                            prog.progress(done / _total_combos)
+                prog.progress(1.0)
                 prog.empty()
 
                 if not results:
                     st.error("최적화 결과가 없습니다.")
                 else:
-                    df_opt = pd.DataFrame(results).sort_values("Calmar", ascending=False).reset_index(drop=True)
+                    _sort_col = "Calmar"
+                    if _is_random and opt_sort_by in ("Sharpe", "CAGR"):
+                        _sort_col = opt_sort_by if opt_sort_by == "Sharpe" else "CAGR(%)"
+                    df_opt = pd.DataFrame(results).sort_values(_sort_col, ascending=False).reset_index(drop=True)
                     df_opt.index = df_opt.index + 1  # 1-based rank
 
-                    st.subheader("최적화 결과 (Calmar 순)")
+                    st.subheader(f"최적화 결과 ({_sort_col} 순)")
                     st.dataframe(df_opt, use_container_width=True)
 
-                    # ── 히트맵 ──
+                    # ── 히트맵 (최적 비중 기준) ──
+                    _best_ir = df_opt.iloc[0]["초기비중(%)"]
+                    # 각 (고평가, 저평가) 조합별 최고 Calmar 행만 추출
+                    _hm_df = df_opt.loc[df_opt.groupby(["고평가(%)", "저평가(%)"])["Calmar"].idxmax()]
                     hm1, hm2 = st.columns(2)
                     with hm1:
-                        _pivot_calmar = df_opt.pivot_table(
+                        _pivot_calmar = _hm_df.pivot_table(
                             index="저평가(%)", columns="고평가(%)", values="Calmar", aggfunc="first"
                         ).sort_index(ascending=False)
                         fig_hm_c = _opt_go.Figure(data=_opt_go.Heatmap(
@@ -4380,11 +4626,11 @@ def render_kis_isa_mode():
                             y=[str(r) for r in _pivot_calmar.index],
                             colorscale="YlOrRd", texttemplate="%{z:.2f}", textfont={"size": 10},
                         ))
-                        fig_hm_c.update_layout(title="Calmar Ratio", xaxis_title="고평가(%)",
+                        fig_hm_c.update_layout(title="Calmar Ratio (각 셀 최적 비중)", xaxis_title="고평가(%)",
                                                yaxis_title="저평가(%)", height=400)
                         st.plotly_chart(fig_hm_c, use_container_width=True)
                     with hm2:
-                        _pivot_cagr = df_opt.pivot_table(
+                        _pivot_cagr = _hm_df.pivot_table(
                             index="저평가(%)", columns="고평가(%)", values="CAGR(%)", aggfunc="first"
                         ).sort_index(ascending=False)
                         fig_hm_g = _opt_go.Figure(data=_opt_go.Heatmap(
@@ -4393,27 +4639,61 @@ def render_kis_isa_mode():
                             y=[str(r) for r in _pivot_cagr.index],
                             colorscale="Viridis", texttemplate="%{z:.1f}", textfont={"size": 10},
                         ))
-                        fig_hm_g.update_layout(title="CAGR (%)", xaxis_title="고평가(%)",
+                        fig_hm_g.update_layout(title="CAGR (%) (각 셀 최적 비중)", xaxis_title="고평가(%)",
                                                yaxis_title="저평가(%)", height=400)
                         st.plotly_chart(fig_hm_g, use_container_width=True)
 
-                    # ── 최적 파라미터 표시 ──
-                    best = df_opt.iloc[0]
-                    st.success(
-                        f"**최적 파라미터**: 고평가 {best['고평가(%)']}% / 저평가 {best['저평가(%)']}% "
-                        f"→ CAGR {best['CAGR(%)']}% | MDD {best['MDD(%)']}% | Calmar {best['Calmar']}"
+                    # ── 파라미터 선택 백테스트 ──
+                    _top_n_wdr = min(20, len(df_opt))
+                    _sel_labels_wdr = []
+                    for _ri in range(_top_n_wdr):
+                        _r = df_opt.iloc[_ri]
+                        _lbl = f"#{_ri+1}  고평가 {_r['고평가(%)']}% / 저평가 {_r['저평가(%)']}% / 비중 {_r['초기비중(%)']}%"
+                        _lbl += f"  |  CAGR {_r['CAGR(%)']}%  |  MDD {_r['MDD(%)']}%  |  Calmar {_r['Calmar']}"
+                        _sel_labels_wdr.append(_lbl)
+
+                    _sel_idx_wdr = st.selectbox(
+                        "백테스트할 파라미터 선택", range(_top_n_wdr),
+                        format_func=lambda x: _sel_labels_wdr[x], index=0,
+                        key="wdr_opt_bt_select",
                     )
 
-                    # ── 최적 파라미터 백테스트 차트 ──
-                    st.subheader("최적 파라미터 백테스트")
-                    _best_strat = _OptWDR(settings={
+                    best = df_opt.iloc[_sel_idx_wdr]
+                    _best_msg = (
+                        f"**선택 파라미터**: 고평가 {best['고평가(%)']}% / 저평가 {best['저평가(%)']}% "
+                        f"/ 초기비중 {best['초기비중(%)']}%"
+                    )
+                    if "매도_고평가" in best and pd.notna(best.get("매도_고평가")):
+                        _best_msg += (
+                            f"\n매도 ({best.get('매도_고평가', '-')}/{best.get('매도_중립', '-')}/{best.get('매도_저평가', '-')})"
+                            f" | 매수 ({best.get('매수_고평가', '-')}/{best.get('매수_중립', '-')}/{best.get('매수_저평가', '-')})"
+                        )
+                    _best_msg += (
+                        f"\n→ CAGR {best['CAGR(%)']}% | MDD {best['MDD(%)']}% | Calmar {best['Calmar']}"
+                    )
+                    st.success(_best_msg)
+
+                    # ── 선택 파라미터 백테스트 차트 ──
+                    st.subheader("선택 파라미터 백테스트")
+                    _best_settings = {
                         "overvalue_threshold": float(best["고평가(%)"]),
                         "undervalue_threshold": float(best["저평가(%)"]),
-                    }, evaluation_mode=int(opt_eval_mode))
+                    }
+                    _ratio_map = {
+                        "매도_고평가": "sell_ratio_overvalue", "매도_중립": "sell_ratio_neutral",
+                        "매도_저평가": "sell_ratio_undervalue", "매수_고평가": "buy_ratio_overvalue",
+                        "매수_중립": "buy_ratio_neutral", "매수_저평가": "buy_ratio_undervalue",
+                    }
+                    for _kor, _eng in _ratio_map.items():
+                        if _kor in best and pd.notna(best[_kor]):
+                            _best_settings[_eng] = float(best[_kor])
+
+                    _best_strat = _OptWDR(settings=_best_settings, evaluation_mode=int(opt_eval_mode))
                     _best_bt = _best_strat.run_backtest(
                         signal_daily_df=_qqq, trade_daily_df=_tqqq,
-                        initial_balance=float(opt_cap), start_date=str(opt_start),
+                        initial_balance=float(opt_cap), start_date=_effective_opt_start,
                         fee_rate=opt_fee / 100.0,
+                        initial_stock_ratio=float(best["초기비중(%)"]) / 100.0,
                     )
                     if _best_bt and _best_bt.get("equity_df") is not None:
                         _b_eq = _best_bt["equity_df"]
@@ -4429,12 +4709,12 @@ def render_kis_isa_mode():
                         if _b_bm is not None and "benchmark_return_pct" in _b_bm.columns:
                             fig_b_eq.add_trace(_opt_go.Scatter(
                                 x=_b_bm.index, y=_b_bm["benchmark_return_pct"].values, mode="lines",
-                                name="QQQ Buy & Hold", line=dict(color="gray", width=1, dash="dot")
+                                name=f"{_opt_trend_label} Buy & Hold", line=dict(color="gray", width=1, dash="dot")
                             ))
                         fig_b_eq.update_layout(
-                            title="누적 수익률 (%)", yaxis_title="수익률 (%)", height=370,
-                            margin=dict(l=0, r=0, t=56, b=30),
-                            legend=dict(orientation="h", yanchor="bottom", y=1.08)
+                            title="누적 수익률 (%)", yaxis_title="수익률 (%)", height=400,
+                            margin=dict(l=0, r=0, t=80, b=30),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.5, xanchor="center")
                         )
                         fig_b_eq = _apply_return_hover_format(fig_b_eq, apply_all=True)
                         st.plotly_chart(fig_b_eq, use_container_width=True)
@@ -4449,9 +4729,9 @@ def render_kis_isa_mode():
                             fill="tozeroy", fillcolor="rgba(220,20,60,0.15)"
                         ))
                         fig_b_dd.update_layout(
-                            title="Drawdown", yaxis_title="DD (%)", height=280,
-                            margin=dict(l=0, r=0, t=56, b=30),
-                            legend=dict(orientation="h", yanchor="bottom", y=1.08)
+                            title="Drawdown", yaxis_title="DD (%)", height=300,
+                            margin=dict(l=0, r=0, t=80, b=30),
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.5, xanchor="center")
                         )
                         fig_b_dd = _apply_dd_hover_format(fig_b_dd)
                         st.plotly_chart(fig_b_dd, use_container_width=True)
@@ -4488,7 +4768,7 @@ def render_kis_pension_mode():
     from plotly.subplots import make_subplots
 
     # ── 사용 가능한 전략 목록 ──
-    PEN_STRATEGIES = ["LAA", "듀얼모멘텀", "정적배분"]
+    PEN_STRATEGIES = ["LAA", "듀얼모멘텀", "VAA", "CDM", "정적배분"]
 
     st.title("연금저축 포트폴리오")
     st.sidebar.header("연금저축 설정")
@@ -4631,6 +4911,10 @@ def render_kis_pension_mode():
         _panel_options.append("LAA 전략 설정")
     if "듀얼모멘텀" in _panel_strategies:
         _panel_options.append("듀얼모멘텀 설정")
+    if "VAA" in _panel_strategies:
+        _panel_options.append("VAA 전략 설정")
+    if "CDM" in _panel_strategies:
+        _panel_options.append("CDM 전략 설정")
     if "정적배분" in _panel_strategies:
         _panel_options.append("정적배분 설정")
 
@@ -4750,6 +5034,92 @@ def render_kis_pension_mode():
         },
     }
 
+    # ── VAA 전략 설정 ──
+    from strategy.vaa import VAAStrategy as _VAAStrategy
+    _vaa_defaults = _VAAStrategy.DEFAULT_SETTINGS
+    _vaa_kr_spy = _code_only(st.session_state.get("pen_vaa_kr_spy", config.get("pen_vaa_kr_spy", _vaa_defaults['kr_etf_map']['SPY'])))
+    _vaa_kr_efa = _code_only(st.session_state.get("pen_vaa_kr_efa", config.get("pen_vaa_kr_efa", _vaa_defaults['kr_etf_map']['EFA'])))
+    _vaa_kr_eem = _code_only(st.session_state.get("pen_vaa_kr_eem", config.get("pen_vaa_kr_eem", _vaa_defaults['kr_etf_map']['EEM'])))
+    _vaa_kr_agg = _code_only(st.session_state.get("pen_vaa_kr_agg", config.get("pen_vaa_kr_agg", _vaa_defaults['kr_etf_map']['AGG'])))
+    _vaa_kr_lqd = _code_only(st.session_state.get("pen_vaa_kr_lqd", config.get("pen_vaa_kr_lqd", _vaa_defaults['kr_etf_map']['LQD'])))
+    _vaa_kr_ief = _code_only(st.session_state.get("pen_vaa_kr_ief", config.get("pen_vaa_kr_ief", _vaa_defaults['kr_etf_map']['IEF'])))
+    _vaa_kr_shy = _code_only(st.session_state.get("pen_vaa_kr_shy", config.get("pen_vaa_kr_shy", _vaa_defaults['kr_etf_map']['SHY'])))
+
+    _show_vaa_panel = ("VAA" in _active_strategies) and (_selected_panel == "VAA 전략 설정")
+    if _show_vaa_panel:
+        with st.sidebar.expander("VAA 전략 설정", expanded=True):
+            st.caption("VAA (Vigilant Asset Allocation) 전용 설정")
+            st.markdown("**공격자산 국내 ETF**")
+            _vaa_kr_spy = _sidebar_etf_code_input("SPY 대체", _vaa_kr_spy, key="pen_vaa_kr_spy", disabled=IS_CLOUD)
+            _vaa_kr_efa = _sidebar_etf_code_input("EFA 대체", _vaa_kr_efa, key="pen_vaa_kr_efa", disabled=IS_CLOUD)
+            _vaa_kr_eem = _sidebar_etf_code_input("EEM 대체", _vaa_kr_eem, key="pen_vaa_kr_eem", disabled=IS_CLOUD)
+            _vaa_kr_agg = _sidebar_etf_code_input("AGG 대체", _vaa_kr_agg, key="pen_vaa_kr_agg", disabled=IS_CLOUD)
+            st.markdown("**방어자산 국내 ETF**")
+            _vaa_kr_lqd = _sidebar_etf_code_input("LQD 대체", _vaa_kr_lqd, key="pen_vaa_kr_lqd", disabled=IS_CLOUD)
+            _vaa_kr_ief = _sidebar_etf_code_input("IEF 대체", _vaa_kr_ief, key="pen_vaa_kr_ief", disabled=IS_CLOUD)
+            _vaa_kr_shy = _sidebar_etf_code_input("SHY 대체", _vaa_kr_shy, key="pen_vaa_kr_shy", disabled=IS_CLOUD)
+
+    _vaa_settings = {
+        'offensive': ['SPY', 'EFA', 'EEM', 'AGG'],
+        'defensive': ['LQD', 'IEF', 'SHY'],
+        'lookback': 12,
+        'top_n': 1,
+        'trading_days_per_month': 22,
+        'momentum_weights': {'m1': 12.0, 'm3': 4.0, 'm6': 2.0, 'm12': 1.0},
+        'kr_etf_map': {
+            'SPY': str(_vaa_kr_spy), 'EFA': str(_vaa_kr_efa),
+            'EEM': str(_vaa_kr_eem), 'AGG': str(_vaa_kr_agg),
+            'LQD': str(_vaa_kr_lqd), 'IEF': str(_vaa_kr_ief),
+            'SHY': str(_vaa_kr_shy),
+        },
+    }
+
+    # ── CDM 전략 설정 ──
+    from strategy.cdm import CDMStrategy as _CDMStrategy
+    _cdm_defaults = _CDMStrategy.DEFAULT_SETTINGS
+    _cdm_kr_spy = _code_only(st.session_state.get("pen_cdm_kr_spy", config.get("pen_cdm_kr_spy", _cdm_defaults['kr_etf_map']['SPY'])))
+    _cdm_kr_veu = _code_only(st.session_state.get("pen_cdm_kr_veu", config.get("pen_cdm_kr_veu", _cdm_defaults['kr_etf_map']['VEU'])))
+    _cdm_kr_vnq = _code_only(st.session_state.get("pen_cdm_kr_vnq", config.get("pen_cdm_kr_vnq", _cdm_defaults['kr_etf_map']['VNQ'])))
+    _cdm_kr_rem = _code_only(st.session_state.get("pen_cdm_kr_rem", config.get("pen_cdm_kr_rem", _cdm_defaults['kr_etf_map']['REM'])))
+    _cdm_kr_lqd = _code_only(st.session_state.get("pen_cdm_kr_lqd", config.get("pen_cdm_kr_lqd", _cdm_defaults['kr_etf_map']['LQD'])))
+    _cdm_kr_hyg = _code_only(st.session_state.get("pen_cdm_kr_hyg", config.get("pen_cdm_kr_hyg", _cdm_defaults['kr_etf_map']['HYG'])))
+    _cdm_kr_tlt = _code_only(st.session_state.get("pen_cdm_kr_tlt", config.get("pen_cdm_kr_tlt", _cdm_defaults['kr_etf_map']['TLT'])))
+    _cdm_kr_gld = _code_only(st.session_state.get("pen_cdm_kr_gld", config.get("pen_cdm_kr_gld", _cdm_defaults['kr_etf_map']['GLD'])))
+    _cdm_kr_bil = _code_only(st.session_state.get("pen_cdm_kr_bil", config.get("pen_cdm_kr_bil", _cdm_defaults['kr_etf_map']['BIL'])))
+
+    _show_cdm_panel = ("CDM" in _active_strategies) and (_selected_panel == "CDM 전략 설정")
+    if _show_cdm_panel:
+        with st.sidebar.expander("CDM 전략 설정", expanded=True):
+            st.caption("CDM (Composite Dual Momentum) 4모듈 전략")
+            st.markdown("**모듈 1: 미국 vs 해외**")
+            _cdm_kr_spy = _sidebar_etf_code_input("SPY 대체", _cdm_kr_spy, key="pen_cdm_kr_spy", disabled=IS_CLOUD)
+            _cdm_kr_veu = _sidebar_etf_code_input("VEU 대체", _cdm_kr_veu, key="pen_cdm_kr_veu", disabled=IS_CLOUD)
+            st.markdown("**모듈 2: 부동산**")
+            _cdm_kr_vnq = _sidebar_etf_code_input("VNQ 대체", _cdm_kr_vnq, key="pen_cdm_kr_vnq", disabled=IS_CLOUD)
+            _cdm_kr_rem = _sidebar_etf_code_input("REM 대체", _cdm_kr_rem, key="pen_cdm_kr_rem", disabled=IS_CLOUD)
+            st.markdown("**모듈 3: 채권**")
+            _cdm_kr_lqd = _sidebar_etf_code_input("LQD 대체", _cdm_kr_lqd, key="pen_cdm_kr_lqd", disabled=IS_CLOUD)
+            _cdm_kr_hyg = _sidebar_etf_code_input("HYG 대체", _cdm_kr_hyg, key="pen_cdm_kr_hyg", disabled=IS_CLOUD)
+            st.markdown("**모듈 4: 장기채 vs 금**")
+            _cdm_kr_tlt = _sidebar_etf_code_input("TLT 대체", _cdm_kr_tlt, key="pen_cdm_kr_tlt", disabled=IS_CLOUD)
+            _cdm_kr_gld = _sidebar_etf_code_input("GLD 대체", _cdm_kr_gld, key="pen_cdm_kr_gld", disabled=IS_CLOUD)
+            st.markdown("**방어자산**")
+            _cdm_kr_bil = _sidebar_etf_code_input("BIL 대체", _cdm_kr_bil, key="pen_cdm_kr_bil", disabled=IS_CLOUD)
+
+    _cdm_settings = {
+        'offensive': ['SPY', 'VEU', 'VNQ', 'REM', 'LQD', 'HYG', 'TLT', 'GLD'],
+        'defensive': ['BIL'],
+        'lookback': 12,
+        'trading_days_per_month': 22,
+        'kr_etf_map': {
+            'SPY': str(_cdm_kr_spy), 'VEU': str(_cdm_kr_veu),
+            'VNQ': str(_cdm_kr_vnq), 'REM': str(_cdm_kr_rem),
+            'LQD': str(_cdm_kr_lqd), 'HYG': str(_cdm_kr_hyg),
+            'TLT': str(_cdm_kr_tlt), 'GLD': str(_cdm_kr_gld),
+            'BIL': str(_cdm_kr_bil),
+        },
+    }
+
     # ── 정적배분 전략 설정 ──
     _static_settings = {}
     if "정적배분" in _active_strategies:
@@ -4802,6 +5172,26 @@ def render_kis_pension_mode():
             # 구버전 키 호환
             new_cfg["pen_dm_agg_etf"] = str(_dm_kr_map.get("SPY", "360750"))
             new_cfg["pen_dm_def_etf"] = str(_dm_kr_map.get("AGG", "453540"))
+        # VAA 설정
+        _vaa_kr = _vaa_settings.get("kr_etf_map", {})
+        new_cfg["pen_vaa_kr_spy"] = str(_vaa_kr.get("SPY", "379800"))
+        new_cfg["pen_vaa_kr_efa"] = str(_vaa_kr.get("EFA", "195930"))
+        new_cfg["pen_vaa_kr_eem"] = str(_vaa_kr.get("EEM", "295820"))
+        new_cfg["pen_vaa_kr_agg"] = str(_vaa_kr.get("AGG", "305080"))
+        new_cfg["pen_vaa_kr_lqd"] = str(_vaa_kr.get("LQD", "329750"))
+        new_cfg["pen_vaa_kr_ief"] = str(_vaa_kr.get("IEF", "305080"))
+        new_cfg["pen_vaa_kr_shy"] = str(_vaa_kr.get("SHY", "329750"))
+        # CDM 설정
+        _cdm_kr = _cdm_settings.get("kr_etf_map", {})
+        new_cfg["pen_cdm_kr_spy"] = str(_cdm_kr.get("SPY", "379800"))
+        new_cfg["pen_cdm_kr_veu"] = str(_cdm_kr.get("VEU", "195930"))
+        new_cfg["pen_cdm_kr_vnq"] = str(_cdm_kr.get("VNQ", "352560"))
+        new_cfg["pen_cdm_kr_rem"] = str(_cdm_kr.get("REM", "352560"))
+        new_cfg["pen_cdm_kr_lqd"] = str(_cdm_kr.get("LQD", "305080"))
+        new_cfg["pen_cdm_kr_hyg"] = str(_cdm_kr.get("HYG", "305080"))
+        new_cfg["pen_cdm_kr_tlt"] = str(_cdm_kr.get("TLT", "304660"))
+        new_cfg["pen_cdm_kr_gld"] = str(_cdm_kr.get("GLD", "132030"))
+        new_cfg["pen_cdm_kr_bil"] = str(_cdm_kr.get("BIL", "329750"))
         # 정적배분 설정
         if _static_settings:
             new_cfg["pen_sa_etf1"] = _static_settings["etfs"][0]["code"] if _static_settings.get("etfs") else ""
@@ -5004,6 +5394,10 @@ def render_kis_pension_mode():
                 st.session_state.pop("pen_signal_params", None)
                 st.session_state.pop("pen_dm_signal_result", None)
                 st.session_state.pop("pen_dm_signal_params", None)
+                st.session_state.pop("pen_vaa_signal_result", None)
+                st.session_state.pop("pen_vaa_signal_params", None)
+                st.session_state.pop("pen_cdm_signal_result", None)
+                st.session_state.pop("pen_cdm_signal_params", None)
                 st.rerun()
 
         bal = st.session_state.get(pen_bal_key)
@@ -5526,11 +5920,161 @@ def render_kis_pension_mode():
             _dm_res = st.session_state.get("pen_dm_signal_result")
 
         # ──────────────────────────────────────────────────────────
+        # VAA / CDM 시그널 자동 계산
+        # ──────────────────────────────────────────────────────────
+        _vaa_res = None
+        _cdm_res = None
+
+        if "VAA" in _active_strategies:
+            _vaa_sig_params = {"acct": str(kis_acct), "vaa_settings": str(_vaa_settings)}
+            if (st.session_state.get("pen_vaa_signal_params") != _vaa_sig_params
+                    or "pen_vaa_signal_result" not in st.session_state):
+                with st.spinner("VAA 시그널 계산 중..."):
+                    try:
+                        import data_cache as _vaa_dc
+                        _vaa_strat = _VAAStrategy(settings=_vaa_settings)
+                        _vaa_all_tickers = list(set(_vaa_settings['offensive'] + _vaa_settings['defensive']))
+                        _vaa_price = {}
+                        for _t in _vaa_all_tickers:
+                            _df = _vaa_dc.fetch_and_cache_yf(_t, start="2020-01-01")
+                            if _df is not None and not _df.empty:
+                                _vaa_price[_t] = _df
+                        _vaa_sig = _vaa_strat.analyze(_vaa_price)
+                        if _vaa_sig:
+                            _kr_map = _vaa_settings['kr_etf_map']
+                            _tw_kr = _vaa_sig.get("target_weights_kr", {})
+                            _bal_v = st.session_state.get(pen_bal_key) or {}
+                            _hold_v = _bal_v.get("holdings", []) or []
+                            _cash_v = float(_bal_v.get("cash", 0.0) or 0.0)
+                            _tot_v = float(_bal_v.get("total_eval", 0.0) or 0.0)
+                            if _tot_v <= 0:
+                                _tot_v = _cash_v + sum(float(h.get("eval_amt", 0) or 0) for h in _hold_v)
+                            _vaa_port_w = 0.0
+                            for _, _r in _pen_port_edited.iterrows():
+                                if _r["strategy"] == "VAA":
+                                    _vaa_port_w += float(_r.get("weight", 0)) / 100.0
+                            _vaa_sleeve = _tot_v * _vaa_port_w
+                            _hold_qty_v = {}
+                            for _h in _hold_v:
+                                _c = str(_h.get("code", "")).strip()
+                                _hold_qty_v[_c] = _hold_qty_v.get(_c, 0) + int(_h.get("qty", 0) or 0)
+                            _vaa_rebal_rows = []
+                            _max_gap = 0.0
+                            for code, w in _tw_kr.items():
+                                _tgt_eval = _vaa_sleeve * w
+                                _px = float(_get_pen_current_price(code) or 0)
+                                _tgt_qty = int(np.floor(_tgt_eval / _px)) if _px > 0 else 0
+                                _cur_qty = _hold_qty_v.get(code, 0)
+                                _cur_eval = _cur_qty * _px if _px > 0 else 0
+                                _cur_w = (_cur_eval / max(_tot_v, 1)) * 100
+                                _tgt_w = (_tgt_eval / max(_tot_v, 1)) * 100
+                                _max_gap = max(_max_gap, abs(_tgt_w - _cur_w))
+                                _vaa_rebal_rows.append({
+                                    "ETF 코드": code, "ETF": _fmt_etf_code_name(code),
+                                    "현재수량(주)": _cur_qty, "목표수량(주)": _tgt_qty,
+                                    "목표 비중(%)": round(w * 100, 2),
+                                    "현재 비중(%)": round(_cur_w, 2),
+                                })
+                            _vaa_action = "REBALANCE" if _max_gap > 3.0 else "HOLD"
+                            st.session_state["pen_vaa_signal_result"] = {
+                                "signal": _vaa_sig, "action": _vaa_action,
+                                "alloc_df": pd.DataFrame(_vaa_rebal_rows) if _vaa_rebal_rows else pd.DataFrame(),
+                            }
+                        else:
+                            st.session_state["pen_vaa_signal_result"] = {"error": "VAA 시그널 계산 실패"}
+                        st.session_state["pen_vaa_signal_params"] = _vaa_sig_params
+                    except Exception as _e:
+                        st.session_state["pen_vaa_signal_result"] = {"error": str(_e)}
+            _vaa_res = st.session_state.get("pen_vaa_signal_result")
+
+        if "CDM" in _active_strategies:
+            _cdm_sig_params = {"acct": str(kis_acct), "cdm_settings": str(_cdm_settings)}
+            if (st.session_state.get("pen_cdm_signal_params") != _cdm_sig_params
+                    or "pen_cdm_signal_result" not in st.session_state):
+                with st.spinner("CDM 시그널 계산 중..."):
+                    try:
+                        import data_cache as _cdm_dc
+                        _cdm_strat = _CDMStrategy(settings=_cdm_settings)
+                        _cdm_all_tickers = list(set(_cdm_settings['offensive'] + _cdm_settings['defensive']))
+                        _cdm_price = {}
+                        for _t in _cdm_all_tickers:
+                            _df = _cdm_dc.fetch_and_cache_yf(_t, start="2020-01-01")
+                            if _df is not None and not _df.empty:
+                                _cdm_price[_t] = _df
+                        _cdm_sig = _cdm_strat.analyze(_cdm_price)
+                        if _cdm_sig:
+                            _kr_map_c = _cdm_settings['kr_etf_map']
+                            _tw_kr_c = _cdm_sig.get("target_weights_kr", {})
+                            _bal_c = st.session_state.get(pen_bal_key) or {}
+                            _hold_c = _bal_c.get("holdings", []) or []
+                            _cash_c = float(_bal_c.get("cash", 0.0) or 0.0)
+                            _tot_c = float(_bal_c.get("total_eval", 0.0) or 0.0)
+                            if _tot_c <= 0:
+                                _tot_c = _cash_c + sum(float(h.get("eval_amt", 0) or 0) for h in _hold_c)
+                            _cdm_port_w = 0.0
+                            for _, _r in _pen_port_edited.iterrows():
+                                if _r["strategy"] == "CDM":
+                                    _cdm_port_w += float(_r.get("weight", 0)) / 100.0
+                            _cdm_sleeve = _tot_c * _cdm_port_w
+                            _hold_qty_c = {}
+                            for _h in _hold_c:
+                                _c = str(_h.get("code", "")).strip()
+                                _hold_qty_c[_c] = _hold_qty_c.get(_c, 0) + int(_h.get("qty", 0) or 0)
+                            _cdm_rebal_rows = []
+                            _max_gap_c = 0.0
+                            for code, w in _tw_kr_c.items():
+                                _tgt_eval = _cdm_sleeve * w
+                                _px = float(_get_pen_current_price(code) or 0)
+                                _tgt_qty = int(np.floor(_tgt_eval / _px)) if _px > 0 else 0
+                                _cur_qty = _hold_qty_c.get(code, 0)
+                                _cur_eval = _cur_qty * _px if _px > 0 else 0
+                                _cur_w = (_cur_eval / max(_tot_c, 1)) * 100
+                                _tgt_w = (_tgt_eval / max(_tot_c, 1)) * 100
+                                _max_gap_c = max(_max_gap_c, abs(_tgt_w - _cur_w))
+                                _cdm_rebal_rows.append({
+                                    "ETF 코드": code, "ETF": _fmt_etf_code_name(code),
+                                    "현재수량(주)": _cur_qty, "목표수량(주)": _tgt_qty,
+                                    "목표 비중(%)": round(w * 100, 2),
+                                    "현재 비중(%)": round(_cur_w, 2),
+                                })
+                            _cdm_action = "REBALANCE" if _max_gap_c > 3.0 else "HOLD"
+                            st.session_state["pen_cdm_signal_result"] = {
+                                "signal": _cdm_sig, "action": _cdm_action,
+                                "alloc_df": pd.DataFrame(_cdm_rebal_rows) if _cdm_rebal_rows else pd.DataFrame(),
+                            }
+                        else:
+                            st.session_state["pen_cdm_signal_result"] = {"error": "CDM 시그널 계산 실패"}
+                        st.session_state["pen_cdm_signal_params"] = _cdm_sig_params
+                    except Exception as _e:
+                        st.session_state["pen_cdm_signal_result"] = {"error": str(_e)}
+            _cdm_res = st.session_state.get("pen_cdm_signal_result")
+
+        # ──────────────────────────────────────────────────────────
         # 섹션 2: 전체 포트폴리오 합산
         # ──────────────────────────────────────────────────────────
         st.divider()
         st.subheader("전체 포트폴리오 합산")
+
+        # 동적 전략 컬럼 구성
+        _strat_col_map = {}  # {"LAA": "LAA 목표(주)", "DM": "DM 목표(주)", ...}
+        if "LAA" in _active_strategies:
+            _strat_col_map["LAA"] = "LAA 목표(주)"
+        if "듀얼모멘텀" in _active_strategies:
+            _strat_col_map["DM"] = "DM 목표(주)"
+        if "VAA" in _active_strategies:
+            _strat_col_map["VAA"] = "VAA 목표(주)"
+        if "CDM" in _active_strategies:
+            _strat_col_map["CDM"] = "CDM 목표(주)"
+
         _combined_rows = {}
+
+        def _ensure_combined_row(code, etf_name, cur_qty):
+            if code not in _combined_rows:
+                _combined_rows[code] = {"ETF": etf_name, "현재수량(주)": int(cur_qty)}
+                for _col in _strat_col_map.values():
+                    _combined_rows[code][_col] = 0
+            _combined_rows[code]["현재수량(주)"] = max(
+                _combined_rows[code]["현재수량(주)"], int(cur_qty))
 
         _laa_action = None
         if res and not res.get("error"):
@@ -5541,15 +6085,9 @@ def render_kis_pension_mode():
                     code = str(row.get("ETF 코드", "")).strip()
                     if not code:
                         continue
-                    if code not in _combined_rows:
-                        _combined_rows[code] = {
-                            "ETF": row.get("ETF", _fmt_etf_code_name(code)),
-                            "현재수량(주)": int(row.get("현재수량(주)", 0)),
-                            "LAA 목표(주)": 0, "DM 목표(주)": 0,
-                        }
-                    _combined_rows[code]["LAA 목표(주)"] = int(row.get("목표수량(주)", 0))
-                    _combined_rows[code]["현재수량(주)"] = max(
-                        _combined_rows[code]["현재수량(주)"], int(row.get("현재수량(주)", 0)))
+                    _ensure_combined_row(code, row.get("ETF", _fmt_etf_code_name(code)), row.get("현재수량(주)", 0))
+                    if "LAA 목표(주)" in _combined_rows[code]:
+                        _combined_rows[code]["LAA 목표(주)"] = int(row.get("목표수량(주)", 0))
 
         _dm_action_val = None
         if _dm_res and not _dm_res.get("error"):
@@ -5560,15 +6098,35 @@ def render_kis_pension_mode():
                     code = str(row.get("ETF 코드", "")).strip()
                     if not code:
                         continue
-                    if code not in _combined_rows:
-                        _combined_rows[code] = {
-                            "ETF": row.get("국내 ETF", _fmt_etf_code_name(code)),
-                            "현재수량(주)": int(row.get("현재수량(주)", 0)),
-                            "LAA 목표(주)": 0, "DM 목표(주)": 0,
-                        }
-                    _combined_rows[code]["DM 목표(주)"] = int(row.get("목표수량(주,버림)", 0))
-                    _combined_rows[code]["현재수량(주)"] = max(
-                        _combined_rows[code]["현재수량(주)"], int(row.get("현재수량(주)", 0)))
+                    _ensure_combined_row(code, row.get("국내 ETF", _fmt_etf_code_name(code)), row.get("현재수량(주)", 0))
+                    if "DM 목표(주)" in _combined_rows[code]:
+                        _combined_rows[code]["DM 목표(주)"] = int(row.get("목표수량(주,버림)", 0))
+
+        _vaa_action_val = None
+        if _vaa_res and not _vaa_res.get("error"):
+            _vaa_action_val = _vaa_res.get("action")
+            _vaa_df = _vaa_res.get("alloc_df")
+            if isinstance(_vaa_df, pd.DataFrame) and not _vaa_df.empty:
+                for _, row in _vaa_df.iterrows():
+                    code = str(row.get("ETF 코드", "")).strip()
+                    if not code:
+                        continue
+                    _ensure_combined_row(code, row.get("ETF", _fmt_etf_code_name(code)), row.get("현재수량(주)", 0))
+                    if "VAA 목표(주)" in _combined_rows[code]:
+                        _combined_rows[code]["VAA 목표(주)"] = int(row.get("목표수량(주)", 0))
+
+        _cdm_action_val = None
+        if _cdm_res and not _cdm_res.get("error"):
+            _cdm_action_val = _cdm_res.get("action")
+            _cdm_df = _cdm_res.get("alloc_df")
+            if isinstance(_cdm_df, pd.DataFrame) and not _cdm_df.empty:
+                for _, row in _cdm_df.iterrows():
+                    code = str(row.get("ETF 코드", "")).strip()
+                    if not code:
+                        continue
+                    _ensure_combined_row(code, row.get("ETF", _fmt_etf_code_name(code)), row.get("현재수량(주)", 0))
+                    if "CDM 목표(주)" in _combined_rows[code]:
+                        _combined_rows[code]["CDM 목표(주)"] = int(row.get("목표수량(주)", 0))
 
         if _combined_rows:
             _combo_list = []
@@ -5578,6 +6136,10 @@ def render_kis_pension_mode():
             if _laa_action == "REBALANCE":
                 _rebal_strategies += 1
             if _dm_action_val in ("REBALANCE", "BUY"):
+                _rebal_strategies += 1
+            if _vaa_action_val == "REBALANCE":
+                _rebal_strategies += 1
+            if _cdm_action_val == "REBALANCE":
                 _rebal_strategies += 1
 
             _bal_combo = st.session_state.get(pen_bal_key) or {}
@@ -5633,7 +6195,7 @@ def render_kis_pension_mode():
                 return float(_combo_price_cache[_k])
 
             for code, info in _combined_rows.items():
-                _total_target = info["LAA 목표(주)"] + info["DM 목표(주)"]
+                _total_target = sum(info.get(col, 0) for col in _strat_col_map.values())
                 _cur = info["현재수량(주)"]
                 _buy = max(_total_target - _cur, 0)
                 _sell = max(_cur - _total_target, 0)
@@ -5652,18 +6214,15 @@ def render_kis_pension_mode():
                     _total_sell_count += 1
                 else:
                     _order_status = "유지"
-                _combo_list.append({
-                    "ETF": info["ETF"],
-                    "현재수량(주)": _cur,
-                    "현재 비중(%)": round(_cur_weight, 2),
-                    "LAA 목표(주)": info["LAA 목표(주)"],
-                    "DM 목표(주)": info["DM 목표(주)"],
-                    "합산 목표(주)": _total_target,
-                    "목표 비중(%)": round(_target_weight, 2),
-                    "매수 예정(주)": _buy if _buy > 0 else 0,
-                    "매도 예정(주)": _sell if _sell > 0 else 0,
-                    "주문 상태": _order_status,
-                })
+                _row_data = {"ETF": info["ETF"], "현재수량(주)": _cur, "현재 비중(%)": round(_cur_weight, 2)}
+                for _col in _strat_col_map.values():
+                    _row_data[_col] = info.get(_col, 0)
+                _row_data["합산 목표(주)"] = _total_target
+                _row_data["목표 비중(%)"] = round(_target_weight, 2)
+                _row_data["매수 예정(주)"] = _buy if _buy > 0 else 0
+                _row_data["매도 예정(주)"] = _sell if _sell > 0 else 0
+                _row_data["주문 상태"] = _order_status
+                _combo_list.append(_row_data)
 
             # 다음 리밸런싱 예정일 계산 (매월 마지막 영업일)
             from datetime import date as _d_date, timedelta as _d_td
@@ -5702,29 +6261,52 @@ def render_kis_pension_mode():
             st.info("시그널 계산 결과가 없습니다. 잔고를 새로고침해주세요.")
 
         # ──────────────────────────────────────────────────────────
-        # 섹션 3: LAA 전략 포트폴리오
+        # 섹션 3: 전략별 상세 하위탭
         # ──────────────────────────────────────────────────────────
         st.divider()
         import streamlit.components.v1 as components
 
-        _laa_hdr_col1, _laa_hdr_col2 = st.columns([4, 1])
-        with _laa_hdr_col1:
-            st.subheader("LAA 전략 포트폴리오")
-        with _laa_hdr_col2:
-            if st.button("📖 전략 가이드", key="pen_laa_guide_btn"):
-                components.html("""
-                <script>
-                const tabs = window.parent.document.querySelectorAll('button[data-baseweb="tab"]');
-                for (let t of tabs) {
-                    if (t.textContent.includes('전략 가이드')) { t.click(); break; }
-                }
-                </script>
-                """, height=0)
+        _detail_tab_names = []
+        _detail_tab_keys = []
+        if "LAA" in _active_strategies:
+            _detail_tab_names.append("LAA 전략")
+            _detail_tab_keys.append("LAA")
+        if "듀얼모멘텀" in _active_strategies:
+            _detail_tab_names.append("듀얼모멘텀 전략")
+            _detail_tab_keys.append("DM")
+        if "VAA" in _active_strategies:
+            _detail_tab_names.append("VAA 전략")
+            _detail_tab_keys.append("VAA")
+        if "CDM" in _active_strategies:
+            _detail_tab_names.append("CDM 전략")
+            _detail_tab_keys.append("CDM")
 
-        if res:
-            if res.get("error"):
+        if _detail_tab_names:
+            _detail_tabs = st.tabs(_detail_tab_names)
+            _detail_tab_map = dict(zip(_detail_tab_keys, _detail_tabs))
+        else:
+            _detail_tab_map = {}
+
+        # ── LAA 전략 상세 ──
+        if "LAA" in _detail_tab_map:
+          with _detail_tab_map["LAA"]:
+            _laa_hdr_col1, _laa_hdr_col2 = st.columns([4, 1])
+            with _laa_hdr_col1:
+                st.subheader("LAA 전략 포트폴리오")
+            with _laa_hdr_col2:
+                if st.button("📖 전략 가이드", key="pen_laa_guide_btn"):
+                    components.html("""
+                    <script>
+                    const tabs = window.parent.document.querySelectorAll('button[data-baseweb="tab"]');
+                    for (let t of tabs) {
+                        if (t.textContent.includes('전략 가이드')) { t.click(); break; }
+                    }
+                    </script>
+                    """, height=0)
+
+            if res and res.get("error"):
                 st.error(res["error"])
-            else:
+            elif res:
                 sig = res["signal"]
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("리스크 상태", "공격 (Risk-On)" if sig.get("risk_on") else "방어 (Risk-Off)")
@@ -5964,11 +6546,9 @@ def render_kis_pension_mode():
                             monte_carlo_sims=400,
                         )
 
-        # ──────────────────────────────────────────────────────────
-        # 섹션 4: 듀얼모멘텀 전략 포트폴리오
-        # ──────────────────────────────────────────────────────────
-        if "듀얼모멘텀" in _active_strategies and _dm_settings:
-            st.divider()
+        # ── 듀얼모멘텀 전략 상세 ──
+        if "DM" in _detail_tab_map:
+          with _detail_tab_map["DM"]:
             _dm_hdr_col1, _dm_hdr_col2 = st.columns([4, 1])
             with _dm_hdr_col1:
                 st.subheader("듀얼모멘텀 전략 포트폴리오")
@@ -6211,13 +6791,91 @@ def render_kis_pension_mode():
                                 monte_carlo_sims=400,
                             )
 
+        # ── VAA 전략 상세 ──
+        if "VAA" in _detail_tab_map:
+          with _detail_tab_map["VAA"]:
+            st.subheader("VAA 전략 포트폴리오")
+            st.caption("공격자산 4종 13612W 모멘텀 → 양수 최고 1개 선택, 전부 음수 시 방어자산 최고 1개")
+            if _vaa_res:
+                if _vaa_res.get("error"):
+                    st.error(str(_vaa_res["error"]))
+                else:
+                    _vs = _vaa_res.get("signal", {})
+                    _v1, _v2, _v3, _v4 = st.columns(4)
+                    _tgt_tickers = _vs.get("target_tickers", [])
+                    _v1.metric("선택 자산", ", ".join(_tgt_tickers) if _tgt_tickers else "-")
+                    _v2.metric("포지션", "공격" if _vs.get("is_offensive") else "방어")
+                    _v3.metric("선택 ETF", ", ".join([_fmt_etf_code_name(c) for c in _vs.get("target_kr_codes", [])]))
+                    _v4.metric("권장 동작", str(_vaa_res.get("action", "HOLD")))
+                    st.info(str(_vs.get("reason", "")))
+
+                    # 모멘텀 스코어 표시
+                    _off_sc = _vs.get("offensive_scores", {})
+                    _def_sc = _vs.get("defensive_scores", {})
+                    if _off_sc or _def_sc:
+                        _score_rows = []
+                        for t, s in _off_sc.items():
+                            _score_rows.append({"티커": t, "유형": "공격", "모멘텀": round(s * 100, 2)})
+                        for t, s in _def_sc.items():
+                            _score_rows.append({"티커": t, "유형": "방어", "모멘텀": round(s * 100, 2)})
+                        st.dataframe(pd.DataFrame(_score_rows), use_container_width=True, hide_index=True)
+
+                    # 배분 테이블
+                    _vaa_alloc = _vaa_res.get("alloc_df")
+                    if isinstance(_vaa_alloc, pd.DataFrame) and not _vaa_alloc.empty:
+                        st.markdown("**목표 배분 vs 현재 보유**")
+                        st.dataframe(_vaa_alloc, use_container_width=True, hide_index=True)
+            else:
+                st.info("VAA 시그널이 계산되지 않았습니다.")
+
+        # ── CDM 전략 상세 ──
+        if "CDM" in _detail_tab_map:
+          with _detail_tab_map["CDM"]:
+            st.subheader("CDM 전략 포트폴리오")
+            st.caption("4모듈 듀얼모멘텀 — 각 모듈 상대+절대 모멘텀 (12개월 수익률)")
+            if _cdm_res:
+                if _cdm_res.get("error"):
+                    st.error(str(_cdm_res["error"]))
+                else:
+                    _cs = _cdm_res.get("signal", {})
+                    _c1, _c2, _c3, _c4 = st.columns(4)
+                    _c1.metric("공격 모듈 수", f"{_cs.get('offensive_count', 0)}/{_cs.get('total_modules', 4)}")
+                    _c2.metric("방어자산 12M수익률", f"{_cs.get('defensive_return', 0):+.2f}%")
+                    _c3.metric("권장 동작", str(_cdm_res.get("action", "HOLD")))
+                    _tw_kr = _cs.get("target_weights_kr", {})
+                    _top_etf = max(_tw_kr, key=_tw_kr.get) if _tw_kr else "-"
+                    _c4.metric("최대 비중 ETF", _fmt_etf_code_name(_top_etf) if _top_etf != "-" else "-")
+                    st.info(str(_cs.get("reason", "")))
+
+                    # 모듈별 결과 표시
+                    _mod_results = _cs.get("module_results", [])
+                    if _mod_results:
+                        _mod_rows = []
+                        for m in _mod_results:
+                            _mod_rows.append({
+                                "모듈": f"M{m['module']}",
+                                "페어": " vs ".join(m['pair']),
+                                "승자": m['winner'],
+                                "12M수익률(%)": m['winner_return'],
+                                "포지션": "공격" if m['is_offensive'] else "방어",
+                            })
+                        st.dataframe(pd.DataFrame(_mod_rows), use_container_width=True, hide_index=True)
+
+                    # 배분 테이블
+                    _cdm_alloc = _cdm_res.get("alloc_df")
+                    if isinstance(_cdm_alloc, pd.DataFrame) and not _cdm_alloc.empty:
+                        st.markdown("**목표 배분 vs 현재 보유**")
+                        st.dataframe(_cdm_alloc, use_container_width=True, hide_index=True)
+            else:
+                st.info("CDM 시그널이 계산되지 않았습니다.")
+
     # ══════════════════════════════════════════════════════════════
     # Tab 2: 백테스트
     # ══════════════════════════════════════════════════════════════
     with tab_p2:
         if _pen_local_first:
             st.info("백테스트 가격 데이터: 로컬 파일(cache/data) 우선, 부족 시 API 보강 모드입니다.")
-        _bt_candidates = [s for s in ["LAA", "정적배분"] if s in _active_strategies]
+        _bt_candidates = [s for s in ["LAA", "듀얼모멘텀", "VAA", "CDM", "정적배분"] if s in _active_strategies]
         # 듀얼모멘텀 백테스트는 포트폴리오 표기 상태와 무관하게 항상 선택 가능하게 제공
         if "듀얼모멘텀" not in _bt_candidates:
             _bt_candidates.insert(1 if "LAA" in _bt_candidates else 0, "듀얼모멘텀")
@@ -6442,6 +7100,140 @@ def render_kis_pension_mode():
                             monte_carlo_sims=400,
                         )
 
+            elif _bt_strategy == "VAA":
+                st.header("VAA 백테스트")
+                st.caption("13612W 모멘텀 기반 공격/방어 전환, yfinance 미국 원본 데이터 사용")
+
+                if st.button("VAA 백테스트 실행", key="pen_bt_run_vaa", type="primary"):
+                    with st.spinner("VAA 백테스트 실행 중..."):
+                        vaa_tickers = list(set(_vaa_settings.get("offensive", []) + _vaa_settings.get("defensive", [])))
+                        vaa_price_data = {}
+                        for ticker in vaa_tickers:
+                            df_t = data_cache.fetch_and_cache_yf(ticker, start="2000-01-01")
+                            if df_t is None or df_t.empty:
+                                st.error(f"{ticker} yfinance 데이터 조회 실패")
+                                vaa_price_data = None
+                                break
+                            df_t = df_t.copy().sort_index()
+                            df_t = df_t[df_t.index >= _pen_bt_start_filter_ts]
+                            if df_t.empty:
+                                st.error(f"{ticker} 시작일 이후 데이터가 없습니다.")
+                                vaa_price_data = None
+                                break
+                            vaa_price_data[ticker] = df_t
+
+                        if vaa_price_data:
+                            from strategy.vaa import VAAStrategy
+                            vaa_strategy = VAAStrategy(settings=_vaa_settings)
+                            vaa_bt_result = vaa_strategy.run_backtest(
+                                vaa_price_data,
+                                initial_balance=float(pen_bt_cap),
+                                fee=float(pen_bt_fee),
+                            )
+                            if vaa_bt_result:
+                                st.session_state["pen_bt_vaa_result"] = vaa_bt_result
+                            else:
+                                st.error("VAA 백테스트 실행 실패 (데이터 부족)")
+
+                vaa_bt_res = st.session_state.get("pen_bt_vaa_result")
+                if vaa_bt_res:
+                    metrics = vaa_bt_res["metrics"]
+                    vc1, vc2, vc3, vc4, vc5 = st.columns(5)
+                    vc1.metric("총 수익률", f"{metrics['total_return']:.2f}%")
+                    vc2.metric("CAGR", f"{metrics['cagr']:.2f}%")
+                    vc3.metric("MDD", f"{metrics['mdd']:.2f}%")
+                    vc4.metric("샤프", f"{metrics['sharpe']:.2f}")
+                    vc5.metric("최종 자산", f"{metrics['final_equity']:,.0f}")
+
+                    eq_df = vaa_bt_res["equity_df"]
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=eq_df.index, y=eq_df["equity"],
+                        name="VAA", line=dict(color="#7c3aed"),
+                    ))
+                    fig.update_layout(title="VAA 백테스트 자산 곡선", xaxis_title="날짜", yaxis_title="자산 (KRW)", height=400)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    if "equity" in eq_df.columns:
+                        yearly = eq_df["equity"].resample("YE").last()
+                        if len(yearly) > 1:
+                            yr_ret = yearly.pct_change().dropna() * 100
+                            yr_data = [{"연도": str(d.year), "수익률(%)": f"{r:.2f}"} for d, r in yr_ret.items()]
+                            st.subheader("연도별 수익률")
+                            st.dataframe(pd.DataFrame(yr_data), use_container_width=True, hide_index=True)
+
+                    pos_df = vaa_bt_res.get("positions")
+                    if isinstance(pos_df, pd.DataFrame) and not pos_df.empty:
+                        st.subheader("월별 포지션 이력")
+                        st.dataframe(pos_df.tail(36), use_container_width=True, hide_index=True)
+
+            elif _bt_strategy == "CDM":
+                st.header("CDM 백테스트")
+                st.caption("4모듈 듀얼모멘텀, yfinance 미국 원본 데이터 사용")
+
+                if st.button("CDM 백테스트 실행", key="pen_bt_run_cdm", type="primary"):
+                    with st.spinner("CDM 백테스트 실행 중..."):
+                        cdm_tickers = list(set(_cdm_settings.get("offensive", []) + _cdm_settings.get("defensive", [])))
+                        cdm_price_data = {}
+                        for ticker in cdm_tickers:
+                            df_t = data_cache.fetch_and_cache_yf(ticker, start="2000-01-01")
+                            if df_t is None or df_t.empty:
+                                st.error(f"{ticker} yfinance 데이터 조회 실패")
+                                cdm_price_data = None
+                                break
+                            df_t = df_t.copy().sort_index()
+                            df_t = df_t[df_t.index >= _pen_bt_start_filter_ts]
+                            if df_t.empty:
+                                st.error(f"{ticker} 시작일 이후 데이터가 없습니다.")
+                                cdm_price_data = None
+                                break
+                            cdm_price_data[ticker] = df_t
+
+                        if cdm_price_data:
+                            from strategy.cdm import CDMStrategy
+                            cdm_strategy = CDMStrategy(settings=_cdm_settings)
+                            cdm_bt_result = cdm_strategy.run_backtest(
+                                cdm_price_data,
+                                initial_balance=float(pen_bt_cap),
+                                fee=float(pen_bt_fee),
+                            )
+                            if cdm_bt_result:
+                                st.session_state["pen_bt_cdm_result"] = cdm_bt_result
+                            else:
+                                st.error("CDM 백테스트 실행 실패 (데이터 부족)")
+
+                cdm_bt_res = st.session_state.get("pen_bt_cdm_result")
+                if cdm_bt_res:
+                    metrics = cdm_bt_res["metrics"]
+                    cc1, cc2, cc3, cc4, cc5 = st.columns(5)
+                    cc1.metric("총 수익률", f"{metrics['total_return']:.2f}%")
+                    cc2.metric("CAGR", f"{metrics['cagr']:.2f}%")
+                    cc3.metric("MDD", f"{metrics['mdd']:.2f}%")
+                    cc4.metric("샤프", f"{metrics['sharpe']:.2f}")
+                    cc5.metric("최종 자산", f"{metrics['final_equity']:,.0f}")
+
+                    eq_df = cdm_bt_res["equity_df"]
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=eq_df.index, y=eq_df["equity"],
+                        name="CDM", line=dict(color="#ea580c"),
+                    ))
+                    fig.update_layout(title="CDM 백테스트 자산 곡선", xaxis_title="날짜", yaxis_title="자산 (KRW)", height=400)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    if "equity" in eq_df.columns:
+                        yearly = eq_df["equity"].resample("YE").last()
+                        if len(yearly) > 1:
+                            yr_ret = yearly.pct_change().dropna() * 100
+                            yr_data = [{"연도": str(d.year), "수익률(%)": f"{r:.2f}"} for d, r in yr_ret.items()]
+                            st.subheader("연도별 수익률")
+                            st.dataframe(pd.DataFrame(yr_data), use_container_width=True, hide_index=True)
+
+                    alloc_df = cdm_bt_res.get("allocations")
+                    if isinstance(alloc_df, pd.DataFrame) and not alloc_df.empty:
+                        st.subheader("월별 배분 이력")
+                        st.dataframe(alloc_df.tail(36), use_container_width=True, hide_index=True)
+
             else:
                 st.header("정적배분 백테스트")
                 st.info("정적배분 백테스트는 다음 단계에서 연결 예정입니다.")
@@ -6467,6 +7259,12 @@ def render_kis_pension_mode():
             if _dm_settings:
                 _dm_map_local = _dm_settings.get("kr_etf_map", {}) or {}
                 all_etf_codes.extend([_dm_map_local.get("SPY", ""), _dm_map_local.get("EFA", ""), _dm_map_local.get("AGG", "")])
+            if _vaa_settings:
+                _vaa_map_local = _vaa_settings.get("kr_etf_map", {}) or {}
+                all_etf_codes.extend([str(v) for v in _vaa_map_local.values() if str(v).strip()])
+            if _cdm_settings:
+                _cdm_map_local = _cdm_settings.get("kr_etf_map", {}) or {}
+                all_etf_codes.extend([str(v) for v in _cdm_map_local.values() if str(v).strip()])
             if _static_settings:
                 all_etf_codes.extend([str(x.get("code", "")) for x in _static_settings.get("etfs", [])])
 
@@ -6768,13 +7566,107 @@ def render_kis_pension_mode():
         ]), use_container_width=True, hide_index=True)
         st.caption("듀얼모멘텀도 연금저축 계좌에서 국내 ETF로 시그널/실매매를 수행합니다.")
 
-        st.subheader("7. 기대 성과/운용 특성")
+        st.subheader("7. 기대 성과/운용 특성 (LAA/DM 공통)")
         st.markdown("""
 - **시장 대응**: 상승장에서는 공격 자산, 하락장/둔화장에서는 방어 자산으로 자동 전환
 - **리스크 관리**: 절대모멘텀(카나리아) 기준으로 하락 추세 회피
 - **운용 빈도**: 월 1회 리밸런싱으로 과도한 매매 방지
 - **과세이연**: 연금저축 계좌 내 매매차익 과세이연 효과로 복리 운용에 유리
 """)
+
+        st.divider()
+
+        st.subheader("8. VAA (Vigilant Asset Allocation) 전략")
+        st.markdown("""
+**VAA**는 Wouter Keller가 제안한 경계적 자산배분 전략으로, **13612W 모멘텀 스코어**를 활용하여
+공격/방어 자산을 동적으로 전환합니다.
+
+- **공격 자산 (4개)**: SPY(미국), EFA(선진국), EEM(이머징), AGG(채권)
+- **방어 자산 (3개)**: LQD(회사채), IEF(중기채), SHY(단기채)
+- **선택 규칙**: 공격 자산 중 모멘텀 양수인 것 최고 1개 선택 → 전부 음수 시 방어 자산 최고 1개
+- **리밸런싱**: 월 1회 (월말 기준)
+
+**13612W 모멘텀 스코어 계산식:**
+`(1개월수익률 × 12 + 3개월수익률 × 4 + 6개월수익률 × 2 + 12개월수익률 × 1) ÷ 19`
+
+단기(1개월)에 높은 가중치를 부여하여 추세 반전에 빠르게 대응합니다.
+""")
+
+        st.subheader("9. VAA 의사결정 흐름")
+        st.markdown("""
+```
+매월 말 기준:
+  1. 공격 자산 4개(SPY, EFA, EEM, AGG)의 13612W 모멘텀 스코어 계산
+  2. 방어 자산 3개(LQD, IEF, SHY)의 13612W 모멘텀 스코어 계산
+  3. 공격 자산 중 모멘텀 > 0 인 것이 있으면:
+     → 양수 모멘텀 중 최고 스코어 1개에 100% 투자 (공격 모드)
+  4. 모든 공격 자산 모멘텀 ≤ 0 이면:
+     → 방어 자산 중 최고 스코어 1개에 100% 투자 (방어 모드)
+  5. 목표 대비 괴리 발생 시 리밸런싱 실행
+```
+""")
+
+        st.subheader("10. VAA 국내 ETF 매핑")
+        _guide_vaa_map = (_vaa_settings.get("kr_etf_map", {}) if isinstance(_vaa_settings, dict) else {}) or {}
+        st.dataframe(pd.DataFrame([
+            {"전략 키": "SPY", "국내 ETF": _fmt_etf_code_name(str(_guide_vaa_map.get("SPY", "379800"))), "유형": "공격", "역할": "미국 주식"},
+            {"전략 키": "EFA", "국내 ETF": _fmt_etf_code_name(str(_guide_vaa_map.get("EFA", "195930"))), "유형": "공격", "역할": "선진국 주식"},
+            {"전략 키": "EEM", "국내 ETF": _fmt_etf_code_name(str(_guide_vaa_map.get("EEM", "295820"))), "유형": "공격", "역할": "이머징 주식"},
+            {"전략 키": "AGG", "국내 ETF": _fmt_etf_code_name(str(_guide_vaa_map.get("AGG", "305080"))), "유형": "공격", "역할": "미국 채권"},
+            {"전략 키": "LQD", "국내 ETF": _fmt_etf_code_name(str(_guide_vaa_map.get("LQD", "329750"))), "유형": "방어", "역할": "회사채"},
+            {"전략 키": "IEF", "국내 ETF": _fmt_etf_code_name(str(_guide_vaa_map.get("IEF", "305080"))), "유형": "방어", "역할": "중기채"},
+            {"전략 키": "SHY", "국내 ETF": _fmt_etf_code_name(str(_guide_vaa_map.get("SHY", "329750"))), "유형": "방어", "역할": "단기채"},
+        ]), use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        st.subheader("11. CDM (Composite Dual Momentum) 전략")
+        st.markdown("""
+**CDM**은 4개 모듈로 구성된 복합 듀얼모멘텀 전략입니다.
+공격자산 8개를 2개씩 4모듈로 나누고, 각 모듈에서 **상대모멘텀**(승자 선택)과
+**절대모멘텀**(방어 전환 여부)을 동시에 적용합니다.
+
+- **공격 자산 (8개, 4모듈 × 2자산)**:
+  - Module 1: SPY(미국) vs VEU(해외)
+  - Module 2: VNQ(부동산) vs REM(리츠)
+  - Module 3: LQD(회사채) vs HYG(하이일드)
+  - Module 4: TLT(장기채) vs GLD(금)
+- **방어 자산**: BIL(초단기채)
+- **각 모듈 비중**: 25% (총 100%)
+- **리밸런싱**: 월 1회 (월말 기준)
+""")
+
+        st.subheader("12. CDM 의사결정 흐름")
+        st.markdown("""
+```
+매월 말 기준 (각 모듈 독립 처리):
+  Module 1: SPY vs VEU
+    1. SPY, VEU 12개월 수익률 비교 → 승자(상대모멘텀) 선택
+    2. 승자의 12개월 수익률 > BIL 12개월 수익률?
+       → YES: 승자에 25% 투자 (공격)
+       → NO:  BIL에 25% 투자 (방어)
+
+  Module 2~4도 동일한 규칙으로 각각 25% 배분
+
+최종 포트폴리오: 4모듈 합산 = 100%
+(공격 모듈이 많을수록 공격적, 적을수록 방어적)
+```
+""")
+
+        st.subheader("13. CDM 국내 ETF 매핑")
+        _guide_cdm_map = (_cdm_settings.get("kr_etf_map", {}) if isinstance(_cdm_settings, dict) else {}) or {}
+        st.dataframe(pd.DataFrame([
+            {"전략 키": "SPY", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("SPY", "379800"))), "모듈": "M1", "역할": "미국 주식"},
+            {"전략 키": "VEU", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("VEU", "195930"))), "모듈": "M1", "역할": "해외 주식"},
+            {"전략 키": "VNQ", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("VNQ", "352560"))), "모듈": "M2", "역할": "부동산"},
+            {"전략 키": "REM", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("REM", "352560"))), "모듈": "M2", "역할": "리츠"},
+            {"전략 키": "LQD", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("LQD", "305080"))), "모듈": "M3", "역할": "회사채"},
+            {"전략 키": "HYG", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("HYG", "305080"))), "모듈": "M3", "역할": "하이일드"},
+            {"전략 키": "TLT", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("TLT", "304660"))), "모듈": "M4", "역할": "장기채"},
+            {"전략 키": "GLD", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("GLD", "132030"))), "모듈": "M4", "역할": "금"},
+            {"전략 키": "BIL", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("BIL", "329750"))), "모듈": "-", "역할": "방어자산"},
+        ]), use_container_width=True, hide_index=True)
+        st.caption("연금저축 계좌에서 해외 ETF 직접 매매 불가 → 국내 ETF로 대체. 일부 종목은 국내 대안이 제한적이어서 동일 ETF를 중복 매핑합니다.")
 
     # ══════════════════════════════════════════════════════════════
     # Tab 5: 주문방식
@@ -6799,6 +7691,7 @@ def render_kis_pension_mode():
 
         st.subheader("자동매매 흐름 (GitHub Actions)")
         st.markdown("""
+0. 로컬 PC에서 직접 주문하지 않고, GitHub Actions에서만 주문 실행
 1. 매월 25~31일 평일 KST 15:20 실행 (`TRADING_MODE=kis_pension`)
 2. 국내 ETF(SPY/IWD/GLD/IEF/QQQ/SHY 매핑) 일봉 조회
 3. SPY vs 200일선 → 리스크 자산 결정 (QQQ or SHY)
