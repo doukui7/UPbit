@@ -672,6 +672,40 @@ def get_gold_current_price_local_first(trader=None, code="M04020000", allow_api_
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 
+WDR_TICKER_START_RATIO = {
+    # ISA 위대리 매매 ETF별 시작일 초기 비중(고정값)
+    # stock_ratio + cash_ratio = 1.0
+    "418660": {"ref_date": "2022-02-25", "stock_ratio": 0.1531, "cash_ratio": 0.8469},
+    "409820": {"ref_date": "2021-12-10", "stock_ratio": 0.1586, "cash_ratio": 0.8414},
+    "423920": {"ref_date": "2022-04-22", "stock_ratio": 0.1985, "cash_ratio": 0.8015},
+    "426030": {"ref_date": "2022-05-13", "stock_ratio": 0.2204, "cash_ratio": 0.7796},
+    "465610": {"ref_date": "2023-09-15", "stock_ratio": 0.7253, "cash_ratio": 0.2747},
+    "461910": {"ref_date": "2023-11-10", "stock_ratio": 0.7914, "cash_ratio": 0.2086},
+}
+
+
+def get_wdr_v10_stock_ratio(trade_etf_code: str, target_date):
+    """
+    ISA 위대리 초기 비중 고정값 조회.
+    CSV를 매번 읽지 않고 티커별 시작일/비중 사전값을 반환한다.
+    """
+    code = str(trade_etf_code or "").strip()
+    if not code:
+        return None
+
+    item = WDR_TICKER_START_RATIO.get(code)
+    if not item:
+        return None
+
+    return {
+        "source": "ticker_preset",
+        "trade_etf_code": code,
+        "ref_date": str(item["ref_date"]),
+        "stock_ratio": float(item["stock_ratio"]),
+        "cash_ratio": float(item["cash_ratio"]),
+    }
+
+
 def load_bundled_csv(ticker):
     """data/ 디렉토리의 번들 CSV 파일 로드 (API 실패 시 fallback).
     예: ticker='133690' → data/133690_daily.csv

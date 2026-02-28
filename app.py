@@ -47,6 +47,7 @@ ETF_NAME_KR = {
     "423920": "TIGER 미국필라델피아반도체레버리지(합성)",
     "465610": "ACE 미국빅테크TOP7 Plus레버리지(합성)",
     "461910": "PLUS 미국테크TOP10레버리지(합성)",
+    "426030": "TIMEFOLIO 미국나스닥100액티브",
     "133690": "TIGER 미국나스닥100",
     "360750": "TIGER 미국S&P500",
     "132030": "KODEX Gold선물(H)",
@@ -57,6 +58,10 @@ ETF_NAME_KR = {
     "308620": "KODEX 미국채10년선물",
     "471460": "ACE 미국30년국채액티브",
 }
+
+
+ISA_WDR_TRADE_ETF_CODES = ("418660", "409820", "423920", "426030", "465610", "461910")
+ISA_WDR_TRADE_ETF_SET = set(ISA_WDR_TRADE_ETF_CODES)
 
 
 def _etf_name_kr(code: str) -> str:
@@ -72,6 +77,11 @@ def _fmt_etf_code_name(code: str) -> str:
 
 def _code_only(v: str) -> str:
     return str(v or "").strip().split()[0] if str(v or "").strip() else ""
+
+
+def _sanitize_isa_trade_etf(code: str, default: str = "418660") -> str:
+    c = _code_only(code)
+    return c if c in ISA_WDR_TRADE_ETF_SET else str(default)
 
 
 def _sidebar_etf_code_input(title: str, code_value: str, key: str, disabled: bool = False) -> str:
@@ -535,7 +545,10 @@ def _build_telegram_test_report() -> str:
                 itotal = _safe_float(ibal.get("total_eval", 0.0), 0.0) or (icash + sum(_safe_float(h.get("eval_amt", 0.0), 0.0) for h in ihold))
                 asset_rows.append(("KIS ISA", itotal))
 
-                isa_etf = str(latest_cfg.get("kis_isa_etf_code", _get_runtime_value("KIS_ISA_ETF_CODE", "418660")))
+                isa_etf = _sanitize_isa_trade_etf(
+                    str(latest_cfg.get("kis_isa_etf_code", _get_runtime_value("KIS_ISA_ETF_CODE", "418660"))),
+                    default="418660",
+                )
                 isa_sig_etf = str(latest_cfg.get("kis_isa_trend_etf_code", _get_runtime_value("KIS_ISA_TREND_ETF_CODE", "133690")))
                 lines.append(f"<b>[KIS ISA]</b> 총자산 {itotal:,.0f}원 (현금 {icash:,.0f}원)")
 
@@ -579,26 +592,27 @@ def _build_telegram_test_report() -> str:
                         if _ov_eff_start < _ov_trade_first:
                             _ov_eff_start = _ov_trade_first
 
-                        # 참조 백테스트 (비표준 ETF)
+                        # 초기 비중 참조: 티커별 시작 기준값 우선, 없으면 백테스트 계산
                         _ov_ref_sr = None
-                        if str(isa_etf) != "418660" and _ov_eff_start > "2022-03-08":
-                            _ov_ref_trade = data_cache.get_kis_domestic_local_first(
-                                itr, "418660", count=1500, allow_api_fallback=True,
+                        _ov_ref_info = data_cache.get_wdr_v10_stock_ratio(str(isa_etf), _ov_eff_start)
+                        if _ov_ref_info:
+                            _ov_ref_sr = float(_ov_ref_info.get("stock_ratio", 0.0))
+                        elif _ov_eff_start > "2022-03-08" and sig_df is not None:
+                            _ov_ref_bt = wdr.run_backtest(
+                                signal_daily_df=sig_df,
+                                trade_daily_df=_isa_trade_df,
+                                initial_balance=_ov_isa_seed,
+                                start_date="2022-03-08",
                             )
-                            if sig_df is not None and _ov_ref_trade is not None:
-                                _ov_ref_bt = wdr.run_backtest(
-                                    signal_daily_df=sig_df, trade_daily_df=_ov_ref_trade,
-                                    initial_balance=_ov_isa_seed, start_date="2022-03-08",
-                                )
-                                if _ov_ref_bt and _ov_ref_bt.get("equity_df") is not None:
-                                    _ov_re = _ov_ref_bt["equity_df"]
-                                    _ov_ets = pd.Timestamp(_ov_eff_start)
-                                    _ov_rm = _ov_re.index <= _ov_ets
-                                    if _ov_rm.any():
-                                        _ov_rr = _ov_re.loc[_ov_rm].iloc[-1]
-                                        _ov_req = float(_ov_rr["equity"])
-                                        if _ov_req > 0:
-                                            _ov_ref_sr = (float(_ov_rr["shares"]) * float(_ov_rr["price"])) / _ov_req
+                            if _ov_ref_bt and _ov_ref_bt.get("equity_df") is not None:
+                                _ov_re = _ov_ref_bt["equity_df"]
+                                _ov_ets = pd.Timestamp(_ov_eff_start)
+                                _ov_rm = _ov_re.index <= _ov_ets
+                                if _ov_rm.any():
+                                    _ov_rr = _ov_re.loc[_ov_rm].iloc[-1]
+                                    _ov_req = float(_ov_rr["equity"])
+                                    if _ov_req > 0:
+                                        _ov_ref_sr = (float(_ov_rr["shares"]) * float(_ov_rr["price"])) / _ov_req
 
                         _ov_bt = wdr.run_backtest(
                             signal_daily_df=sig_df, trade_daily_df=_isa_trade_df,
@@ -2963,14 +2977,13 @@ def render_kis_isa_mode():
                 out[f"{_c} {_etf_name_kr(_c)}"] = _c
         return out
 
-    _isa_trade_options = _build_etf_options(["418660", "409820", "423920", "465610", "461910", "133690"])
+    _isa_trade_options = _build_etf_options(list(ISA_WDR_TRADE_ETF_CODES))
     _isa_trend_options = _build_etf_options(["133690", "360750", "453850", "251350", "418660", "409820", "423920", "465610", "461910"])
 
-    _saved_trade_etf = str(config.get("kis_isa_etf_code", _get_runtime_value("KIS_ISA_ETF_CODE", "418660")))
+    _saved_trade_raw = str(config.get("kis_isa_etf_code", _get_runtime_value("KIS_ISA_ETF_CODE", "418660")))
+    _saved_trade_etf = _sanitize_isa_trade_etf(_saved_trade_raw, default="418660")
     _saved_trend_etf = str(config.get("kis_isa_trend_etf_code", _get_runtime_value("KIS_ISA_TREND_ETF_CODE", "133690")))
 
-    if _saved_trade_etf and _saved_trade_etf not in _isa_trade_options.values():
-        _isa_trade_options[f"{_saved_trade_etf} {_etf_name_kr(_saved_trade_etf)}"] = _saved_trade_etf
     if _saved_trend_etf and _saved_trend_etf not in _isa_trend_options.values():
         _isa_trend_options[f"{_saved_trend_etf} {_etf_name_kr(_saved_trend_etf)}"] = _saved_trend_etf
 
@@ -2991,8 +3004,10 @@ def render_kis_isa_mode():
         key="isa_etf_select",
         disabled=IS_CLOUD,
     )
-    isa_etf_code = _isa_trade_options[selected_etf_label]
+    isa_etf_code = _sanitize_isa_trade_etf(_isa_trade_options[selected_etf_label], default="418660")
     isa_trend_etf_code = _isa_trend_options[selected_trend_etf_label]
+    if _saved_trade_raw != _saved_trade_etf:
+        st.sidebar.caption("1배 ETF는 매매 ETF에서 제외됩니다. 기존 설정값을 2배 ETF로 보정했습니다.")
 
     wdr_eval_mode = st.sidebar.selectbox(
         "평가 시스템", [3, 5], index=[3, 5].index(int(config.get("kis_isa_wdr_mode", 5))),
@@ -3263,14 +3278,14 @@ def render_kis_isa_mode():
             if _trade_first_date and str(isa_start_date) < _trade_first_date:
                 _effective_start = _trade_first_date
 
-            # ── 참조 백테스트 비중 (매매 ETF ≠ 418660이면 QQQ→TQQQ 비중 계승) ──
+            # ── 초기 비중 참조 (티커별 시작 기준값 우선, 없으면 동일 티커 백테스트 계산) ──
             _ref_stock_ratio = None
-            _ref_info = None
-            _REF_TRADE = "418660"  # 기준 매매 ETF (나스닥100 2X)
-            _REF_TREND = "133690"  # 기준 시그널 ETF (나스닥100)
-            if str(isa_etf_code) != _REF_TRADE and _effective_start > "2022-03-08":
-                _ref_sig_df = _get_isa_daily_chart(_REF_TREND, count=5000)
-                _ref_trade_df = _get_isa_daily_chart(_REF_TRADE, count=5000)
+            _ref_info = data_cache.get_wdr_v10_stock_ratio(str(isa_etf_code), _effective_start)
+            if _ref_info:
+                _ref_stock_ratio = float(_ref_info.get("stock_ratio", 0.0))
+            elif _effective_start > "2022-03-08":
+                _ref_sig_df = _get_isa_daily_chart(str(isa_trend_etf_code), count=5000)
+                _ref_trade_df = _get_isa_daily_chart(str(isa_etf_code), count=5000)
                 if _ref_sig_df is not None and _ref_trade_df is not None:
                     _ref_strat = WDRStrategy(settings={
                         "overvalue_threshold": float(wdr_ov),
@@ -3293,6 +3308,9 @@ def render_kis_isa_mode():
                             if _ref_equity > 0:
                                 _ref_stock_ratio = _ref_sv / _ref_equity
                                 _ref_info = {
+                                    "source": "backtest",
+                                    "signal_etf_code": str(isa_trend_etf_code),
+                                    "trade_etf_code": str(isa_etf_code),
                                     "ref_date": str(_ref_eq.loc[_ref_mask].index[-1].date()),
                                     "ref_shares": int(_ref_row["shares"]),
                                     "ref_price": float(_ref_row["price"]),
@@ -3445,10 +3463,19 @@ def render_kis_isa_mode():
                 # 참조 비중 안내
                 _ref_info = res.get("ref_info")
                 if _ref_info:
-                    st.caption(
-                        f"초기 비중 참조: 133690→418660 백테스트 {_ref_info['ref_date']} 시점 | "
-                        f"주식 {_ref_info['stock_ratio']*100:.1f}% · 현금 {_ref_info['cash_ratio']*100:.1f}%"
-                    )
+                    _ref_source = str(_ref_info.get("source", "backtest"))
+                    if _ref_source == "ticker_preset":
+                        st.caption(
+                            f"초기 비중 참조: {str(isa_etf_code)} 시작 기준값 {_ref_info['ref_date']} | "
+                            f"주식 {_ref_info['stock_ratio']*100:.1f}% · 현금 {_ref_info['cash_ratio']*100:.1f}%"
+                        )
+                    else:
+                        _sig_code = str(_ref_info.get("signal_etf_code", isa_trend_etf_code))
+                        _trade_code = str(_ref_info.get("trade_etf_code", isa_etf_code))
+                        st.caption(
+                            f"초기 비중 참조: {_sig_code}→{_trade_code} 백테스트 {_ref_info['ref_date']} 시점 | "
+                            f"주식 {_ref_info['stock_ratio']*100:.1f}% · 현금 {_ref_info['cash_ratio']*100:.1f}%"
+                        )
 
                 st.info(
                     f"**백테스트 목표 주식비율**: {_bt_stock_ratio_pct:.1f}% | "

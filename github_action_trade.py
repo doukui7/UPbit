@@ -26,6 +26,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger()
 
 MIN_ORDER_KRW = 5000
+ISA_WDR_TRADE_ETF_CODES = {"418660", "409820", "423920", "426030", "465610", "461910"}
+
+
+def _sanitize_isa_trade_etf(code: str, default: str = "418660") -> str:
+    c = str(code or "").strip().split()[0]
+    return c if c in ISA_WDR_TRADE_ETF_CODES else str(default)
 
 
 def _load_user_config():
@@ -890,7 +896,10 @@ def run_kis_isa_trade():
         logger.error("KIS 인증 실패. 종료.")
         return
 
-    etf_code = os.getenv("KIS_ISA_ETF_CODE", "418660")  # 매매 ETF
+    etf_code_raw = os.getenv("KIS_ISA_ETF_CODE", "418660")
+    etf_code = _sanitize_isa_trade_etf(etf_code_raw, default="418660")  # 매매 ETF(2배 전용)
+    if str(etf_code_raw).strip() != etf_code:
+        logger.warning(f"KIS_ISA_ETF_CODE={etf_code_raw} 는 1배/미지원 코드라서 {etf_code} 로 보정합니다.")
     signal_etf_code = os.getenv("KIS_ISA_TREND_ETF_CODE", "133690")  # TREND ETF (시그널 소스)
 
     # WDR 전략 설정 (환경변수에서 오버라이드 가능)
@@ -971,30 +980,36 @@ def run_kis_isa_trade():
         if _effective_start < _trade_first_date:
             _effective_start = _trade_first_date
 
-        # 참조 백테스트 (비표준 ETF → 133690→418660 기준 initial_stock_ratio 추출)
+        # 초기 비중 참조: 티커별 시작 기준값 우선, 없으면 동일 티커 백테스트 계산
         _ref_stock_ratio = None
-        _REF_TRADE = "418660"
-        if str(etf_code) != _REF_TRADE and _effective_start > "2022-03-08":
-            _ref_trade_df = _get_kis_daily_local_first(trader, _REF_TRADE, count=1500)
-            if signal_df is not None and _ref_trade_df is not None:
-                _ref_bt = strategy.run_backtest(
-                    signal_daily_df=signal_df,
-                    trade_daily_df=_ref_trade_df,
-                    initial_balance=10_000_000,
-                    start_date="2022-03-08",
-                )
-                if _ref_bt and _ref_bt.get("equity_df") is not None:
-                    _ref_eq = _ref_bt["equity_df"]
-                    _eff_ts = pd.Timestamp(_effective_start)
-                    _ref_mask = _ref_eq.index <= _eff_ts
-                    if _ref_mask.any():
-                        _ref_row = _ref_eq.loc[_ref_mask].iloc[-1]
-                        _ref_equity = float(_ref_row["equity"])
-                        _ref_sv = float(_ref_row["shares"]) * float(_ref_row["price"])
-                        if _ref_equity > 0:
-                            _ref_stock_ratio = _ref_sv / _ref_equity
-                            logger.info(f"참조 백테스트 비율: {_ref_stock_ratio*100:.1f}% "
-                                        f"(133690→418660, {_effective_start} 시점)")
+        _ref_info = data_cache.get_wdr_v10_stock_ratio(str(etf_code), _effective_start)
+        if _ref_info:
+            _ref_stock_ratio = float(_ref_info.get("stock_ratio", 0.0))
+            logger.info(
+                f"티커 시작 기준값 비율: {_ref_stock_ratio*100:.1f}% "
+                f"({etf_code}, {_ref_info.get('ref_date')})"
+            )
+        elif _effective_start > "2022-03-08" and signal_df is not None:
+            _ref_bt = strategy.run_backtest(
+                signal_daily_df=signal_df,
+                trade_daily_df=trade_df,
+                initial_balance=10_000_000,
+                start_date="2022-03-08",
+            )
+            if _ref_bt and _ref_bt.get("equity_df") is not None:
+                _ref_eq = _ref_bt["equity_df"]
+                _eff_ts = pd.Timestamp(_effective_start)
+                _ref_mask = _ref_eq.index <= _eff_ts
+                if _ref_mask.any():
+                    _ref_row = _ref_eq.loc[_ref_mask].iloc[-1]
+                    _ref_equity = float(_ref_row["equity"])
+                    _ref_sv = float(_ref_row["shares"]) * float(_ref_row["price"])
+                    if _ref_equity > 0:
+                        _ref_stock_ratio = _ref_sv / _ref_equity
+                        logger.info(
+                            f"참조 백테스트 비율: {_ref_stock_ratio*100:.1f}% "
+                            f"({signal_etf_code}→{etf_code}, {_effective_start} 시점)"
+                        )
 
         bt = strategy.run_backtest(
             signal_daily_df=signal_df,
@@ -1270,8 +1285,11 @@ def _check_kis_isa() -> dict:
         result['auth'] = True
         result['auth_msg'] = 'PASS'
 
-        etf_code = os.getenv("KIS_ISA_ETF_CODE", "418660")
+        etf_code_raw = os.getenv("KIS_ISA_ETF_CODE", "418660")
+        etf_code = _sanitize_isa_trade_etf(etf_code_raw, default="418660")
         signal_etf_code = os.getenv("KIS_ISA_TREND_ETF_CODE", "133690")
+        if str(etf_code_raw).strip() != etf_code:
+            _append_step(result, "ETF 코드 보정", "INFO", f"1배/미지원 코드({etf_code_raw}) -> {etf_code}")
 
         # 2. 잔고 조회
         bal = trader.get_balance()
@@ -1326,22 +1344,25 @@ def _check_kis_isa() -> dict:
                         _eff_start = _tfd
 
                     _ref_sr = None
-                    if str(etf_code) != "418660" and _eff_start > "2022-03-08":
-                        _ref_trade = _get_kis_daily_local_first(trader, "418660", count=1500)
-                        if _ref_trade is not None:
-                            _ref_bt = strategy.run_backtest(
-                                signal_daily_df=signal_df, trade_daily_df=_ref_trade,
-                                initial_balance=10_000_000, start_date="2022-03-08",
-                            )
-                            if _ref_bt and _ref_bt.get("equity_df") is not None:
-                                _re = _ref_bt["equity_df"]
-                                _ets = pd.Timestamp(_eff_start)
-                                _rm = _re.index <= _ets
-                                if _rm.any():
-                                    _rr = _re.loc[_rm].iloc[-1]
-                                    _req = float(_rr["equity"])
-                                    if _req > 0:
-                                        _ref_sr = (float(_rr["shares"]) * float(_rr["price"])) / _req
+                    _ref_info = data_cache.get_wdr_v10_stock_ratio(str(etf_code), _eff_start)
+                    if _ref_info:
+                        _ref_sr = float(_ref_info.get("stock_ratio", 0.0))
+                    elif _eff_start > "2022-03-08":
+                        _ref_bt = strategy.run_backtest(
+                            signal_daily_df=signal_df,
+                            trade_daily_df=trade_df,
+                            initial_balance=10_000_000,
+                            start_date="2022-03-08",
+                        )
+                        if _ref_bt and _ref_bt.get("equity_df") is not None:
+                            _re = _ref_bt["equity_df"]
+                            _ets = pd.Timestamp(_eff_start)
+                            _rm = _re.index <= _ets
+                            if _rm.any():
+                                _rr = _re.loc[_rm].iloc[-1]
+                                _req = float(_rr["equity"])
+                                if _req > 0:
+                                    _ref_sr = (float(_rr["shares"]) * float(_rr["price"])) / _req
 
                     bt = strategy.run_backtest(
                         signal_daily_df=signal_df, trade_daily_df=trade_df,
