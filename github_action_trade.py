@@ -396,21 +396,33 @@ def analyze_asset(trader, item):
 
 def run_auto_trade():
     load_dotenv()
+    kst = timezone(timedelta(hours=9))
+    now_kst = datetime.now(kst)
+
+    def _send_trade_notice(status: str, details: list[str] | None = None):
+        lines = [
+            "<b>코인 자동매매</b>",
+            f"실행시각: {now_kst.strftime('%Y-%m-%d %H:%M')} KST",
+            f"상태: {status}",
+        ]
+        if details:
+            lines.extend(details)
+        _send_telegram("\n".join(lines))
 
     ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY")
     SECRET_KEY = os.getenv("UPBIT_SECRET_KEY")
 
     if not ACCESS_KEY or not SECRET_KEY:
         logger.error("API Keys not found. Set UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY.")
+        _send_trade_notice("실패", ["원인: UPBIT API 키 미설정"])
         return
 
     trader = UpbitTrader(ACCESS_KEY, SECRET_KEY)
     portfolio = get_portfolio()
-    kst = timezone(timedelta(hours=9))
-    now_kst = datetime.now(kst)
 
     # 전략 주기(4H/1D)별 실행 필터
     due_portfolio = []
+    skipped_by_interval = []
     for item in portfolio:
         iv_raw = item.get("interval", "day")
         if _is_coin_interval_due(iv_raw, now_kst):
@@ -418,9 +430,14 @@ def run_auto_trade():
         else:
             ticker = f"{item.get('market', 'KRW')}-{str(item.get('coin', '')).upper()}"
             logger.info(f"[{ticker}] 주기 미도래로 스킵 (interval={iv_raw}, now={now_kst.strftime('%H:%M')} KST)")
+            skipped_by_interval.append(f"{ticker}({iv_raw})")
 
     if not due_portfolio:
         logger.info(f"=== Portfolio Auto Trade: 실행 대상 없음 (now={now_kst.strftime('%Y-%m-%d %H:%M:%S')} KST) ===")
+        details = ["원인: 주기 미도래로 실행 대상 없음"]
+        if skipped_by_interval:
+            details.append(f"스킵: {', '.join(skipped_by_interval[:6])}")
+        _send_trade_notice("스킵", details)
         return
 
 
@@ -435,16 +452,25 @@ def run_auto_trade():
 
     # ── 1단계: 전체 시그널 분석 ──
     analyses = []
+    analyze_errors = []
     for item in due_portfolio:
+        ticker = f"{item.get('market', 'KRW')}-{str(item.get('coin', '')).upper()}"
         try:
             result = analyze_asset(trader, item)
             if result:
                 analyses.append(result)
+            else:
+                analyze_errors.append(f"{ticker}=분석결과없음")
         except Exception as e:
             logger.error(f"Error analyzing {item.get('coin', '?')}: {e}")
+            analyze_errors.append(f"{ticker}=ERROR({e})")
 
     if not analyses:
         logger.error("No assets analyzed. Exiting.")
+        details = [f"원인: 분석 결과 없음 (대상 {len(due_portfolio)}개)"]
+        if analyze_errors:
+            details.append(f"오류: {'; '.join(analyze_errors[:8])}")
+        _send_trade_notice("실패", details)
         return
 
     # ── 총 포트폴리오 가치 계산 (목표 배분액 산정 기준) ──
@@ -556,10 +582,20 @@ def run_auto_trade():
 
     tg_lines = [f"<b>코인 자동매매</b> ({len(_tg_coin_groups)}종목)"]
     tg_lines.append(f"실행시각: {now_kst.strftime('%Y-%m-%d %H:%M')} KST")
+    tg_lines.append("상태: 완료")
     tg_lines.append(f"총자산: {total_portfolio_value:,.0f}원 (현금 {krw_balance:,.0f})")
+    if skipped_by_interval:
+        tg_lines.append(f"주기 스킵: {', '.join(skipped_by_interval[:6])}")
     for _tk, _grp in _tg_coin_groups.items():
         _sigs = [a['signal'] for a in _grp]
-        _unified = "BUY" if all(s == "BUY" for s in _sigs) else "SELL"
+        if all(s == "BUY" for s in _sigs):
+            _unified = "BUY"
+        elif all(s == "SELL" for s in _sigs):
+            _unified = "SELL"
+        elif all(s == "HOLD" for s in _sigs):
+            _unified = "HOLD"
+        else:
+            _unified = "MIXED"
         _coin_val = _grp[0]['coin_value']
         tg_lines.append(f"  {_tk}: {_unified} (보유≈{_coin_val:,.0f}원)")
     _send_telegram("\n".join(tg_lines))
@@ -2354,20 +2390,37 @@ def _check_kis_pension() -> dict:
 if __name__ == "__main__":
     load_dotenv()
     mode = os.getenv("TRADING_MODE", "upbit").lower()
-    if mode == "kiwoom_gold":
-        run_kiwoom_gold_trade()
-    elif mode == "kis_isa":
-        run_kis_isa_trade()
-    elif mode == "kis_pension":
-        run_kis_pension_trade()
-    elif mode == "health_check":
-        run_health_check()
-    elif mode == "health_check_upbit":
-        # 하위호환: 기존 health_check_upbit → health_check로 통합
-        run_health_check()
-    elif mode == "daily_status":
-        run_daily_status_report()
-    elif mode == "telegram_test_ping":
-        run_telegram_test_ping()
-    else:
-        run_auto_trade()
+    try:
+        if mode == "kiwoom_gold":
+            run_kiwoom_gold_trade()
+        elif mode == "kis_isa":
+            run_kis_isa_trade()
+        elif mode == "kis_pension":
+            run_kis_pension_trade()
+        elif mode == "health_check":
+            run_health_check()
+        elif mode == "health_check_upbit":
+            # 하위호환: 기존 health_check_upbit → health_check로 통합
+            run_health_check()
+        elif mode == "daily_status":
+            run_daily_status_report()
+        elif mode == "telegram_test_ping":
+            run_telegram_test_ping()
+        else:
+            run_auto_trade()
+    except Exception as e:
+        logger.exception(f"치명적 예외 발생(mode={mode}): {e}")
+        try:
+            _send_telegram(
+                "\n".join(
+                    [
+                        "<b>자동매매 실행 실패</b>",
+                        f"모드: {mode}",
+                        f"원인: {type(e).__name__}",
+                        f"메시지: {str(e)[:300]}",
+                    ]
+                )
+            )
+        except Exception:
+            pass
+        raise
