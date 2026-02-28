@@ -4850,6 +4850,12 @@ def render_kis_pension_mode():
             out = pd.concat([out, pd.DataFrame([{"strategy": "듀얼모멘텀", "weight": 0}])], ignore_index=True)
         return out
 
+    def _with_pen_portfolio_no(df: pd.DataFrame) -> pd.DataFrame:
+        _base = _normalize_pen_portfolio_df(df)
+        _view = _base.copy()
+        _view.insert(0, "no", range(1, len(_view) + 1))
+        return _view
+
     _pen_port_df = _normalize_pen_portfolio_df(_pen_port_df)
 
     _pen_port_state_key = "pen_portfolio_editor_df"
@@ -4860,16 +4866,20 @@ def render_kis_pension_mode():
         st.session_state[_pen_port_state_key] = _normalize_pen_portfolio_df(_state_df)
 
     _pen_port_edited = st.sidebar.data_editor(
-        st.session_state[_pen_port_state_key],
+        _with_pen_portfolio_no(st.session_state[_pen_port_state_key]),
         use_container_width=True,
         hide_index=True,
         num_rows="dynamic",
         key="pen_portfolio_editor",
         column_config={
+            "no": st.column_config.NumberColumn("번호", min_value=1, step=1),
             "strategy": st.column_config.SelectboxColumn("전략", options=PEN_STRATEGIES, required=True),
             "weight": st.column_config.NumberColumn("비중(%)", min_value=0, max_value=100, step=5, required=True),
         },
+        disabled=["no"],
     )
+    if "no" in _pen_port_edited.columns:
+        _pen_port_edited = _pen_port_edited.drop(columns=["no"], errors="ignore")
     if "strategy" not in _pen_port_edited.columns:
         _pen_port_edited["strategy"] = "LAA"
     if "weight" not in _pen_port_edited.columns:
