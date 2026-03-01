@@ -61,7 +61,7 @@ def _save_signal_state(state: dict):
 
 
 def _save_balance_cache(balances: dict, prices: dict = None):
-    """잔고+시세를 캐시 파일로 저장 (로컬 UI 표시용)."""
+    """잔고+시세를 캐시 파일로 저장 후 GitHub API로 push."""
     try:
         from datetime import timezone, timedelta
         kst = timezone(timedelta(hours=9))
@@ -71,11 +71,51 @@ def _save_balance_cache(balances: dict, prices: dict = None):
         }
         if prices:
             cache["prices"] = {str(k): float(v) for k, v in prices.items()}
+        content = json.dumps(cache, indent=2, ensure_ascii=False)
+        # 로컬 파일 저장
         with open(BALANCE_CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cache, f, indent=2, ensure_ascii=False)
+            f.write(content)
         logger.info(f"잔고 캐시 저장 완료: {BALANCE_CACHE_FILE}")
+        # GitHub API로 push
+        _push_to_github(content)
     except Exception as e:
         logger.error(f"잔고 캐시 저장 실패: {e}")
+
+
+def _push_to_github(content: str):
+    """GitHub REST API로 balance_cache.json 업데이트."""
+    import base64
+    import requests as _req
+    gh_token = os.environ.get('GH_TOKEN', '')
+    if not gh_token:
+        logger.info("GH_TOKEN 없음 - GitHub push 생략")
+        return
+    url = "https://api.github.com/repos/doukui7/UPbit/contents/balance_cache.json"
+    headers = {"Authorization": f"token {gh_token}", "Accept": "application/vnd.github.v3+json"}
+    # 기존 파일 SHA 조회
+    sha = None
+    try:
+        resp = _req.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            sha = resp.json().get("sha")
+    except Exception:
+        pass
+    # 파일 생성/업데이트
+    payload = {
+        "message": "auto: 잔고 캐시 업데이트",
+        "content": base64.b64encode(content.encode()).decode(),
+        "committer": {"name": "auto-trade-bot", "email": "bot@auto-trade"}
+    }
+    if sha:
+        payload["sha"] = sha
+    try:
+        resp = _req.put(url, json=payload, headers=headers, timeout=15)
+        if resp.status_code in (200, 201):
+            logger.info("잔고 캐시 GitHub push 완료")
+        else:
+            logger.warning(f"잔고 캐시 GitHub push 실패: {resp.status_code}")
+    except Exception as e:
+        logger.warning(f"잔고 캐시 GitHub push 에러: {e}")
 
 
 def _make_signal_key(item: dict) -> str:

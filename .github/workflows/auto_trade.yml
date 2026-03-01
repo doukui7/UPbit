@@ -53,23 +53,11 @@ jobs:
             source venv/bin/activate
             pip install -q -r requirements.txt 2>/dev/null
             python scripts/github_action_trade.py
-            # 잔고 캐시 파일을 git push (로컬 UI 표시용)
-            if [ -f balance_cache.json ]; then
-              git config user.email "bot@auto-trade" 2>/dev/null
-              git config user.name "auto-trade-bot" 2>/dev/null
-              git add balance_cache.json
-              if ! git diff --cached --quiet; then
-                git commit -m "auto: 잔고 캐시 업데이트"
-                git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/doukui7/UPbit.git
-                git push --quiet 2>/dev/null || true
-                git remote set-url origin https://github.com/doukui7/UPbit.git
-              fi
-            fi
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
           PORTFOLIO: ${{ secrets.PORTFOLIO }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           TRADING_MODE: upbit
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
@@ -175,24 +163,12 @@ jobs:
             source venv/bin/activate
             pip install -q -r requirements.txt 2>/dev/null
             python scripts/github_action_trade.py
-            # 잔고 캐시 파일을 git push (로컬 UI 표시용)
-            if [ -f balance_cache.json ]; then
-              git config user.email "bot@auto-trade" 2>/dev/null
-              git config user.name "auto-trade-bot" 2>/dev/null
-              git add balance_cache.json
-              if ! git diff --cached --quiet; then
-                git commit -m "auto: 잔고 캐시 업데이트"
-                git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/doukui7/UPbit.git
-                git push --quiet 2>/dev/null || true
-                git remote set-url origin https://github.com/doukui7/UPbit.git
-              fi
-            fi
         env:
           # 업비트
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
           PORTFOLIO: ${{ secrets.PORTFOLIO }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           # 키움 금현물
           KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
           KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
@@ -232,24 +208,12 @@ jobs:
             source venv/bin/activate
             pip install -q -r requirements.txt 2>/dev/null
             python scripts/github_action_trade.py
-            # 잔고 캐시 파일을 git push (로컬 UI 표시용)
-            if [ -f balance_cache.json ]; then
-              git config user.email "bot@auto-trade" 2>/dev/null
-              git config user.name "auto-trade-bot" 2>/dev/null
-              git add balance_cache.json
-              if ! git diff --cached --quiet; then
-                git commit -m "auto: 잔고 캐시 업데이트"
-                git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/doukui7/UPbit.git
-                git push --quiet 2>/dev/null || true
-                git remote set-url origin https://github.com/doukui7/UPbit.git
-              fi
-            fi
         env:
           # Upbit
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
           PORTFOLIO: ${{ secrets.PORTFOLIO }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           # Kiwoom Gold
           KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
           KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
