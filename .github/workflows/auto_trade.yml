@@ -30,6 +30,9 @@ on:
           - kis_pension
           - all
 
+permissions:
+  contents: write
+
 jobs:
   # ── 업비트 BTC 자동매매 (VM SSH 경유 - 고정 IP) ──
   trade:
