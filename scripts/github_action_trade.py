@@ -4,22 +4,23 @@ import json
 import time
 import html
 import re
+import math
 import logging
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
-import data_cache
 
-# Add project root to path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Add project root to path (scripts/ 상위 디렉토리)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from strategy.sma import SMAStrategy
-from strategy.donchian import DonchianStrategy
-from strategy.widaeri import WDRStrategy
-from strategy.laa import LAAStrategy
-from trading.upbit_trader import UpbitTrader
-from kiwoom_gold import KiwoomGoldTrader, GOLD_CODE_1KG
-from kis_trader import KISTrader
+import src.engine.data_cache as data_cache
+from src.strategy.sma import SMAStrategy
+from src.strategy.donchian import DonchianStrategy
+from src.strategy.widaeri import WDRStrategy
+from src.strategy.laa import LAAStrategy
+from src.trading.upbit_trader import UpbitTrader
+from src.engine.kiwoom_gold import KiwoomGoldTrader, GOLD_CODE_1KG
+from src.engine.kis_trader import KISTrader
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -1771,9 +1772,9 @@ def _check_upbit() -> dict:
         else:
             dummy_price = round(dummy_price, 4)
 
-        # 최소 주문금액(5000원) 이상 되는 수량
+        # 최소 주문금액(5000원) 이상 되는 수량 (올림으로 5000원 미만 방지)
         min_volume = max(5000 / dummy_price, 0.0001) if dummy_price > 0 else 0.001
-        min_volume = round(min_volume, 8)
+        min_volume = math.ceil(min_volume * 1e8) / 1e8
         _append_step(
             result,
             "6.1 가상주문 입력값",

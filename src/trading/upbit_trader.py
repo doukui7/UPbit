@@ -1,8 +1,8 @@
 import pyupbit
 import time
 import logging
-from strategy.sma import SMAStrategy
-import data_cache
+from src.strategy.sma import SMAStrategy
+import src.engine.data_cache
 
 logger = logging.getLogger(__name__)
 

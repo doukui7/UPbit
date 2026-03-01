@@ -2,9 +2,9 @@ import os
 import pandas as pd
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from strategy.sma import SMAStrategy
-from strategy.donchian import DonchianStrategy
-import data_cache
+from src.strategy.sma import SMAStrategy
+from src.strategy.donchian import DonchianStrategy
+import src.engine.data_cache
 
 # CPU 코어 수 기반 워커 수 (최소 2, 최대 물리코어 -1)
 _NUM_WORKERS = max(2, min((os.cpu_count() or 4) - 1, 12))
@@ -689,7 +689,7 @@ class BacktestEngine:
                          use_rsi_filter=False, rsi_period=2, rsi_threshold=10.0,
                          progress_callback=None, main_df=None):
         """보조 전략 단일 백테스트 실행."""
-        from strategy.aux_mean_reversion import (
+        from src.strategy.aux_mean_reversion import (
             compute_disparity, compute_rsi, generate_main_position, fast_simulate_aux
         )
 
@@ -844,7 +844,7 @@ class BacktestEngine:
                      rsi_period_range=(2, 2), rsi_threshold_range=(5.0, 10.0),
                      rsi_period_step=1, rsi_threshold_step=0.5):
         """보조 전략 최적화 (Optuna/그리드, 분할 매수 횟수 포함)."""
-        from strategy.aux_mean_reversion import (
+        from src.strategy.aux_mean_reversion import (
             compute_disparity, compute_rsi, generate_main_position, fast_simulate_aux
         )
 
