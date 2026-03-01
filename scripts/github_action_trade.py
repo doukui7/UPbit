@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 # Add project root to path (scripts/ 상위 디렉토리)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import src.engine.data_cache as data_cache
 from src.strategy.sma import SMAStrategy
@@ -34,6 +35,10 @@ GOLD_LEGACY_ETF_CODES = {"132030"}
 # ── 시그널 전환 감지를 위한 포지션 상태 파일 ──
 SIGNAL_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_state.json")
 
+# ── 잔고 캐시 파일 (로컬 UI에서 조회용) ──
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BALANCE_CACHE_FILE = os.path.join(_PROJECT_ROOT, "balance_cache.json")
+
 
 def _load_signal_state() -> dict:
     """전략별 이전 포지션 상태 로드."""
@@ -53,6 +58,24 @@ def _save_signal_state(state: dict):
             json.dump(state, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"signal_state 저장 실패: {e}")
+
+
+def _save_balance_cache(balances: dict, prices: dict = None):
+    """잔고+시세를 캐시 파일로 저장 (로컬 UI 표시용)."""
+    try:
+        from datetime import timezone, timedelta
+        kst = timezone(timedelta(hours=9))
+        cache = {
+            "updated_at": datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S KST"),
+            "balances": {str(k): float(v) for k, v in balances.items()},
+        }
+        if prices:
+            cache["prices"] = {str(k): float(v) for k, v in prices.items()}
+        with open(BALANCE_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, indent=2, ensure_ascii=False)
+        logger.info(f"잔고 캐시 저장 완료: {BALANCE_CACHE_FILE}")
+    except Exception as e:
+        logger.error(f"잔고 캐시 저장 실패: {e}")
 
 
 def _make_signal_key(item: dict) -> str:
@@ -99,7 +122,7 @@ def _normalize_gold_kr_etf(code: str, default: str = GOLD_KRX_ETF_CODE) -> str:
 
 def _load_user_config():
     """Load user_config.json from project root."""
-    cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_config.json")
+    cfg_path = os.path.join(PROJECT_ROOT, "user_config.json")
     if not os.path.exists(cfg_path):
         return {}
     try:
@@ -316,21 +339,41 @@ def get_portfolio():
     raw = os.getenv("PORTFOLIO")
     if raw:
         try:
-            return json.loads(raw)
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                portfolio = data.get("portfolio", [])
+                if isinstance(portfolio, list) and portfolio:
+                    return portfolio
+                raise RuntimeError("PORTFOLIO JSON? portfolio ???? ????.")
+            if isinstance(data, list) and data:
+                return data
+            raise RuntimeError("PORTFOLIO JSON? ??????.")
         except json.JSONDecodeError:
-            raise RuntimeError(f"PORTFOLIO 환경변수가 올바른 JSON이 아닙니다: {raw[:100]}")
+            raise RuntimeError(f"PORTFOLIO ????? ??? JSON? ????: {raw[:100]}")
 
-    # 환경변수 없으면 portfolio.json 파일에서 로드
-    p_json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
-    if os.path.exists(p_json_path):
+    # ???? ??? portfolio.json ???? ??
+    candidate_paths = [
+        os.path.join(PROJECT_ROOT, "portfolio.json"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json"),
+    ]
+    for p_json_path in candidate_paths:
+        if not os.path.exists(p_json_path):
+            continue
         with open(p_json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        portfolio = data.get("portfolio", [])
-        if portfolio:
-            logger.info(f"portfolio.json에서 포트폴리오 로드: {len(portfolio)}개 항목")
+        if isinstance(data, dict):
+            portfolio = data.get("portfolio", [])
+        elif isinstance(data, list):
+            portfolio = data
+        else:
+            portfolio = []
+        if isinstance(portfolio, list) and portfolio:
+            logger.info(
+                f"portfolio.json?? ????? ??: {len(portfolio)}? ?? ({p_json_path})"
+            )
             return portfolio
 
-    raise RuntimeError("PORTFOLIO 환경변수 또는 portfolio.json 파일이 필요합니다.")
+    raise RuntimeError("PORTFOLIO ???? ?? portfolio.json ??? ?????.")
 
 
 def _normalize_coin_interval(interval: str) -> str:
@@ -664,6 +707,10 @@ def run_auto_trade():
 
     total_after = krw_after + _coin_total_after
 
+    # 잔고 캐시 저장 (로컬 UI 표시용)
+    _trade_prices = {f"KRW-{a['coin_sym']}": a['current_price'] for a in analyses if a.get('current_price')}
+    _save_balance_cache(updated_bal, _trade_prices)
+
     from collections import OrderedDict as _OD
     _tg_coin_groups = _OD()
     for a in analyses:
@@ -776,7 +823,9 @@ def run_kiwoom_gold_trade():
     # API 일봉이 없으면 CSV 폴백
     if df is None or len(df) < max_period + 5:
         logger.warning("API 일봉 데이터 부족 → krx_gold_daily.csv 폴백 사용")
-        csv_path = os.path.join(os.path.dirname(__file__), "krx_gold_daily.csv")
+        csv_path = os.path.join(PROJECT_ROOT, "krx_gold_daily.csv")
+        if not os.path.exists(csv_path):
+            csv_path = os.path.join(os.path.dirname(__file__), "krx_gold_daily.csv")
         try:
             df = pd.read_csv(csv_path, index_col="Date", parse_dates=True)
             df.columns = [c.lower() for c in df.columns]
@@ -1299,7 +1348,9 @@ def _check_kiwoom_gold() -> dict:
         df = _get_gold_daily_local_first(trader, code=code, count=max(max_period + 10, 200))
 
         if df is None or len(df) < max_period + 5:
-            csv_path = os.path.join(os.path.dirname(__file__), "krx_gold_daily.csv")
+            csv_path = os.path.join(PROJECT_ROOT, "krx_gold_daily.csv")
+            if not os.path.exists(csv_path):
+                csv_path = os.path.join(os.path.dirname(__file__), "krx_gold_daily.csv")
             try:
                 df = pd.read_csv(csv_path, index_col="Date", parse_dates=True)
                 df.columns = [c.lower() for c in df.columns]
@@ -1679,6 +1730,8 @@ def _check_upbit() -> dict:
             result['price'] = True
             result['price_msg'] = ", ".join(f"{t}={p:,.0f}" for t, p in prices.items())
             _append_step(result, "4. 시세 조회", "PASS", f"요청 {len(tickers)}개 / 성공 {len(prices)}개")
+            # 잔고+시세 캐시 저장 (로컬 UI 표시용)
+            _save_balance_cache(all_bal, prices)
         else:
             result['price_msg'] = 'FAIL - 시세 조회 실패'
             _append_step(result, "4. 시세 조회", "FAIL", result['price_msg'])

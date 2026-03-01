@@ -16,6 +16,18 @@ import src.engine.data_cache as data_cache
 from src.ui.components.performance import render_performance_table
 from src.ui.components.triggers import render_strategy_trigger_tab
 
+_BALANCE_CACHE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "balance_cache.json")
+
+def _load_balance_cache():
+    """VM에서 저장한 잔고 캐시 파일 로드."""
+    try:
+        if os.path.exists(_BALANCE_CACHE_FILE):
+            with open(_BALANCE_CACHE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return None
+
 def render_coin_mode(config, save_config):
 # --- Coin Mode Logic ---
     st.title("🪙 업비트 자동매매 시스템")
@@ -749,10 +761,8 @@ def render_coin_mode(config, save_config):
                 unique_coins = list(dict.fromkeys(item['coin'].upper() for item in portfolio_list))
                 unique_tickers = list(dict.fromkeys(f"{item['market']}-{item['coin'].upper()}" for item in portfolio_list))
 
-                krw_bal = _ttl_cache("krw_bal_t1", lambda: trader.get_balance("KRW") or 0, ttl=10)
-
                 def _fetch_all_prices():
-                    """모든 코인 가격을 한번에 가져옴"""
+                    """모든 코인 가격을 한번에 가져옴 (Public API - IP 제한 없음)"""
                     return data_cache.get_current_prices_local_first(
                         unique_tickers,
                         ttl_sec=5.0,
@@ -761,19 +771,43 @@ def render_coin_mode(config, save_config):
 
                 all_prices = _ttl_cache("prices_t1", _fetch_all_prices, ttl=5)
 
+                # 잔고 조회: API 우선, 실패 시 캐시 파일 사용
+                _balance_from_cache = False
+                _balance_cache_time = ""
+
                 def _fetch_all_balances():
                     """모든 코인 잔고를 1회 API 호출로 가져옴"""
                     if hasattr(trader, 'get_all_balances'):
                         raw = trader.get_all_balances()
-                        return {c: raw.get(c, 0) for c in unique_coins}
-                    # 폴백: 개별 호출
-                    return {c: (trader.get_balance(c) or 0) for c in unique_coins}
+                        if raw and isinstance(raw, dict) and len(raw) > 0:
+                            return raw
+                    return None
 
-                all_balances = _ttl_cache("balances_t1", _fetch_all_balances, ttl=10)
+                _live_bal = _ttl_cache("balances_t1", _fetch_all_balances, ttl=10)
+
+                if _live_bal and isinstance(_live_bal, dict) and len(_live_bal) > 0:
+                    krw_bal = float(_live_bal.get('KRW', 0) or 0)
+                    all_balances = {c: float(_live_bal.get(c, 0) or 0) for c in unique_coins}
+                else:
+                    # API 실패 → 캐시 파일에서 로드
+                    _cached = _load_balance_cache()
+                    if _cached and _cached.get("balances"):
+                        _bal = _cached["balances"]
+                        krw_bal = float(_bal.get('KRW', 0) or 0)
+                        all_balances = {c: float(_bal.get(c, 0) or 0) for c in unique_coins}
+                        _balance_from_cache = True
+                        _balance_cache_time = _cached.get("updated_at", "")
+                    else:
+                        krw_bal = 0
+                        all_balances = {c: 0 for c in unique_coins}
 
                 # --- Total Summary Container ---
                 st.subheader("🏁 포트폴리오 요약")
-                st.caption(f"초기자본: {initial_cap:,.0f} KRW | 자산수: {count} | 자산당: {per_coin_cap:,.0f} KRW")
+                if _balance_from_cache:
+                    st.caption(f"초기자본: {initial_cap:,.0f} KRW | 자산수: {count} | 자산당: {per_coin_cap:,.0f} KRW")
+                    st.info(f"잔고: VM 캐시 기준 ({_balance_cache_time})" if _balance_cache_time else "잔고: VM 캐시 기준")
+                else:
+                    st.caption(f"초기자본: {initial_cap:,.0f} KRW | 자산수: {count} | 자산당: {per_coin_cap:,.0f} KRW")
 
                 sum_col1, sum_col2, sum_col3, sum_col4 = st.columns(4)
 

@@ -50,6 +50,11 @@ jobs:
             source venv/bin/activate
             pip install -q -r requirements.txt 2>/dev/null
             python scripts/github_action_trade.py
+            # 잔고 캐시 파일을 git push (로컬 UI 표시용)
+            if [ -f balance_cache.json ]; then
+              git add balance_cache.json
+              git diff --cached --quiet || git commit -m "auto: 잔고 캐시 업데이트" && git push --quiet 2>/dev/null || true
+            fi
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
@@ -159,6 +164,11 @@ jobs:
             source venv/bin/activate
             pip install -q -r requirements.txt 2>/dev/null
             python scripts/github_action_trade.py
+            # 잔고 캐시 파일을 git push (로컬 UI 표시용)
+            if [ -f balance_cache.json ]; then
+              git add balance_cache.json
+              git diff --cached --quiet || git commit -m "auto: 잔고 캐시 업데이트" && git push --quiet 2>/dev/null || true
+            fi
         env:
           # 업비트
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
@@ -203,6 +213,11 @@ jobs:
             source venv/bin/activate
             pip install -q -r requirements.txt 2>/dev/null
             python scripts/github_action_trade.py
+            # 잔고 캐시 파일을 git push (로컬 UI 표시용)
+            if [ -f balance_cache.json ]; then
+              git add balance_cache.json
+              git diff --cached --quiet || git commit -m "auto: 잔고 캐시 업데이트" && git push --quiet 2>/dev/null || true
+            fi
         env:
           # Upbit
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
