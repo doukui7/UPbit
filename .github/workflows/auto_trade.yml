@@ -52,6 +52,8 @@ jobs:
             python scripts/github_action_trade.py
             # 잔고 캐시 파일을 git push (로컬 UI 표시용)
             if [ -f balance_cache.json ]; then
+              git config user.email "bot@auto-trade" 2>/dev/null
+              git config user.name "auto-trade-bot" 2>/dev/null
               git add balance_cache.json
               git diff --cached --quiet || git commit -m "auto: 잔고 캐시 업데이트" && git push --quiet 2>/dev/null || true
             fi
@@ -166,6 +168,8 @@ jobs:
             python scripts/github_action_trade.py
             # 잔고 캐시 파일을 git push (로컬 UI 표시용)
             if [ -f balance_cache.json ]; then
+              git config user.email "bot@auto-trade" 2>/dev/null
+              git config user.name "auto-trade-bot" 2>/dev/null
               git add balance_cache.json
               git diff --cached --quiet || git commit -m "auto: 잔고 캐시 업데이트" && git push --quiet 2>/dev/null || true
             fi
@@ -215,6 +219,8 @@ jobs:
             python scripts/github_action_trade.py
             # 잔고 캐시 파일을 git push (로컬 UI 표시용)
             if [ -f balance_cache.json ]; then
+              git config user.email "bot@auto-trade" 2>/dev/null
+              git config user.name "auto-trade-bot" 2>/dev/null
               git add balance_cache.json
               git diff --cached --quiet || git commit -m "auto: 잔고 캐시 업데이트" && git push --quiet 2>/dev/null || true
             fi
