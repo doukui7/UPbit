@@ -43,7 +43,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 15m
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN
           script: |
             cd ~/upbit
             git pull --quiet 2>/dev/null || true
@@ -57,13 +57,16 @@ jobs:
               git add balance_cache.json
               if ! git diff --cached --quiet; then
                 git commit -m "auto: 잔고 캐시 업데이트"
+                git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/doukui7/UPbit.git
                 git push --quiet 2>/dev/null || true
+                git remote set-url origin https://github.com/doukui7/UPbit.git
               fi
             fi
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
           PORTFOLIO: ${{ secrets.PORTFOLIO }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TRADING_MODE: upbit
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
@@ -162,7 +165,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 15m
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN
           script: |
             cd ~/upbit
             git pull --quiet 2>/dev/null || true
@@ -173,11 +176,12 @@ jobs:
             if [ -f balance_cache.json ]; then
               git config user.email "bot@auto-trade" 2>/dev/null
               git config user.name "auto-trade-bot" 2>/dev/null
-              git remote -v
               git add balance_cache.json
               if ! git diff --cached --quiet; then
                 git commit -m "auto: 잔고 캐시 업데이트"
-                git push 2>&1 || echo "PUSH_FAILED"
+                git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/doukui7/UPbit.git
+                git push --quiet 2>/dev/null || true
+                git remote set-url origin https://github.com/doukui7/UPbit.git
               fi
             fi
         env:
@@ -185,6 +189,7 @@ jobs:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
           PORTFOLIO: ${{ secrets.PORTFOLIO }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # 키움 금현물
           KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
           KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
@@ -217,7 +222,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 15m
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN
           script: |
             cd ~/upbit
             git pull --quiet 2>/dev/null || true
@@ -231,7 +236,9 @@ jobs:
               git add balance_cache.json
               if ! git diff --cached --quiet; then
                 git commit -m "auto: 잔고 캐시 업데이트"
+                git remote set-url origin https://x-access-token:${GH_TOKEN}@github.com/doukui7/UPbit.git
                 git push --quiet 2>/dev/null || true
+                git remote set-url origin https://github.com/doukui7/UPbit.git
               fi
             fi
         env:
@@ -239,6 +246,7 @@ jobs:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
           PORTFOLIO: ${{ secrets.PORTFOLIO }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Kiwoom Gold
           KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
           KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
