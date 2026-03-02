@@ -16,6 +16,9 @@ on:
           - kis_isa
           - kis_pension
           - all
+          - vm_scheduler_start
+          - vm_scheduler_status
+          - vm_scheduler_stop
           - vm_cron_install
           - vm_cron_show
           - vm_cron_remove
@@ -172,6 +175,52 @@ jobs:
           script: |
             cd ~/upbit
             bash scripts/vm_cron_manager.sh remove
+
+  vm_scheduler_start:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_scheduler_start'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start Python Scheduler on VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_scheduler_manager.sh start
+
+  vm_scheduler_status:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_scheduler_status'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show Python Scheduler Status on VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            cd ~/upbit
+            bash scripts/vm_scheduler_manager.sh status
+
+  vm_scheduler_stop:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_scheduler_stop'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop Python Scheduler on VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            cd ~/upbit
+            bash scripts/vm_scheduler_manager.sh stop
 
   health_check:
     if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'health_check' || github.event.inputs.run_job == 'all'))
