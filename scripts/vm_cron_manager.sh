@@ -13,6 +13,34 @@ if [[ ! -f "${REPO_DIR}/scripts/vm_run_job.sh" ]]; then
   exit 1
 fi
 
+ensure_crontab() {
+  if command -v crontab >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "[info] crontab not found. trying to install cron package..."
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update -y >/dev/null 2>&1 || apt-get update -y >/dev/null 2>&1 || true
+    sudo apt-get install -y cron >/dev/null 2>&1 || apt-get install -y cron >/dev/null 2>&1 || true
+    sudo systemctl enable --now cron >/dev/null 2>&1 || sudo service cron start >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y cronie >/dev/null 2>&1 || dnf install -y cronie >/dev/null 2>&1 || true
+    sudo systemctl enable --now crond >/dev/null 2>&1 || sudo service crond start >/dev/null 2>&1 || true
+  elif command -v yum >/dev/null 2>&1; then
+    sudo yum install -y cronie >/dev/null 2>&1 || yum install -y cronie >/dev/null 2>&1 || true
+    sudo systemctl enable --now crond >/dev/null 2>&1 || sudo service crond start >/dev/null 2>&1 || true
+  elif command -v apk >/dev/null 2>&1; then
+    sudo apk add --no-cache dcron >/dev/null 2>&1 || apk add --no-cache dcron >/dev/null 2>&1 || true
+    sudo rc-update add crond >/dev/null 2>&1 || true
+    sudo service crond start >/dev/null 2>&1 || true
+  fi
+
+  if ! command -v crontab >/dev/null 2>&1; then
+    echo "[error] crontab command is still unavailable. install cron on VM first."
+    exit 1
+  fi
+}
+
 read_crontab() {
   crontab -l 2>/dev/null || true
 }
@@ -43,6 +71,7 @@ EOF
 }
 
 install_block() {
+  ensure_crontab
   chmod +x "${REPO_DIR}/scripts/vm_run_job.sh" "${REPO_DIR}/scripts/vm_cron_manager.sh" || true
   local tmp
   tmp="$(mktemp)"
@@ -57,6 +86,7 @@ install_block() {
 }
 
 remove_block() {
+  ensure_crontab
   local tmp
   tmp="$(mktemp)"
   read_crontab | strip_block > "${tmp}"
@@ -66,6 +96,7 @@ remove_block() {
 }
 
 show_block() {
+  ensure_crontab
   local out
   out="$(read_crontab | awk -v s="${BLOCK_START}" -v e="${BLOCK_END}" '
     $0 == s {in_block = 1; print; next}
