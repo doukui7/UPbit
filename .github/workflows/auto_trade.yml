@@ -1,23 +1,10 @@
 name: Auto Trade
 
 on:
-  schedule:
-    # 업비트 자동매매: 매 4시간 캔들 마감 10분 전 (UTC 23:50,3:50,...) → KST 8:50,12:50,16:50,20:50,0:50,4:50
-    - cron: '50 23,3,7,11,15,19 * * *'
-    # 키움 금현물: KST 15:05 (UTC 06:05) 평일 - 장마감 동시호가 (GA지연 대비 여유)
-    - cron: '5 6 * * 1-5'
-    # KIS ISA 위대리: 매주 금요일 KST 15:10 (UTC 06:10) (GA지연 대비 여유)
-    - cron: '10 6 * * 5'
-    # KIS 연금저축: 매월 25~31일 평일 KST 15:10 (UTC 06:10) (GA지연 대비 여유)
-    - cron: '10 6 25-31 * 1-5'
-    # 전체 헬스체크: 매 4시간 (매매 5분 전) KST 8:55,12:55,16:55,20:55,00:55,04:55
-    - cron: '55 23,3,7,11,15,19 * * *'
-    # 일일 자산 현황 리포트: KST 09:00 (UTC 00:00) 평일
-    - cron: '0 0 * * 1-5'
-  workflow_dispatch:  # 수동 실행 가능
+  workflow_dispatch:
     inputs:
       run_job:
-        description: 수동 실행할 작업 선택
+        description: Select job to run
         required: true
         type: choice
         default: daily_status
@@ -29,6 +16,9 @@ on:
           - kis_isa
           - kis_pension
           - all
+          - vm_cron_install
+          - vm_cron_show
+          - vm_cron_remove
 
 permissions:
   contents: write
@@ -36,7 +26,7 @@ permissions:
 jobs:
   # ── 업비트 BTC 자동매매 (VM SSH 경유 - 고정 IP) ──
   trade:
-    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'trade' || github.event.inputs.run_job == 'all')) || github.event.schedule == '50 23,3,7,11,15,19 * * *'
+    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'trade' || github.event.inputs.run_job == 'all'))
     runs-on: ubuntu-latest
     steps:
       - name: Run Auto Trade via Cloud VM
@@ -50,9 +40,7 @@ jobs:
           script: |
             cd ~/upbit
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
-            source venv/bin/activate
-            pip install -q -r requirements.txt 2>/dev/null
-            python scripts/github_action_trade.py
+            bash scripts/vm_run_job.sh upbit
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
@@ -64,21 +52,21 @@ jobs:
 
   # ── 키움 금현물 자동매매 ─────────────────────────────────
   kiwoom_gold:
-    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'kiwoom_gold' || github.event.inputs.run_job == 'all')) || github.event.schedule == '5 6 * * 1-5'
+    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'kiwoom_gold' || github.event.inputs.run_job == 'all')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Run Auto Trade (Kiwoom Gold) via Cloud VM
+        uses: appleboy/ssh-action@v1
         with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run Auto Trade (Kiwoom Gold)
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 15m
+          envs: KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_run_job.sh kiwoom_gold
         env:
           KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
           KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
@@ -89,25 +77,23 @@ jobs:
           TRADING_MODE: kiwoom_gold
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
-        run: python scripts/github_action_trade.py
 
-  # ── KIS ISA 위대리(WDR) 자동매매 ───────────────────────
   kis_isa:
-    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'kis_isa' || github.event.inputs.run_job == 'all')) || github.event.schedule == '10 6 * * 5'
+    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'kis_isa' || github.event.inputs.run_job == 'all')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Run Auto Trade (KIS ISA - WDR) via Cloud VM
+        uses: appleboy/ssh-action@v1
         with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run Auto Trade (KIS ISA - WDR)
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 15m
+          envs: KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_run_job.sh kis_isa
         env:
           KIS_ISA_APP_KEY: ${{ secrets.KIS_ISA_APP_KEY }}
           KIS_ISA_APP_SECRET: ${{ secrets.KIS_ISA_APP_SECRET }}
@@ -116,25 +102,23 @@ jobs:
           TRADING_MODE: kis_isa
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
-        run: python scripts/github_action_trade.py
 
-  # ── KIS 연금저축 LAA 자동매매 ─────────────────────────
   kis_pension:
-    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'kis_pension' || github.event.inputs.run_job == 'all')) || github.event.schedule == '10 6 25-31 * 1-5'
+    if: github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'kis_pension' || github.event.inputs.run_job == 'all')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Run Auto Trade (KIS Pension - LAA) via Cloud VM
+        uses: appleboy/ssh-action@v1
         with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Run Auto Trade (KIS Pension - LAA)
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 15m
+          envs: KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_run_job.sh kis_pension
         env:
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
@@ -142,11 +126,55 @@ jobs:
           TRADING_MODE: kis_pension
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
-        run: python scripts/github_action_trade.py
 
-  # ── 전체 헬스체크 (VM SSH 경유 - 매 4시간) ──
+  vm_cron_install:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_cron_install'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install VM Cron Schedule
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_cron_manager.sh install
+
+  vm_cron_show:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_cron_show'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show VM Cron Schedule
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            cd ~/upbit
+            bash scripts/vm_cron_manager.sh show
+
+  vm_cron_remove:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_cron_remove'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove VM Cron Schedule
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            cd ~/upbit
+            bash scripts/vm_cron_manager.sh remove
+
   health_check:
-    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'health_check' || github.event.inputs.run_job == 'all')) || github.event.schedule == '55 23,3,7,11,15,19 * * *'
+    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'health_check' || github.event.inputs.run_job == 'all'))
     runs-on: ubuntu-latest
     steps:
       - name: Run Daily Health Check via Cloud VM
@@ -160,9 +188,7 @@ jobs:
           script: |
             cd ~/upbit
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
-            source venv/bin/activate
-            pip install -q -r requirements.txt 2>/dev/null
-            python scripts/github_action_trade.py
+            bash scripts/vm_run_job.sh health_check
         env:
           # 업비트
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
@@ -191,7 +217,7 @@ jobs:
 
   # ── 일일 자산 현황 리포트 (VM SSH 경유) ──────────
   daily_status:
-    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'daily_status' || github.event.inputs.run_job == 'all')) || github.event.schedule == '0 0 * * 1-5'
+    if: (github.event_name == 'workflow_dispatch' && (github.event.inputs.run_job == 'daily_status' || github.event.inputs.run_job == 'all'))
     runs-on: ubuntu-latest
     steps:
       - name: Run Daily Status Report via Cloud VM
@@ -205,9 +231,7 @@ jobs:
           script: |
             cd ~/upbit
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
-            source venv/bin/activate
-            pip install -q -r requirements.txt 2>/dev/null
-            python scripts/github_action_trade.py
+            bash scripts/vm_run_job.sh daily_status
         env:
           # Upbit
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
@@ -230,4 +254,3 @@ jobs:
           TRADING_MODE: daily_status
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
-

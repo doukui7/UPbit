@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODE="${1:-}"
+if [[ -z "${MODE}" ]]; then
+  echo "usage: bash scripts/vm_run_job.sh <upbit|health_check|daily_status|kiwoom_gold|kis_isa|kis_pension>"
+  exit 1
+fi
+
+case "${MODE}" in
+  upbit|health_check|daily_status|kiwoom_gold|kis_isa|kis_pension) ;;
+  *)
+    echo "[error] unsupported mode: ${MODE}"
+    exit 2
+    ;;
+esac
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+REPO_DIR="${REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+LOG_DIR="${LOG_DIR:-${REPO_DIR}/logs}"
+LOCK_FILE="/tmp/upbit_${MODE}.lock"
+AUTO_UPDATE="${AUTO_UPDATE:-0}"
+
+mkdir -p "${LOG_DIR}"
+cd "${REPO_DIR}"
+
+if [[ -f "${REPO_DIR}/venv/bin/activate" ]]; then
+  # shellcheck disable=SC1091
+  source "${REPO_DIR}/venv/bin/activate"
+fi
+
+if [[ "${AUTO_UPDATE}" == "1" ]]; then
+  git fetch origin --quiet 2>/dev/null || true
+  git reset --hard origin/master --quiet 2>/dev/null || true
+fi
+
+if ! command -v python >/dev/null 2>&1; then
+  echo "[error] python command not found"
+  exit 3
+fi
+
+exec 9>"${LOCK_FILE}"
+if command -v flock >/dev/null 2>&1; then
+  if ! flock -n 9; then
+    echo "[skip] already running: ${MODE}"
+    exit 0
+  fi
+fi
+
+LOG_FILE="${LOG_DIR}/${MODE}.log"
+echo "[$(date '+%F %T')] start mode=${MODE}" >> "${LOG_FILE}"
+# python script loads .env via python-dotenv internally.
+if TRADING_MODE="${MODE}" python scripts/github_action_trade.py >> "${LOG_FILE}" 2>&1; then
+  echo "[$(date '+%F %T')] done mode=${MODE}" >> "${LOG_FILE}"
+else
+  code=$?
+  echo "[$(date '+%F %T')] fail mode=${MODE} code=${code}" >> "${LOG_FILE}"
+  exit "${code}"
+fi
