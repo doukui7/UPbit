@@ -19,20 +19,53 @@ ensure_crontab() {
   fi
 
   echo "[info] crontab not found. trying to install cron package..."
-  if command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get update -y >/dev/null 2>&1 || apt-get update -y >/dev/null 2>&1 || true
-    sudo apt-get install -y cron >/dev/null 2>&1 || apt-get install -y cron >/dev/null 2>&1 || true
-    sudo systemctl enable --now cron >/dev/null 2>&1 || sudo service cron start >/dev/null 2>&1 || true
-  elif command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y cronie >/dev/null 2>&1 || dnf install -y cronie >/dev/null 2>&1 || true
-    sudo systemctl enable --now crond >/dev/null 2>&1 || sudo service crond start >/dev/null 2>&1 || true
-  elif command -v yum >/dev/null 2>&1; then
-    sudo yum install -y cronie >/dev/null 2>&1 || yum install -y cronie >/dev/null 2>&1 || true
-    sudo systemctl enable --now crond >/dev/null 2>&1 || sudo service crond start >/dev/null 2>&1 || true
-  elif command -v apk >/dev/null 2>&1; then
-    sudo apk add --no-cache dcron >/dev/null 2>&1 || apk add --no-cache dcron >/dev/null 2>&1 || true
-    sudo rc-update add crond >/dev/null 2>&1 || true
-    sudo service crond start >/dev/null 2>&1 || true
+  echo "[info] user=$(id -un) uid=$(id -u)"
+
+  _run_root() {
+    if [[ "$(id -u)" == "0" ]]; then
+      "$@"
+      return $?
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+      sudo -n "$@" 2>/dev/null
+      return $?
+    fi
+    return 127
+  }
+
+  _root_ok=true
+  if ! _run_root true; then
+    _root_ok=false
+    echo "[warn] root 권한이 없어 패키지 설치를 수행할 수 없습니다."
+    echo "[warn] VM에서 수동으로 cron 설치 후 다시 vm_cron_install을 실행해 주세요."
+  fi
+
+  if [[ "${_root_ok}" == "true" ]]; then
+    if command -v apt-get >/dev/null 2>&1; then
+      echo "[info] package manager: apt-get"
+      _run_root apt-get update -y || true
+      _run_root apt-get install -y cron || _run_root apt-get install -y cronie || true
+      _run_root systemctl enable --now cron || _run_root service cron start || _run_root cron || true
+    elif command -v dnf >/dev/null 2>&1; then
+      echo "[info] package manager: dnf"
+      _run_root dnf install -y cronie || true
+      _run_root systemctl enable --now crond || _run_root service crond start || true
+    elif command -v yum >/dev/null 2>&1; then
+      echo "[info] package manager: yum"
+      _run_root yum install -y cronie || true
+      _run_root systemctl enable --now crond || _run_root service crond start || true
+    elif command -v apk >/dev/null 2>&1; then
+      echo "[info] package manager: apk"
+      _run_root apk add --no-cache dcron || _run_root apk add --no-cache cronie || true
+      _run_root rc-update add crond || true
+      _run_root service crond start || true
+    elif command -v microdnf >/dev/null 2>&1; then
+      echo "[info] package manager: microdnf"
+      _run_root microdnf install -y cronie || true
+      _run_root systemctl enable --now crond || _run_root service crond start || true
+    else
+      echo "[warn] 지원되는 패키지 매니저를 찾지 못했습니다. (apt/dnf/yum/apk/microdnf)"
+    fi
   fi
 
   if ! command -v crontab >/dev/null 2>&1; then
