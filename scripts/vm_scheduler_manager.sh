@@ -105,9 +105,22 @@ show_status() {
   fi
 }
 
+ensure_scheduler() {
+  if is_running; then
+    echo "[ok] scheduler already running (pid=$(cat "${PID_FILE}"))"
+    return 0
+  fi
+  echo "[warn] scheduler not running. starting now..."
+  start_scheduler
+}
+
 case "${ACTION}" in
   start)
     start_scheduler
+    show_status
+    ;;
+  ensure)
+    ensure_scheduler
     show_status
     ;;
   stop)
@@ -122,7 +135,7 @@ case "${ACTION}" in
     show_status
     ;;
   *)
-    echo "usage: bash scripts/vm_scheduler_manager.sh <start|stop|restart|status>"
+    echo "usage: bash scripts/vm_scheduler_manager.sh <start|ensure|stop|restart|status>"
     exit 2
     ;;
 esac

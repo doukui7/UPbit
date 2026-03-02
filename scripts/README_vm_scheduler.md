@@ -9,6 +9,7 @@
 - 워크플로우: `Auto Trade`
 - `run_job` 선택:
   - `vm_scheduler_start`: VM 스케줄러 시작
+  - `vm_scheduler_ensure`: VM 스케줄러 생존 확인 후 미실행 시 자동 시작
   - `vm_scheduler_status`: VM 스케줄러 상태/최근 로그 확인
   - `vm_scheduler_stop`: VM 스케줄러 중지
 
@@ -16,6 +17,7 @@
 ```bash
 cd ~/upbit
 bash scripts/vm_scheduler_manager.sh start
+bash scripts/vm_scheduler_manager.sh ensure
 bash scripts/vm_scheduler_manager.sh status
 bash scripts/vm_scheduler_manager.sh stop
 ```
@@ -33,3 +35,7 @@ bash scripts/vm_scheduler_manager.sh stop
 - PID: `logs/vm_scheduler.pid`
 - 실행 중복 방지 lock: `logs/vm_scheduler.lock`
 - 마지막 실행 상태: `logs/vm_scheduler_state.json`
+
+## 재부팅 백업 플랜
+- `Auto Trade` 워크플로우에 15분 주기 `schedule`이 설정되어 있습니다.
+- 스케줄 이벤트는 `vm_scheduler_ensure` 잡만 실행하며, VM 스케줄러가 죽어있으면 자동 재시작합니다.

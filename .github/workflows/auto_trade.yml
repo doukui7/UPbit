@@ -1,6 +1,9 @@
 name: Auto Trade
 
 on:
+  schedule:
+    # Backup plan: VM 스케줄러 생존 감시(15분 주기)
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       run_job:
@@ -17,6 +20,7 @@ on:
           - kis_pension
           - all
           - vm_scheduler_start
+          - vm_scheduler_ensure
           - vm_scheduler_status
           - vm_scheduler_stop
           - vm_cron_install
@@ -191,6 +195,22 @@ jobs:
             cd ~/upbit
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
             bash scripts/vm_scheduler_manager.sh start
+
+  vm_scheduler_ensure:
+    if: (github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_scheduler_ensure') || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure Python Scheduler on VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_scheduler_manager.sh ensure
 
   vm_scheduler_status:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_scheduler_status'
