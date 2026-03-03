@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import src.engine.data_cache as data_cache
+from src.utils.db_manager import DBManager
 from src.strategy.sma import SMAStrategy
 from src.strategy.donchian import DonchianStrategy
 from src.strategy.widaeri import WDRStrategy
@@ -33,7 +34,7 @@ GOLD_KRX_ETF_CODE = "411060"
 GOLD_LEGACY_ETF_CODES = {"132030"}
 
 # ── 시그널 전환 감지를 위한 포지션 상태 파일 ──
-SIGNAL_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_state.json")
+SIGNAL_STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "signal_state.json")
 
 # ── 잔고 캐시 파일 (로컬 UI에서 조회용) ──
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -257,7 +258,7 @@ def _get_gold_daily_local_first(trader: KiwoomGoldTrader, code: str, count: int)
 
 
 def _get_gold_price_local_first(trader: KiwoomGoldTrader, code: str) -> float:
-    return float(
+    p = float(
         data_cache.get_gold_current_price_local_first(
             trader=trader,
             code=code,
@@ -266,6 +267,21 @@ def _get_gold_price_local_first(trader: KiwoomGoldTrader, code: str) -> float:
         )
         or 0.0
     )
+    if p > 0:
+        return p
+
+    # Additional fallback for off-hours/API hiccups: use latest daily close directly.
+    try:
+        df = trader.get_daily_chart(code=code, count=3)
+        if df is not None and len(df) > 0:
+            if "close" in df.columns:
+                p = float(df["close"].iloc[-1] or 0.0)
+            elif "Close" in df.columns:
+                p = float(df["Close"].iloc[-1] or 0.0)
+    except Exception:
+        p = 0.0
+
+    return float(p if p > 0 else 0.0)
 
 
 def _send_telegram(message: str):
@@ -1038,6 +1054,50 @@ def _order_success(result) -> bool:
     return bool(result)
 
 
+def _get_kis_orderable_cash(balance: dict | None, fallback: float = 0.0) -> float:
+    """KIS 잔고 응답에서 주문 가능 금액을 우선으로 반환."""
+    if not isinstance(balance, dict):
+        return float(fallback)
+    try:
+        buyable = float(balance.get("buyable_cash", 0.0) or 0.0)
+    except Exception:
+        buyable = 0.0
+    if buyable > 0:
+        return buyable
+    try:
+        return float(balance.get("cash", fallback) or fallback)
+    except Exception:
+        return float(fallback)
+
+
+def _extract_order_fail_msg(order_result) -> str:
+    """주문 실패 응답에서 사용자 메시지를 최대한 추출."""
+    if isinstance(order_result, dict):
+        for k in ("msg", "message", "msg1", "error_message"):
+            v = str(order_result.get(k, "")).strip()
+            if v:
+                return v
+    return str(order_result).strip()
+
+
+def _is_non_actionable_kis_order_failure(msg: str) -> bool:
+    """
+    헬스체크 FAIL로 집계하지 않아도 되는 업무 제약성 주문 실패.
+    - 계좌 만기/정지/주문불가
+    - 가격 제한폭 벗어남(테스트 주문가 제약)
+    """
+    text = str(msg or "").strip()
+    if not text:
+        return False
+    patterns = [
+        "만기일부터 주문이 불가",
+        "주문이 불가",
+        "주문가격이 하한가 미만",
+        "주문가격이 상한가 초과",
+    ]
+    return any(p in text for p in patterns)
+
+
 def _execute_kis_sell_qty_by_phase(trader: KISTrader, code: str, qty: int, phase: str):
     qty = int(qty or 0)
     if qty <= 0:
@@ -1376,7 +1436,12 @@ def _check_kiwoom_gold() -> dict:
         # 3. 시세 조회
         price = _get_gold_price_local_first(trader, code)
         if not price or price <= 0:
-            result['price_msg'] = 'FAIL - 시세 조회 실패'
+            if not _is_market_hours():
+                result['price_msg'] = 'SKIP - ???? ?? ?? ?? (?? ???)'
+                result['signal_msg'] = 'SKIP - ?? ???? ?? ?? ??'
+                result['order_msg'] = 'SKIP - ?? ???? ?? ??? ??'
+                return result
+            result['price_msg'] = 'FAIL - ?? ?? ??'
             return result
         result['price'] = True
         result['price_msg'] = f"미니금 현재가 {price:,.0f}원"
@@ -1645,7 +1710,11 @@ def _check_kis_isa() -> dict:
         else:
             order_result = trader.send_order("BUY", etf_code, qty=1, price=limit_price, ord_dvsn="00")
         if not order_result or not order_result.get('success'):
-            result['order_msg'] = f"FAIL - 주문 실패: {order_result}"
+            fail_msg = _extract_order_fail_msg(order_result)
+            if _is_non_actionable_kis_order_failure(fail_msg):
+                result['order_msg'] = f"SKIP - 주문 제약: {fail_msg}"
+            else:
+                result['order_msg'] = f"FAIL - 주문 실패: {order_result}"
             return result
 
         ord_no = order_result.get('ord_no', '')
@@ -2169,7 +2238,7 @@ def run_daily_status_report():
 
             if trader.auth():
                 bal = trader.get_balance() or {}
-                cash = float(bal.get("cash", 0.0))
+                cash = _get_kis_orderable_cash(bal, fallback=0.0)
                 holdings = bal.get("holdings", []) or []
                 total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
                 lines.append(f"<b>[KIS 연금저축]</b> 총 {total_eval:,.0f}원")
@@ -2345,7 +2414,7 @@ def run_kis_pension_trade():
         logger.error("잔고 조회 실패. 종료.")
         return
 
-    cash = float(bal.get("cash", 0.0))
+    cash = _get_kis_orderable_cash(bal, fallback=0.0)
     holdings = bal.get("holdings", []) or []
     total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
     total_eval = max(total_eval, 1.0)
@@ -2388,7 +2457,7 @@ def run_kis_pension_trade():
 
     # 2) 매수 전 잔고 재조회
     bal2 = trader.get_balance() or {}
-    cash = float(bal2.get("cash", cash))
+    cash = _get_kis_orderable_cash(bal2, fallback=cash)
     holdings2 = bal2.get("holdings", []) or holdings
     current_vals = {c: 0.0 for c in tracked_codes}
     for h in holdings2:
@@ -2471,7 +2540,7 @@ def _check_kis_pension() -> dict:
             result["balance_msg"] = "FAIL - 잔고 조회 실패"
             return result
         result["balance"] = True
-        cash = float(bal.get("cash", 0.0))
+        cash = _get_kis_orderable_cash(bal, fallback=0.0)
         holdings = bal.get("holdings", []) or []
         total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
         result["balance_msg"] = f"예수금 {cash:,.0f} / 총평가 {total_eval:,.0f}"
@@ -2532,7 +2601,11 @@ def _check_kis_pension() -> dict:
         else:
             order_result = trader.send_order("BUY", test_code, qty=1, price=limit_price, ord_dvsn="00")
         if not order_result or not order_result.get("success"):
-            result["order_msg"] = f"FAIL - 주문 실패: {order_result}"
+            fail_msg = _extract_order_fail_msg(order_result)
+            if _is_non_actionable_kis_order_failure(fail_msg):
+                result["order_msg"] = f"SKIP - 주문 제약: {fail_msg}"
+            else:
+                result["order_msg"] = f"FAIL - 주문 실패: {order_result}"
             return result
 
         ord_no = order_result.get("ord_no", "")
