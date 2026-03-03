@@ -20,9 +20,17 @@ REPO_DIR="${REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 LOG_DIR="${LOG_DIR:-${REPO_DIR}/logs}"
 LOCK_FILE="/tmp/upbit_${MODE}.lock"
 AUTO_UPDATE="${AUTO_UPDATE:-0}"
+RUNTIME_ENV_FILE="${RUNTIME_ENV_FILE:-${REPO_DIR}/.vm_runtime_env}"
 
 mkdir -p "${LOG_DIR}"
 cd "${REPO_DIR}"
+
+if [[ -f "${RUNTIME_ENV_FILE}" ]]; then
+  # shellcheck disable=SC1090
+  set -a
+  source "${RUNTIME_ENV_FILE}"
+  set +a
+fi
 
 if [[ -f "${REPO_DIR}/venv/bin/activate" ]]; then
   # shellcheck disable=SC1091
