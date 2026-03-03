@@ -1069,6 +1069,30 @@ def _get_kis_orderable_cash(balance: dict | None, fallback: float = 0.0) -> floa
         return float(fallback)
 
 
+def _get_kis_balance_with_retry(
+    trader: KISTrader,
+    retries: int = 3,
+    delay_sec: float = 0.8,
+    log_prefix: str = "KIS",
+) -> dict | None:
+    """KIS 잔고 조회를 짧게 재시도해 일시적 API 실패를 완화."""
+    attempts = max(1, int(retries))
+    for attempt in range(1, attempts + 1):
+        try:
+            bal = trader.get_balance()
+        except Exception as e:
+            bal = None
+            logger.warning(f"{log_prefix} 잔고 조회 예외 ({attempt}/{attempts}): {e}")
+        if isinstance(bal, dict):
+            return bal
+        if attempt < attempts:
+            logger.warning(
+                f"{log_prefix} 잔고 조회 실패 ({attempt}/{attempts}) - {delay_sec:.1f}초 후 재시도"
+            )
+            time.sleep(delay_sec)
+    return None
+
+
 def _extract_order_fail_msg(order_result) -> str:
     """주문 실패 응답에서 사용자 메시지를 최대한 추출."""
     if isinstance(order_result, dict):
@@ -1224,7 +1248,7 @@ def run_kis_isa_trade():
     logger.info(f"  매도비율={signal['sell_ratio']}%, 매수비율={signal['buy_ratio']}%")
 
     # ── 3. 잔고 확인 ──
-    bal = trader.get_balance()
+    bal = _get_kis_balance_with_retry(trader, retries=3, delay_sec=0.8, log_prefix="KIS ISA")
     if bal is None:
         logger.error("잔고 조회 실패. 종료.")
         return
@@ -1436,11 +1460,11 @@ def _check_kiwoom_gold() -> dict:
         price = _get_gold_price_local_first(trader, code)
         if not price or price <= 0:
             if not _is_market_hours():
-                result['price_msg'] = 'SKIP - ???? ?? ?? ?? (?? ???)'
-                result['signal_msg'] = 'SKIP - ?? ???? ?? ?? ??'
-                result['order_msg'] = 'SKIP - ?? ???? ?? ??? ??'
+                result['price_msg'] = 'SKIP - 장 시간 외 시세 조회 생략 (장 종료)'
+                result['signal_msg'] = 'SKIP - 장 시간 외 시그널 체크 생략'
+                result['order_msg'] = 'SKIP - 장 시간 외 주문 테스트 생략'
                 return result
-            result['price_msg'] = 'FAIL - ?? ?? ??'
+            result['price_msg'] = 'FAIL - 시세 조회 실패'
             return result
         result['price'] = True
         result['price_msg'] = f"미니금 현재가 {price:,.0f}원"
@@ -1586,7 +1610,7 @@ def _check_kis_isa() -> dict:
             _append_step(result, "ETF 코드 보정", "INFO", f"1배/미지원 코드({etf_code_raw}) -> {etf_code}")
 
         # 2. 잔고 조회
-        bal = trader.get_balance()
+        bal = _get_kis_balance_with_retry(trader, retries=3, delay_sec=0.8, log_prefix="KIS ISA")
         if bal is None:
             result['balance_msg'] = 'FAIL - 잔고 조회 실패'
             return result
@@ -2408,7 +2432,7 @@ def run_kis_pension_trade():
         logger.error("LAA 시그널 분석 실패. 종료.")
         return
 
-    bal = trader.get_balance()
+    bal = _get_kis_balance_with_retry(trader, retries=3, delay_sec=0.8, log_prefix="KIS 연금저축")
     if not bal:
         logger.error("잔고 조회 실패. 종료.")
         return
@@ -2455,7 +2479,7 @@ def run_kis_pension_trade():
         time.sleep(0.8)
 
     # 2) 매수 전 잔고 재조회
-    bal2 = trader.get_balance() or {}
+    bal2 = _get_kis_balance_with_retry(trader, retries=2, delay_sec=0.5, log_prefix="KIS 연금저축") or {}
     cash = _get_kis_orderable_cash(bal2, fallback=cash)
     holdings2 = bal2.get("holdings", []) or holdings
     current_vals = {c: 0.0 for c in tracked_codes}
@@ -2534,7 +2558,7 @@ def _check_kis_pension() -> dict:
         result["auth"] = True
         result["auth_msg"] = "PASS"
 
-        bal = trader.get_balance()
+        bal = _get_kis_balance_with_retry(trader, retries=3, delay_sec=0.8, log_prefix="KIS 연금저축")
         if bal is None:
             result["balance_msg"] = "FAIL - 잔고 조회 실패"
             return result
