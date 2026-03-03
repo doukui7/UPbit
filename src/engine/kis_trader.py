@@ -599,6 +599,60 @@ class KISTrader:
                 return h["qty"]
         return 0
 
+    def get_orderable_cash(self, stock_code: str, price: int = 0, ord_dvsn: str = "01") -> float | None:
+        """
+        주문 가능 금액 조회.
+        - stock_code: 조회 기준 종목 코드(6자리)
+        - price: 지정가 주문 단가(시장가면 0)
+        - ord_dvsn: "00" 지정가, "01" 시장가
+        """
+        if not self._ensure_token():
+            return None
+        cano, prdt = self._account_params()
+
+        tr_id = "VTTC8908R" if self.is_mock else "TTTC8908R"
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-psbl-order"
+        params = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": prdt,
+            "PDNO": str(stock_code).strip(),
+            "ORD_UNPR": str(int(float(price))) if float(price or 0) > 0 else "0",
+            "ORD_DVSN": str(ord_dvsn or "01"),
+            "CMA_EVLU_AMT_ICLD_YN": "N",
+            "OVRS_ICLD_YN": "N",
+        }
+
+        def _to_num(v, default=0.0):
+            try:
+                return float(str(v).replace(",", ""))
+            except Exception:
+                return float(default)
+
+        try:
+            res = self._session.get(url, params=params, headers=self._headers(tr_id), timeout=10)
+            data = res.json()
+            if str(data.get("rt_cd", "")) != "0":
+                logger.warning(
+                    f"주문가능금액 조회 실패({stock_code}): {data.get('msg_cd', '')} {data.get('msg1', '')}"
+                )
+                return None
+
+            output = data.get("output", {})
+            if isinstance(output, list):
+                output = output[0] if output else {}
+            if not isinstance(output, dict):
+                output = {}
+
+            for key in ("ord_psbl_cash", "ord_psbl_amt", "buy_psbl_cash", "nrcvb_buy_amt", "dnca_tot_amt"):
+                if key in output:
+                    val = _to_num(output.get(key), 0.0)
+                    if val > 0:
+                        return val
+            return None
+        except Exception as e:
+            logger.warning(f"주문가능금액 조회 예외({stock_code}): {e}")
+            return None
+
     # ?????????????????????????????????????????????????????
     # 二쇰Ц
     # ?????????????????????????????????????????????????????

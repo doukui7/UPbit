@@ -1303,6 +1303,35 @@ def _get_kis_orderable_cash(balance: dict | None, fallback: float = 0.0) -> floa
         return float(fallback)
 
 
+def _get_kis_orderable_cash_precise(
+    trader: KISTrader,
+    balance: dict | None,
+    base_code: str = "",
+    fallback: float = 0.0,
+) -> float:
+    """
+    KIS 주문가능금액 조회 API를 우선 사용하고 실패 시 잔고 응답값으로 폴백.
+    """
+    base_cash = _get_kis_orderable_cash(balance, fallback=fallback)
+    code = str(base_code or "").strip()
+    if not code:
+        return base_cash
+
+    # 1) 지정가 기준 조회 (현재가 사용)
+    price = _get_kis_price_local_first(trader, code)
+    if price and price > 0:
+        amt = trader.get_orderable_cash(code, price=int(price), ord_dvsn="00")
+        if amt is not None and float(amt) > 0:
+            return float(amt)
+
+    # 2) 시장가 기준 조회
+    amt = trader.get_orderable_cash(code, price=0, ord_dvsn="01")
+    if amt is not None and float(amt) > 0:
+        return float(amt)
+
+    return base_cash
+
+
 def _get_kis_balance_with_retry(
     trader: KISTrader,
     retries: int = 3,
@@ -1317,8 +1346,12 @@ def _get_kis_balance_with_retry(
         except Exception as e:
             bal = None
             logger.warning(f"{log_prefix} 잔고 조회 예외 ({attempt}/{attempts}): {e}")
-        if isinstance(bal, dict):
+        if isinstance(bal, dict) and not bool(bal.get("error")):
             return bal
+        if isinstance(bal, dict) and bool(bal.get("error")):
+            logger.warning(
+                f"{log_prefix} 잔고 API 오류 ({attempt}/{attempts}): {bal.get('msg_cd', '')} {bal.get('msg1', '')}"
+            )
         if attempt < attempts:
             logger.warning(
                 f"{log_prefix} 잔고 조회 실패 ({attempt}/{attempts}) - {delay_sec:.1f}초 후 재시도"
@@ -2577,11 +2610,14 @@ def run_daily_status_report():
 
             if trader.auth():
                 bal = trader.get_balance() or {}
-                cash = _get_kis_orderable_cash(bal, fallback=0.0)
+                pension_base_code = _get_env_any("KR_ETF_LAA_QQQ", default="133690")
+                cash = _get_kis_orderable_cash_precise(
+                    trader, bal, base_code=pension_base_code, fallback=0.0
+                )
                 holdings = bal.get("holdings", []) or []
                 total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
                 lines.append(f"<b>[KIS 연금저축]</b> 총 {total_eval:,.0f}원")
-                lines.append(f"  예수금 {cash:,.0f}원 / 보유: {_format_holdings_brief(holdings)}")
+                lines.append(f"  예수금(주문가능) {cash:,.0f}원 / 보유: {_format_holdings_brief(holdings)}")
 
                 # LAA 전략 시그널 체크 (주문 없이 분석만)
                 try:
@@ -2753,7 +2789,13 @@ def run_kis_pension_trade():
         logger.error("잔고 조회 실패. 종료.")
         return
 
-    cash = _get_kis_orderable_cash(bal, fallback=0.0)
+    pension_base_code = next(
+        iter(signal.get("target_weights_kr", {}).keys()),
+        str(kr_etf_map.get("QQQ", "133690")),
+    )
+    cash = _get_kis_orderable_cash_precise(
+        trader, bal, base_code=pension_base_code, fallback=0.0
+    )
     holdings = bal.get("holdings", []) or []
     total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
     total_eval = max(total_eval, 1.0)
@@ -2796,7 +2838,9 @@ def run_kis_pension_trade():
 
     # 2) 매수 전 잔고 재조회
     bal2 = _get_kis_balance_with_retry(trader, retries=2, delay_sec=0.5, log_prefix="KIS 연금저축") or {}
-    cash = _get_kis_orderable_cash(bal2, fallback=cash)
+    cash = _get_kis_orderable_cash_precise(
+        trader, bal2, base_code=pension_base_code, fallback=cash
+    )
     holdings2 = bal2.get("holdings", []) or holdings
     current_vals = {c: 0.0 for c in tracked_codes}
     for h in holdings2:
@@ -2879,10 +2923,13 @@ def _check_kis_pension() -> dict:
             result["balance_msg"] = "FAIL - 잔고 조회 실패"
             return result
         result["balance"] = True
-        cash = _get_kis_orderable_cash(bal, fallback=0.0)
+        pension_base_code = _get_env_any("KR_ETF_LAA_QQQ", default="133690")
+        cash = _get_kis_orderable_cash_precise(
+            trader, bal, base_code=pension_base_code, fallback=0.0
+        )
         holdings = bal.get("holdings", []) or []
         total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
-        result["balance_msg"] = f"예수금 {cash:,.0f} / 총평가 {total_eval:,.0f}"
+        result["balance_msg"] = f"예수금(주문가능) {cash:,.0f} / 총평가 {total_eval:,.0f}"
 
         tickers = ["SPY", "IWD", "GLD", "IEF", "QQQ", "SHY"]
         kr_etf_map = {
