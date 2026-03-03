@@ -92,6 +92,7 @@ stop_scheduler() {
 }
 
 show_status() {
+  local runtime_env_file="${REPO_DIR}/.vm_runtime_env"
   if is_running; then
     local pid
     pid="$(cat "${PID_FILE}")"
@@ -111,6 +112,13 @@ show_status() {
     if [[ -f "${LOG_DIR}/health_check.log" ]]; then
       echo "[info] latest health_check log:"
       tail -n 20 "${LOG_DIR}/health_check.log" || true
+    fi
+    if [[ -f "${runtime_env_file}" ]]; then
+      echo "[info] runtime env file: ${runtime_env_file}"
+      echo "[info] runtime env keys:"
+      awk -F= '/^[A-Z0-9_]+=/{print "  - " $1}' "${runtime_env_file}" || true
+    else
+      echo "[warn] runtime env file not found: ${runtime_env_file}"
     fi
   else
     echo "[info] scheduler not running"
