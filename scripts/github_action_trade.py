@@ -375,6 +375,143 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(default)
 
 
+def _fmt_krw_price(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    v = _safe_float(value, default=0.0)
+    if not math.isfinite(v) or v <= 0:
+        return "N/A"
+    return f"{v:,.0f}원"
+
+
+def _calc_gap_pct(current_price: float | None, target_price: float | None) -> float | None:
+    cur = _safe_float(current_price, default=0.0)
+    tgt = _safe_float(target_price, default=0.0)
+    if not math.isfinite(cur) or not math.isfinite(tgt) or cur <= 0 or tgt <= 0:
+        return None
+    return (cur / tgt - 1.0) * 100.0
+
+
+def _fmt_gap_pct(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    v = _safe_float(value, default=float("nan"))
+    if not math.isfinite(v):
+        return "N/A"
+    return f"{v:+.2f}%"
+
+
+def _fmt_interval_label(interval: str) -> str:
+    iv = _normalize_coin_interval(interval)
+    return {
+        "day": "1D",
+        "minute240": "4H",
+        "minute60": "1H",
+        "minute30": "30m",
+        "minute15": "15m",
+        "minute5": "5m",
+        "minute1": "1m",
+    }.get(iv, iv)
+
+
+def _cond_text(flag: bool | None) -> str:
+    if flag is None:
+        return "판단불가"
+    return "조건충족" if flag else "조건미충족"
+
+
+def _build_upbit_condition_info(
+    strategy_name: str,
+    param: int,
+    sell_param: int,
+    interval: str,
+    last_candle,
+    current_price: float,
+) -> dict:
+    close_price = _safe_float(last_candle.get("close"), default=0.0)
+    interval_label = _fmt_interval_label(interval)
+
+    if strategy_name == "Donchian":
+        buy_key = f"Donchian_Upper_{param}"
+        sell_key = f"Donchian_Lower_{sell_param}"
+        buy_level = _safe_float(last_candle.get(buy_key), default=0.0)
+        sell_level = _safe_float(last_candle.get(sell_key), default=0.0)
+
+        buy_cond = (close_price > buy_level) if buy_level > 0 else None
+        sell_cond = (close_price < sell_level) if sell_level > 0 else None
+        buy_gap = _calc_gap_pct(current_price, buy_level)
+        sell_gap = _calc_gap_pct(current_price, sell_level)
+
+        label = f"Donchian({param}/{sell_param}, {interval_label})"
+        lines = [
+            f"현재가 {_fmt_krw_price(current_price)} / 판단종가 {_fmt_krw_price(close_price)}",
+            (
+                f"매수타점(상단 {param}) {_fmt_krw_price(buy_level)} | "
+                f"이격 {_fmt_gap_pct(buy_gap)} | {_cond_text(buy_cond)}"
+            ),
+            (
+                f"매도타점(하단 {sell_param}) {_fmt_krw_price(sell_level)} | "
+                f"이격 {_fmt_gap_pct(sell_gap)} | {_cond_text(sell_cond)}"
+            ),
+        ]
+    else:
+        sma_key = f"SMA_{param}"
+        sma_level = _safe_float(last_candle.get(sma_key), default=0.0)
+        buy_level = sma_level
+        sell_level = sma_level
+
+        buy_cond = (close_price > sma_level) if sma_level > 0 else None
+        sell_cond = (close_price < sma_level) if sma_level > 0 else None
+        buy_gap = _calc_gap_pct(current_price, sma_level)
+        sell_gap = buy_gap
+
+        label = f"SMA({param}, {interval_label})"
+        lines = [
+            f"현재가 {_fmt_krw_price(current_price)} / 판단종가 {_fmt_krw_price(close_price)}",
+            (
+                f"매수타점(SMA_{param}) {_fmt_krw_price(sma_level)} | "
+                f"이격 {_fmt_gap_pct(buy_gap)} | {_cond_text(buy_cond)}"
+            ),
+            (
+                f"매도타점(SMA_{param}) {_fmt_krw_price(sma_level)} | "
+                f"이격 {_fmt_gap_pct(sell_gap)} | {_cond_text(sell_cond)}"
+            ),
+        ]
+
+    summary = (
+        f"현재가 {_fmt_krw_price(current_price)} | "
+        f"매수타점 {_fmt_krw_price(buy_level)} ({_fmt_gap_pct(buy_gap)}, {_cond_text(buy_cond)}) | "
+        f"매도타점 {_fmt_krw_price(sell_level)} ({_fmt_gap_pct(sell_gap)}, {_cond_text(sell_cond)})"
+    )
+
+    return {
+        "strategy_label": label,
+        "close_price": close_price,
+        "buy_level": buy_level,
+        "sell_level": sell_level,
+        "buy_gap_pct": buy_gap,
+        "sell_gap_pct": sell_gap,
+        "buy_cond": buy_cond,
+        "sell_cond": sell_cond,
+        "condition_lines": lines,
+        "condition_summary": summary,
+    }
+
+
+def _describe_upbit_signal_reason(analysis: dict) -> str:
+    signal = str(analysis.get("signal", "")).upper()
+    pos_state = str(analysis.get("position_state", "")).upper()
+    prev_state = str(analysis.get("prev_state", "")).upper()
+
+    if signal in {"BUY", "SELL"}:
+        return f"주문조건 충족 ({signal} 전환)"
+    if pos_state == "HOLD":
+        return "조건미충족 (중립구간)"
+    if prev_state and pos_state == prev_state and pos_state in {"BUY", "SELL"}:
+        return f"전환조건 미충족 (기존 {pos_state} 상태 유지)"
+    return "조건미충족"
+
+
 def _append_step(result: dict, step: str, status: str, detail: str):
     """
     헬스체크 단계 로그 누적.
@@ -514,10 +651,11 @@ def analyze_asset(trader, item):
     # 포지션 상태 계산 (전략이 반환하는 raw state)
     last_candle = df.iloc[-2]  # 마지막 완성 봉
 
+    sell_p = item.get("sell_parameter", 0) or max(5, int(param) // 2)
+
     if strategy_name == "Donchian":
         strat = DonchianStrategy()
-        buy_p = param
-        sell_p = item.get("sell_parameter", 0) or max(5, buy_p // 2)
+        buy_p = int(param)
         df = strat.create_features(df, buy_period=buy_p, sell_period=sell_p)
         last_candle = df.iloc[-2]
         position_state = strat.get_signal(last_candle, buy_period=buy_p, sell_period=sell_p)
@@ -539,18 +677,43 @@ def analyze_asset(trader, item):
     coin_value = coin_balance * float(current_price or 0.0)
     is_holding = coin_value >= MIN_ORDER_KRW
 
+    condition_info = _build_upbit_condition_info(
+        strategy_name=str(strategy_name),
+        param=int(param),
+        sell_param=int(sell_p),
+        interval=interval,
+        last_candle=last_candle,
+        current_price=current_price,
+    )
+
     logger.info(f"[{ticker}] Close={last_candle['close']}, {indicator_info}, State={position_state}, Price={current_price}")
     logger.info(f"[{ticker}] {coin_sym}={coin_balance:.6f} (≈{coin_value:,.0f} KRW), Holding={is_holding}")
+    logger.info(f"[{ticker}] 조건요약: {condition_info['condition_summary']}")
+    for line in condition_info.get("condition_lines", []):
+        logger.info(f"[{ticker}] {line}")
 
     return {
         'ticker': ticker,
         'coin_sym': coin_sym,
+        'strategy_name': str(strategy_name),
+        'strategy_label': condition_info.get("strategy_label", f"{strategy_name}({param})"),
+        'param': int(param),
+        'sell_param': int(sell_p),
         'position_state': position_state,  # 전략 raw state: BUY/SELL/HOLD
         'signal': position_state,          # 전환 감지 전 임시값 (run_auto_trade에서 덮어씀)
         'weight': weight,
         'coin_balance': coin_balance,
         'coin_value': coin_value,
         'current_price': current_price,
+        'close_price': condition_info.get("close_price", 0.0),
+        'buy_level': condition_info.get("buy_level", 0.0),
+        'sell_level': condition_info.get("sell_level", 0.0),
+        'buy_gap_pct': condition_info.get("buy_gap_pct"),
+        'sell_gap_pct': condition_info.get("sell_gap_pct"),
+        'buy_cond': condition_info.get("buy_cond"),
+        'sell_cond': condition_info.get("sell_cond"),
+        'condition_summary': condition_info.get("condition_summary", ""),
+        'condition_lines': condition_info.get("condition_lines", []),
         'is_holding': is_holding,
         'interval': interval,
     }
@@ -646,6 +809,7 @@ def run_auto_trade():
 
     # ── 2단계: 매도 먼저 실행 (전환 감지 기반) ──
     exec_results = {}  # {ticker: [result, ...]} 체결 결과 추적 (텔레그램 상세용)
+    decision_notes = {}  # {ticker: [note, ...]} 주문/스킵 사유 추적
     sold_coins = set()  # 전량 매도 완료된 코인 추적 (이중 매도 방지)
     for a in analyses:
         if a['signal'] == 'SELL' and a['is_holding']:
@@ -672,23 +836,42 @@ def run_auto_trade():
 
             sell_value = sell_qty * a['current_price'] if a['current_price'] else 0
             if sell_value < MIN_ORDER_KRW:
-                logger.info(f"[{a['ticker']}] SELL signal but sell value too low ({sell_value:,.0f} KRW < {MIN_ORDER_KRW}) - skip")
+                note = (
+                    f"SELL 스킵({a.get('strategy_label', '')}): "
+                    f"주문금액 미달 {sell_value:,.0f}원 < {MIN_ORDER_KRW:,.0f}원"
+                )
+                logger.info(f"[{a['ticker']}] {note}")
+                logger.info(f"[{a['ticker']}] 조건: {a.get('condition_summary', '')}")
+                decision_notes.setdefault(a['ticker'], []).append(note)
                 continue
 
             logger.info(f"[{a['ticker']}] SELL {sell_qty:.6f}/{a['coin_balance']:.6f} {a['coin_sym']} "
                         f"(비중={a['weight']}%/{coin_total_w}%)")
+            logger.info(f"[{a['ticker']}] 주문조건({a.get('strategy_label', '')}): {a.get('condition_summary', '')}")
             try:
                 result = trader.smart_sell(a['ticker'], sell_qty, interval=a.get('interval', 'day'))
                 logger.info(f"[{a['ticker']}] Sell Result: {result}")
+                if isinstance(result, dict):
+                    result = dict(result)
+                else:
+                    result = {"raw_result": result}
+                result["_strategy_label"] = a.get("strategy_label", "")
+                result["_condition_summary"] = a.get("condition_summary", "")
                 exec_results.setdefault(a['ticker'], []).append(result)
                 # 전량 매도 시 동일 코인 후속 매도 방지
                 if all_sell_for_coin:
                     sold_coins.add(a['coin_sym'])
             except Exception as e:
                 logger.error(f"[{a['ticker']}] Sell Error: {e}")
+                decision_notes.setdefault(a['ticker'], []).append(
+                    f"SELL 주문오류({a.get('strategy_label', '')}): {e}"
+                )
 
         elif a['signal'] == 'SELL' and not a['is_holding']:
-            logger.info(f"[{a['ticker']}] SELL signal but not holding - skip")
+            note = f"SELL 스킵({a.get('strategy_label', '')}): 보유수량/평가금액 부족"
+            logger.info(f"[{a['ticker']}] {note}")
+            logger.info(f"[{a['ticker']}] 조건: {a.get('condition_summary', '')}")
+            decision_notes.setdefault(a['ticker'], []).append(note)
 
     # 매도 체결 대기
     time.sleep(1)
@@ -716,21 +899,40 @@ def run_auto_trade():
         if buy_budget > MIN_ORDER_KRW:
             logger.info(f"[{a['ticker']}] BUY {buy_budget:,.0f} KRW (Adaptive) | "
                         f"목표={target_value:,.0f}, 보유={my_holding:,.0f}, 추가필요={need_value:,.0f}")
+            logger.info(f"[{a['ticker']}] 주문조건({a.get('strategy_label', '')}): {a.get('condition_summary', '')}")
             try:
                 result = trader.adaptive_buy(a['ticker'], buy_budget, interval=a.get('interval', 'day'))
                 logger.info(f"[{a['ticker']}] Buy Result: {result}")
+                if isinstance(result, dict):
+                    result = dict(result)
+                else:
+                    result = {"raw_result": result}
+                result["_strategy_label"] = a.get("strategy_label", "")
+                result["_condition_summary"] = a.get("condition_summary", "")
                 exec_results.setdefault(a['ticker'], []).append(result)
                 krw_balance -= buy_budget  # 사용한 현금 차감
             except Exception as e:
                 logger.error(f"[{a['ticker']}] Buy Error: {e}")
+                decision_notes.setdefault(a['ticker'], []).append(
+                    f"BUY 주문오류({a.get('strategy_label', '')}): {e}"
+                )
         else:
-            logger.info(f"[{a['ticker']}] BUY signal but budget insufficient "
-                        f"(필요={need_value:,.0f}, 가용={krw_balance:,.0f})")
+            note = (
+                f"BUY 스킵({a.get('strategy_label', '')}): "
+                f"예산부족 필요={need_value:,.0f}원, 가용={krw_balance:,.0f}원"
+            )
+            logger.info(f"[{a['ticker']}] {note}")
+            logger.info(f"[{a['ticker']}] 조건: {a.get('condition_summary', '')}")
+            decision_notes.setdefault(a['ticker'], []).append(note)
 
     # HOLD 로깅
     for a in analyses:
         if a['signal'] == 'HOLD':
-            logger.info(f"[{a['ticker']}] HOLD (state={a['position_state']}, prev={a.get('prev_state')}) - no action")
+            reason = _describe_upbit_signal_reason(a)
+            logger.info(
+                f"[{a['ticker']}] HOLD (state={a['position_state']}, prev={a.get('prev_state')}) - no action | {reason}"
+            )
+            logger.info(f"[{a['ticker']}] 조건: {a.get('condition_summary', '')}")
 
     # ── 4단계: 포지션 상태 저장 ──
     for a in analyses:
@@ -782,20 +984,52 @@ def run_auto_trade():
         # 체결 내역 표시
         _ticker = _grp[0]['ticker']
         _execs = exec_results.get(_ticker, [])
+        _printed_exec = False
         for ex in _execs:
             _type = ex.get('type', '')
-            _vol = ex.get('filled_volume', 0)
-            _avg = ex.get('avg_price', 0)
-            _krw = ex.get('total_krw', 0)
+            _vol = _safe_float(ex.get('filled_volume', 0))
+            _avg = _safe_float(ex.get('avg_price', 0))
+            _krw = _safe_float(ex.get('total_krw', 0))
+            _strategy = ex.get("_strategy_label", "")
+            _cond = ex.get("_condition_summary", "")
             if 'sell' in _type and _vol > 0:
                 tg_lines.append(f"{_sym} SELL {_vol:.8g} @ {_avg:,.0f} = {_krw:,.0f}원")
+                _printed_exec = True
             elif _vol > 0:
                 tg_lines.append(f"{_sym} BUY {_krw:,.0f}원 @ {_avg:,.0f} = {_vol:.8g}")
+                _printed_exec = True
+            else:
+                _act = "SELL" if "sell" in str(_type).lower() else "BUY"
+                tg_lines.append(f"{_sym} {_act} 주문 미체결 (체결 0)")
+            if _strategy or _cond:
+                tg_lines.append(f"  주문조건[{_strategy or '전략'}]: {_cond}")
 
         # 체결 없이 HOLD인 경우
         if not _execs and not _has_buy and not _has_sell:
             _val = _grp[0]['coin_value']
             tg_lines.append(f"{_sym} HOLD ≈{_val:,.0f}원")
+            _printed_exec = True
+
+        # 체결이 없지만 BUY/SELL 신호가 있었던 경우, 스킵 사유 표시
+        for _note in decision_notes.get(_ticker, []):
+            tg_lines.append(f"{_sym} {_note}")
+            _printed_exec = True
+
+        # 전략별 조건/타점 상세 (미체결 포함 항상 표기)
+        for _a in _grp:
+            _reason = _describe_upbit_signal_reason(_a)
+            _prev = _a.get("prev_state")
+            _prev_text = _prev if _prev not in (None, "") else "-"
+            tg_lines.append(
+                f"{_a.get('strategy_label', '전략')} | 실행={_a.get('signal')} "
+                f"(판단={_a.get('position_state')}, 이전={_prev_text})"
+            )
+            for _line in _a.get("condition_lines", []):
+                tg_lines.append(f"  {_line}")
+            tg_lines.append(f"  상태: {_reason}")
+
+        if _printed_exec:
+            tg_lines.append("")
 
     tg_lines.append("")
     tg_lines.append(f"<b>잔고</b>")
