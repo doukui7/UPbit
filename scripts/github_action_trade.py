@@ -15,7 +15,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 import src.engine.data_cache as data_cache
-from src.utils.db_manager import DBManager
 from src.strategy.sma import SMAStrategy
 from src.strategy.donchian import DonchianStrategy
 from src.strategy.widaeri import WDRStrategy
