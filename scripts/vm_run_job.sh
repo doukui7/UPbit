@@ -24,6 +24,7 @@ RUNTIME_ENV_FILE="${RUNTIME_ENV_FILE:-${REPO_DIR}/.vm_runtime_env}"
 
 mkdir -p "${LOG_DIR}"
 cd "${REPO_DIR}"
+LOG_FILE="${LOG_DIR}/${MODE}.log"
 
 if [[ -f "${RUNTIME_ENV_FILE}" ]]; then
   # shellcheck disable=SC1090
@@ -50,12 +51,12 @@ fi
 exec 9>"${LOCK_FILE}"
 if command -v flock >/dev/null 2>&1; then
   if ! flock -n 9; then
-    echo "[skip] already running: ${MODE}"
+    msg="[$(date '+%F %T')] skip mode=${MODE} reason=already_running"
+    echo "${msg}" | tee -a "${LOG_FILE}"
     exit 0
   fi
 fi
 
-LOG_FILE="${LOG_DIR}/${MODE}.log"
 echo "[$(date '+%F %T')] start mode=${MODE}" >> "${LOG_FILE}"
 # python script loads .env via python-dotenv internally.
 if TRADING_MODE="${MODE}" python scripts/github_action_trade.py >> "${LOG_FILE}" 2>&1; then
@@ -63,5 +64,10 @@ if TRADING_MODE="${MODE}" python scripts/github_action_trade.py >> "${LOG_FILE}"
 else
   code=$?
   echo "[$(date '+%F %T')] fail mode=${MODE} code=${code}" >> "${LOG_FILE}"
+  {
+    echo "[error] vm_run_job failed: mode=${MODE} code=${code}"
+    echo "[error] recent ${MODE}.log tail:"
+    tail -n 40 "${LOG_FILE}" || true
+  } >&2
   exit "${code}"
 fi
