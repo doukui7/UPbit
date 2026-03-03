@@ -100,6 +100,18 @@ show_status() {
       echo "[info] latest scheduler log:"
       tail -n 20 "${LOG_DIR}/vm_scheduler.log" || true
     fi
+    if [[ -f "${LOG_DIR}/vm_scheduler_state.json" ]]; then
+      echo "[info] scheduler state:"
+      tail -n 40 "${LOG_DIR}/vm_scheduler_state.json" || true
+    fi
+    if [[ -f "${LOG_DIR}/upbit.log" ]]; then
+      echo "[info] latest upbit log:"
+      tail -n 40 "${LOG_DIR}/upbit.log" || true
+    fi
+    if [[ -f "${LOG_DIR}/health_check.log" ]]; then
+      echo "[info] latest health_check log:"
+      tail -n 20 "${LOG_DIR}/health_check.log" || true
+    fi
   else
     echo "[info] scheduler not running"
   fi
