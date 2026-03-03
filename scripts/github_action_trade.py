@@ -1769,6 +1769,72 @@ def _check_kis_isa() -> dict:
     return result
 
 
+def _is_ok_or_skip(ok, msg) -> bool:
+    txt = str(msg or "").strip().upper()
+    return bool(ok) or txt.startswith("SKIP")
+
+
+def _latest_upbit_slot_kst(now_kst: datetime) -> datetime:
+    slots = [
+        now_kst.replace(hour=h, minute=0, second=0, microsecond=0)
+        for h in (1, 5, 9, 13, 17, 21)
+    ]
+    passed = [s for s in slots if s <= now_kst]
+    if passed:
+        return passed[-1]
+    yday = now_kst - timedelta(days=1)
+    return yday.replace(hour=21, minute=0, second=0, microsecond=0)
+
+
+def _parse_minute_key_kst(raw: str) -> datetime | None:
+    txt = str(raw or "").strip()
+    if not re.fullmatch(r"\d{12}", txt):
+        return None
+    try:
+        dt = datetime.strptime(txt, "%Y%m%d%H%M")
+        return dt.replace(tzinfo=timezone(timedelta(hours=9)))
+    except Exception:
+        return None
+
+
+def _check_upbit_schedule_status(now_kst: datetime | None = None) -> tuple[bool, str]:
+    """VM 스케줄러 상태파일 기준 업비트 정시 실행 누락 여부 점검."""
+    kst = timezone(timedelta(hours=9))
+    now = now_kst or datetime.now(kst)
+    expected = _latest_upbit_slot_kst(now)
+    expected_key = expected.strftime("%Y%m%d%H%M")
+    expected_label = expected.strftime("%m-%d %H:%M")
+    state_path = os.path.join(PROJECT_ROOT, "logs", "vm_scheduler_state.json")
+
+    if not os.path.exists(state_path):
+        return True, f"SKIP - 누락 점검 정보 없음 (상태파일 미존재: {expected_label} 기준)"
+
+    try:
+        with open(state_path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+    except Exception as e:
+        return False, f"FAIL - 누락 점검 실패 (상태파일 읽기 오류: {e})"
+
+    if not isinstance(state, dict):
+        return False, "FAIL - 누락 점검 실패 (상태파일 형식 오류)"
+
+    last_key = str(state.get("upbit", "")).strip()
+    if not last_key:
+        return False, f"FAIL - 최근 정시 실행 기록 없음 (예상 {expected_label})"
+
+    last_dt = _parse_minute_key_kst(last_key)
+    if last_dt is None:
+        return False, f"FAIL - 실행기록 형식 오류 ({last_key})"
+
+    last_label = last_dt.strftime("%m-%d %H:%M")
+    if last_dt < expected:
+        return False, f"FAIL - 정시 누락 감지 (예상 {expected_label}, 마지막 {last_label})"
+
+    if last_key != expected_key:
+        return True, f"PASS - 최근 실행 {last_label} (예상 기준 {expected_label})"
+    return True, f"PASS - 최근 정시 실행 확인 ({last_label})"
+
+
 def _check_upbit() -> dict:
     """업비트 코인 시스템 헬스체크."""
     result = {
@@ -1778,15 +1844,26 @@ def _check_upbit() -> dict:
         'price': False, 'price_msg': '',
         'signal': False, 'signal_msg': '',
         'order_test': False, 'order_msg': '',
+        'schedule_ok': False, 'schedule_msg': '',
         'steps': [],
     }
 
     try:
+        schedule_ok, schedule_msg = _check_upbit_schedule_status()
+        result["schedule_ok"] = schedule_ok
+        result["schedule_msg"] = schedule_msg
+        _append_step(
+            result,
+            "0. 정시 누락 점검",
+            "PASS" if _is_ok_or_skip(schedule_ok, schedule_msg) else "FAIL",
+            schedule_msg,
+        )
+
         ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY")
         SECRET_KEY = os.getenv("UPBIT_SECRET_KEY")
         _append_step(
             result,
-            "0. 입력값 확인",
+            "0.1 입력값 확인",
             "INFO",
             f"UPBIT_ACCESS_KEY={_mask_secret(ACCESS_KEY, 5, 3)}, "
             f"UPBIT_SECRET_KEY={_mask_secret(SECRET_KEY, 5, 3)}"
@@ -2041,16 +2118,14 @@ def _print_health_report(results: dict):
     }
     checks = ['auth', 'balance', 'price', 'signal', 'order_test']
 
-    def _is_ok_or_skip(ok, msg):
-        txt = str(msg or "").strip().upper()
-        return bool(ok) or txt.startswith("SKIP")
-
     # ── 콘솔 로그: 상세 출력 (디버깅용) ──
     for key, r in results.items():
         name = r['name']
         logger.info(f"=== [{name}] 헬스체크 ===")
         for c in checks:
             logger.info(f"  {c}: {r.get(c, False)} - {r.get(msg_key_map[c], '')}")
+        if key == "upbit":
+            logger.info(f"  schedule: {r.get('schedule_ok', False)} - {r.get('schedule_msg', '')}")
         for s in (r.get('steps') or []):
             logger.info(f"  {s}")
 
@@ -2065,6 +2140,10 @@ def _print_health_report(results: dict):
     for key, r in results.items():
         name = r['name']
         all_pass = all(_is_ok_or_skip(r.get(c, False), r.get(msg_key_map[c], '')) for c in checks)
+        schedule_msg = str(r.get("schedule_msg", "")).strip()
+        schedule_ok = _is_ok_or_skip(r.get("schedule_ok", False), schedule_msg) if schedule_msg else True
+        if not schedule_ok:
+            all_pass = False
         if all_pass:
             pass_count += 1
 
@@ -2080,6 +2159,8 @@ def _print_health_report(results: dict):
         sig_msg = r.get('signal_msg', '')
         if sig_msg and not sig_msg.upper().startswith('SKIP'):
             lines.append(f"  시그널: {sig_msg}")
+        if key == "upbit" and schedule_msg:
+            lines.append(f"  누락여부: {schedule_msg}")
 
         # 실패 항목만 표시
         check_labels = {'auth': '인증', 'balance': '잔고', 'price': '시세',
@@ -2089,6 +2170,8 @@ def _print_health_report(results: dict):
             msg = r.get(msg_key_map[c], '')
             if not _is_ok_or_skip(ok, msg):
                 lines.append(f"  FAIL {check_labels[c]}: {msg}")
+        if key == "upbit" and schedule_msg and not schedule_ok:
+            lines.append(f"  FAIL 누락: {schedule_msg}")
 
         lines.append("")
 
