@@ -1723,14 +1723,13 @@ def _check_kis_isa() -> dict:
             result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~15:30, 16:00~18:00 KST)'
             return result
 
-        limit_price = trader._get_limit_price(etf_code, "SELL")  # 하한가
-        if limit_price <= 0:
-            result['order_msg'] = 'FAIL - 하한가 계산 실패'
-            return result
-
         if order_phase == "after_hours":
             order_result = trader.send_order("BUY", etf_code, qty=1, price=0, ord_dvsn="06")
         else:
+            limit_price = trader._get_limit_price(etf_code, "SELL")  # 하한가
+            if limit_price <= 0:
+                result['order_msg'] = 'FAIL - 하한가 계산 실패'
+                return result
             order_result = trader.send_order("BUY", etf_code, qty=1, price=limit_price, ord_dvsn="00")
         if not order_result or not order_result.get('success'):
             fail_msg = _extract_order_fail_msg(order_result)
@@ -2697,14 +2696,13 @@ def _check_kis_pension() -> dict:
             result["order_msg"] = "FAIL - 테스트 종목 없음"
             return result
 
-        limit_price = trader._get_limit_price(test_code, "SELL")
-        if limit_price <= 0:
-            result["order_msg"] = "FAIL - 가격호가 계산 실패"
-            return result
-
         if order_phase == "after_hours":
             order_result = trader.send_order("BUY", test_code, qty=1, price=0, ord_dvsn="06")
         else:
+            limit_price = trader._get_limit_price(test_code, "SELL")
+            if limit_price <= 0:
+                result["order_msg"] = "FAIL - 가격호가 계산 실패"
+                return result
             order_result = trader.send_order("BUY", test_code, qty=1, price=limit_price, ord_dvsn="00")
         if not order_result or not order_result.get("success"):
             fail_msg = _extract_order_fail_msg(order_result)
