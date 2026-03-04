@@ -363,6 +363,17 @@ def _send_telegram(message: str):
         token = token or str(cfg.get("telegram_bot_token", "")).strip()
         chat_id = chat_id or str(cfg.get("telegram_chat_id", "")).strip()
     if not token or not chat_id:
+        # config/common.json fallback
+        _common_path = os.path.join(PROJECT_ROOT, "config", "common.json")
+        if os.path.exists(_common_path):
+            try:
+                with open(_common_path, "r", encoding="utf-8") as _f:
+                    _common = json.load(_f)
+                token = token or str(_common.get("telegram_bot_token", "")).strip()
+                chat_id = chat_id or str(_common.get("telegram_chat_id", "")).strip()
+            except Exception:
+                pass
+    if not token or not chat_id:
         logger.warning("텔레그램 설정이 없어 알림 전송을 생략합니다. (TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID)")
         return
 
@@ -955,7 +966,12 @@ def _is_coin_interval_due(interval: str, now_kst: datetime) -> bool:
     - 4H(minute240): KST 01/05/09/13/17/21시
     - 1D(day): KST 09시
     - 그 외: 호출 시점마다 실행
+
+    FORCE_TRADE=1 환경변수 설정 시 주기 무시하고 즉시 실행.
     """
+    if os.getenv("FORCE_TRADE", "").strip() in ("1", "true", "yes"):
+        return True
+
     iv = _normalize_coin_interval(interval)
     hour = int(now_kst.hour)
     minute = int(now_kst.minute)

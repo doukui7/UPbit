@@ -15,6 +15,7 @@ on:
           - daily_status
           - health_check
           - trade
+          - manual_trade
           - kiwoom_gold
           - kis_isa
           - kis_pension
@@ -79,6 +80,34 @@ jobs:
           TRADING_MODE: upbit
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
+
+  # ── 업비트 BTC 수동주문 (FORCE_TRADE - 스케줄 무시 즉시 실행) ──
+  manual_trade:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'manual_trade'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Manual Trade via Cloud VM (FORCE)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 15m
+          capture_stdout: true
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN,FORCE_TRADE
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_run_job.sh upbit
+        env:
+          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
+          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
+          PORTFOLIO: ${{ secrets.PORTFOLIO }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          TRADING_MODE: upbit
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
+          FORCE_TRADE: '1'
 
   # ── 키움 금현물 자동매매 ─────────────────────────────────
   kiwoom_gold:
