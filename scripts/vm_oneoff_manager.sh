@@ -13,6 +13,24 @@ ONEOFF_FILE="${LOG_DIR}/vm_oneoff_jobs.json"
 
 mkdir -p "${LOG_DIR}"
 
+choose_python() {
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    command -v python
+    return 0
+  fi
+  return 1
+}
+
+PYTHON_BIN="$(choose_python || true)"
+if [[ -z "${PYTHON_BIN}" ]]; then
+  echo "[error] python executable not found (python3/python)"
+  exit 3
+fi
+
 is_valid_mode() {
   case "${1:-}" in
     upbit|health_check|daily_status|kiwoom_gold|kis_isa|kis_pension)
@@ -35,7 +53,7 @@ add_job() {
     exit 2
   fi
 
-  python - "${ONEOFF_FILE}" "${MODE}" "${RUN_AT_KST}" "${NOTE}" <<'PY'
+  "${PYTHON_BIN}" - "${ONEOFF_FILE}" "${MODE}" "${RUN_AT_KST}" "${NOTE}" <<'PY'
 import json
 import os
 import random
@@ -90,7 +108,7 @@ PY
 }
 
 show_jobs() {
-  python - "${ONEOFF_FILE}" <<'PY'
+  "${PYTHON_BIN}" - "${ONEOFF_FILE}" <<'PY'
 import json
 import os
 import sys
@@ -136,7 +154,7 @@ remove_job() {
     exit 2
   fi
 
-  python - "${ONEOFF_FILE}" "${job_id}" <<'PY'
+  "${PYTHON_BIN}" - "${ONEOFF_FILE}" "${job_id}" <<'PY'
 import json
 import os
 import sys
@@ -169,7 +187,7 @@ PY
 }
 
 clear_jobs() {
-  python - "${ONEOFF_FILE}" <<'PY'
+  "${PYTHON_BIN}" - "${ONEOFF_FILE}" <<'PY'
 import json
 import os
 import sys
@@ -204,4 +222,3 @@ case "${ACTION}" in
     exit 2
     ;;
 esac
-
