@@ -400,7 +400,73 @@ def _fmt_gap_pct(value: float | None) -> str:
         return "N/A"
     return f"{v:+.2f}%"
 
+def _valid_price(value: float | None) -> bool:
+    v = _safe_float(value, default=0.0)
+    return math.isfinite(v) and v > 0
 
+
+def _abs_gap(value: float | None) -> float:
+    if value is None:
+        return float("inf")
+    v = _safe_float(value, default=float("nan"))
+    if not math.isfinite(v):
+        return float("inf")
+    return abs(v)
+
+
+def _pick_focus_target(
+    *,
+    buy_label: str,
+    buy_level: float,
+    buy_gap: float | None,
+    buy_cond: bool | None,
+    sell_label: str,
+    sell_level: float,
+    sell_gap: float | None,
+    sell_cond: bool | None,
+) -> dict:
+    """매수/매도 타점 중 현재가와 더 가까운 1개만 선택한다."""
+    cands = []
+    if _valid_price(buy_level):
+        cands.append(
+            {
+                "side": "BUY",
+                "label": buy_label,
+                "level": buy_level,
+                "gap_pct": buy_gap,
+                "cond": buy_cond,
+            }
+        )
+    if _valid_price(sell_level):
+        cands.append(
+            {
+                "side": "SELL",
+                "label": sell_label,
+                "level": sell_level,
+                "gap_pct": sell_gap,
+                "cond": sell_cond,
+            }
+        )
+    if not cands:
+        return {
+            "side": "",
+            "label": "타점",
+            "level": 0.0,
+            "gap_pct": None,
+            "cond": None,
+        }
+
+    # 1) 이격 절대값이 가장 작은 타점
+    # 2) 동률이면 조건충족 우선
+    # 3) 그래도 동률이면 BUY 우선
+    cands.sort(
+        key=lambda x: (
+            _abs_gap(x.get("gap_pct")),
+            0 if x.get("cond") is True else 1,
+            0 if x.get("side") == "BUY" else 1,
+        )
+    )
+    return cands[0]
 def _fmt_interval_label(interval: str) -> str:
     iv = _normalize_coin_interval(interval)
     return {
@@ -441,19 +507,10 @@ def _build_upbit_condition_info(
         sell_cond = (close_price < sell_level) if sell_level > 0 else None
         buy_gap = _calc_gap_pct(current_price, buy_level)
         sell_gap = _calc_gap_pct(current_price, sell_level)
+        buy_label = f"매수타점(상단 {param})"
+        sell_label = f"매도타점(하단 {sell_param})"
 
         label = f"Donchian({param}/{sell_param}, {interval_label})"
-        lines = [
-            f"현재가 {_fmt_krw_price(current_price)} / 판단종가 {_fmt_krw_price(close_price)}",
-            (
-                f"매수타점(상단 {param}) {_fmt_krw_price(buy_level)} | "
-                f"이격 {_fmt_gap_pct(buy_gap)} | {_cond_text(buy_cond)}"
-            ),
-            (
-                f"매도타점(하단 {sell_param}) {_fmt_krw_price(sell_level)} | "
-                f"이격 {_fmt_gap_pct(sell_gap)} | {_cond_text(sell_cond)}"
-            ),
-        ]
     else:
         sma_key = f"SMA_{param}"
         sma_level = _safe_float(last_candle.get(sma_key), default=0.0)
@@ -464,26 +521,31 @@ def _build_upbit_condition_info(
         sell_cond = (close_price < sma_level) if sma_level > 0 else None
         buy_gap = _calc_gap_pct(current_price, sma_level)
         sell_gap = buy_gap
+        buy_label = f"매수타점(SMA_{param})"
+        sell_label = f"매도타점(SMA_{param})"
 
         label = f"SMA({param}, {interval_label})"
-        lines = [
-            f"현재가 {_fmt_krw_price(current_price)} / 판단종가 {_fmt_krw_price(close_price)}",
-            (
-                f"매수타점(SMA_{param}) {_fmt_krw_price(sma_level)} | "
-                f"이격 {_fmt_gap_pct(buy_gap)} | {_cond_text(buy_cond)}"
-            ),
-            (
-                f"매도타점(SMA_{param}) {_fmt_krw_price(sma_level)} | "
-                f"이격 {_fmt_gap_pct(sell_gap)} | {_cond_text(sell_cond)}"
-            ),
-        ]
 
-    summary = (
-        f"현재가 {_fmt_krw_price(current_price)} | "
-        f"매수타점 {_fmt_krw_price(buy_level)} ({_fmt_gap_pct(buy_gap)}, {_cond_text(buy_cond)}) | "
-        f"매도타점 {_fmt_krw_price(sell_level)} ({_fmt_gap_pct(sell_gap)}, {_cond_text(sell_cond)})"
+    focus = _pick_focus_target(
+        buy_label=buy_label,
+        buy_level=buy_level,
+        buy_gap=buy_gap,
+        buy_cond=buy_cond,
+        sell_label=sell_label,
+        sell_level=sell_level,
+        sell_gap=sell_gap,
+        sell_cond=sell_cond,
     )
 
+    focus_line = (
+        f"{focus.get('label', '타점')} {_fmt_krw_price(focus.get('level'))} | "
+        f"이격 {_fmt_gap_pct(focus.get('gap_pct'))} | {_cond_text(focus.get('cond'))}"
+    )
+    lines = [
+        f"현재가 {_fmt_krw_price(current_price)} / 판단종가 {_fmt_krw_price(close_price)}",
+        focus_line,
+    ]
+    summary = f"현재가 {_fmt_krw_price(current_price)} | {focus_line}"
     return {
         "strategy_label": label,
         "close_price": close_price,
@@ -493,6 +555,11 @@ def _build_upbit_condition_info(
         "sell_gap_pct": sell_gap,
         "buy_cond": buy_cond,
         "sell_cond": sell_cond,
+        "focus_side": focus.get("side"),
+        "focus_label": focus.get("label"),
+        "focus_level": focus.get("level"),
+        "focus_gap_pct": focus.get("gap_pct"),
+        "focus_cond": focus.get("cond"),
         "condition_lines": lines,
         "condition_summary": summary,
     }
@@ -512,6 +579,52 @@ def _describe_upbit_signal_reason(analysis: dict) -> str:
     return "조건미충족"
 
 
+def _compact_upbit_condition_lines(analysis: dict) -> list[str]:
+    """알림 표시는 항상 '현재가 + 가까운 타점 1개'만 유지한다."""
+    raw_lines = [str(x) for x in (analysis.get("condition_lines") or []) if str(x).strip()]
+    current_line = next((ln for ln in raw_lines if ln.startswith("현재가 ")), "")
+    if not current_line:
+        current_line = (
+            f"현재가 {_fmt_krw_price(analysis.get('current_price'))} / "
+            f"판단종가 {_fmt_krw_price(analysis.get('close_price'))}"
+        )
+
+    focus = _pick_focus_target(
+        buy_label=(
+            f"매수타점(상단 {int(analysis.get('param', 0) or 0)})"
+            if str(analysis.get("strategy_name", "")).lower() == "donchian"
+            else f"매수타점(SMA_{int(analysis.get('param', 0) or 0)})"
+        ),
+        buy_level=_safe_float(analysis.get("buy_level"), default=0.0),
+        buy_gap=analysis.get("buy_gap_pct"),
+        buy_cond=analysis.get("buy_cond"),
+        sell_label=(
+            f"매도타점(하단 {int(analysis.get('sell_param', 0) or 0)})"
+            if str(analysis.get("strategy_name", "")).lower() == "donchian"
+            else f"매도타점(SMA_{int(analysis.get('param', 0) or 0)})"
+        ),
+        sell_level=_safe_float(analysis.get("sell_level"), default=0.0),
+        sell_gap=analysis.get("sell_gap_pct"),
+        sell_cond=analysis.get("sell_cond"),
+    )
+
+    focus_line = ""
+    if focus and _valid_price(focus.get("level")):
+        focus_line = (
+            f"{focus.get('label', '타점')} {_fmt_krw_price(focus.get('level'))} | "
+            f"이격 {_fmt_gap_pct(focus.get('gap_pct'))} | {_cond_text(focus.get('cond'))}"
+        )
+
+    out = [current_line]
+    if focus_line:
+        out.append(focus_line)
+    else:
+        # 폴백: 기존 라인 중 현재가 라인이 아닌 첫 1개만 유지
+        for ln in raw_lines:
+            if ln != current_line:
+                out.append(ln)
+                break
+    return out
 def _append_step(result: dict, step: str, status: str, detail: str):
     """
     헬스체크 단계 로그 누적.
@@ -1024,7 +1137,7 @@ def run_auto_trade():
                 f"{_a.get('strategy_label', '전략')} | 실행={_a.get('signal')} "
                 f"(판단={_a.get('position_state')}, 이전={_prev_text})"
             )
-            for _line in _a.get("condition_lines", []):
+            for _line in _compact_upbit_condition_lines(_a):
                 tg_lines.append(f"  {_line}")
             tg_lines.append(f"  상태: {_reason}")
 
@@ -1362,12 +1475,35 @@ def _get_kis_balance_with_retry(
 
 def _extract_order_fail_msg(order_result) -> str:
     """주문 실패 응답에서 사용자 메시지를 최대한 추출."""
+    if order_result is None:
+        return ""
     if isinstance(order_result, dict):
         for k in ("msg", "message", "msg1", "error_message"):
             v = str(order_result.get(k, "")).strip()
             if v:
                 return v
-    return str(order_result).strip()
+    txt = str(order_result).strip()
+    return "" if txt.lower() == "none" else txt
+
+
+def _extract_kis_balance_fail_detail(balance_result) -> str:
+    """KIS 잔고 조회 실패 응답(dict)에서 상세 실패 사유를 추출."""
+    if not isinstance(balance_result, dict):
+        return ""
+    if not bool(balance_result.get("error")):
+        return ""
+
+    parts = []
+    msg_cd = str(balance_result.get("msg_cd", "")).strip()
+    msg1 = str(balance_result.get("msg1", "")).strip()
+    rt_cd = str(balance_result.get("rt_cd", "")).strip()
+    if msg_cd:
+        parts.append(msg_cd)
+    if msg1:
+        parts.append(msg1)
+    if rt_cd and rt_cd != "0":
+        parts.append(f"rt_cd={rt_cd}")
+    return " / ".join(parts)
 
 
 def _is_non_actionable_kis_order_failure(msg: str) -> bool:
@@ -1721,7 +1857,15 @@ def _check_kiwoom_gold() -> dict:
             result['balance_msg'] = 'FAIL - 잔고 조회 실패'
             return result
         result['balance'] = True
-        result['balance_msg'] = f"현금 {bal['cash_krw']:,.0f}원 / 금 {bal['gold_qty']}g"
+        cash_krw = float(bal.get("cash_krw", 0.0))
+        gold_qty = float(bal.get("gold_qty", 0.0))
+        result['balance_msg'] = f"현금 {cash_krw:,.0f}원 / 금 {gold_qty}g"
+
+        if cash_krw <= 0 and gold_qty <= 0:
+            result['price_msg'] = 'SKIP - 비활성 계좌 (현금/보유 0)'
+            result['signal_msg'] = 'SKIP - 비활성 계좌 (시그널 생략)'
+            result['order_msg'] = 'SKIP - 비활성 계좌 (주문테스트 생략)'
+            return result
 
         # 3. 시세 조회
         price = _get_gold_price_local_first(trader, code)
@@ -1879,7 +2023,9 @@ def _check_kis_isa() -> dict:
         # 2. 잔고 조회
         bal = _get_kis_balance_with_retry(trader, retries=3, delay_sec=0.8, log_prefix="KIS ISA")
         if bal is None:
-            result['balance_msg'] = 'FAIL - 잔고 조회 실패'
+            probe = trader.get_balance()
+            detail = _extract_kis_balance_fail_detail(probe)
+            result['balance_msg'] = f"FAIL - 잔고 조회 실패 ({detail})" if detail else 'FAIL - 잔고 조회 실패'
             return result
         result['balance'] = True
 
@@ -1998,12 +2144,18 @@ def _check_kis_isa() -> dict:
                 result['order_msg'] = 'FAIL - 하한가 계산 실패'
                 return result
             order_result = trader.send_order("BUY", etf_code, qty=1, price=limit_price, ord_dvsn="00")
-        if not order_result or not order_result.get('success'):
+        if not order_result:
+            result['order_msg'] = 'FAIL - 주문 실패: API 응답 없음(None)'
+            return result
+        if not isinstance(order_result, dict):
+            result['order_msg'] = f"FAIL - 주문 실패: 응답 형식 오류({type(order_result).__name__})"
+            return result
+        if not order_result.get('success'):
             fail_msg = _extract_order_fail_msg(order_result)
             if _is_non_actionable_kis_order_failure(fail_msg):
                 result['order_msg'] = f"SKIP - 주문 제약: {fail_msg}"
             else:
-                result['order_msg'] = f"FAIL - 주문 실패: {order_result}"
+                result['order_msg'] = f"FAIL - 주문 실패: {fail_msg or order_result}"
             return result
 
         ord_no = order_result.get('ord_no', '')
@@ -2488,14 +2640,23 @@ def run_health_check():
 
 def _format_holdings_brief(holdings, max_items=3):
     if not holdings:
-        return "??"
+        return "미보유"
     parts = []
     for h in holdings[:max_items]:
-        name = h.get("name") or h.get("code") or "UNKNOWN"
-        qty = h.get("qty", 0)
-        parts.append(f"{name} {qty}")
+        code = str(h.get("code") or "").strip()
+        name = str(h.get("name") or "").strip()
+        qty = int(float(h.get("qty", 0) or 0))
+        if code and name:
+            label = f"{code}({name})"
+        elif name:
+            label = name
+        elif code:
+            label = code
+        else:
+            label = "UNKNOWN"
+        parts.append(f"{label} {qty}주")
     if len(holdings) > max_items:
-        parts.append(f"... +{len(holdings) - max_items}?")
+        parts.append(f"... +{len(holdings) - max_items}종")
     return ", ".join(parts)
 
 
@@ -2577,13 +2738,20 @@ def run_daily_status_report():
             trader.account_no = isa_account
             trader.acnt_prdt_cd = isa_prdt
             if trader.auth():
-                bal = trader.get_balance() or {}
-                cash = float(bal.get("cash", 0.0))
-                holdings = bal.get("holdings", []) or []
-                total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
-                lines.append(f"<b>[KIS ISA]</b> 총 {total_eval:,.0f}원")
-                lines.append(f"  예수금 {cash:,.0f}원 / 보유: {_format_holdings_brief(holdings)}")
-                lines.append("")
+                bal = _get_kis_balance_with_retry(trader, retries=4, delay_sec=0.9, log_prefix="KIS ISA")
+                if bal is None:
+                    probe = trader.get_balance()
+                    detail = _extract_kis_balance_fail_detail(probe)
+                    detail_txt = f" ({detail})" if detail else ""
+                    lines.append(f"<b>[KIS ISA]</b> 조회 실패: 잔고 조회 실패{detail_txt}")
+                    lines.append("")
+                else:
+                    cash = float(bal.get("cash", 0.0))
+                    holdings = bal.get("holdings", []) or []
+                    total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
+                    lines.append(f"<b>[KIS ISA]</b> 총 {total_eval:,.0f}원")
+                    lines.append(f"  예수금 {cash:,.0f}원 / 보유: {_format_holdings_brief(holdings)}")
+                    lines.append("")
             else:
                 lines.append(f"<b>[KIS ISA]</b> 인증 실패")
                 lines.append("")
@@ -2609,91 +2777,98 @@ def run_daily_status_report():
                 trader.acnt_prdt_cd = pension_prdt
 
             if trader.auth():
-                bal = trader.get_balance() or {}
-                pension_base_code = _get_env_any("KR_ETF_LAA_QQQ", default="133690")
-                cash = _get_kis_orderable_cash_precise(
-                    trader, bal, base_code=pension_base_code, fallback=0.0
-                )
-                holdings = bal.get("holdings", []) or []
-                total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
-                lines.append(f"<b>[KIS 연금저축]</b> 총 {total_eval:,.0f}원")
-                lines.append(f"  예수금(주문가능) {cash:,.0f}원 / 보유: {_format_holdings_brief(holdings)}")
+                bal = _get_kis_balance_with_retry(trader, retries=4, delay_sec=0.9, log_prefix="KIS 연금저축")
+                if bal is None:
+                    probe = trader.get_balance()
+                    detail = _extract_kis_balance_fail_detail(probe)
+                    detail_txt = f" ({detail})" if detail else ""
+                    lines.append(f"<b>[KIS 연금저축]</b> 조회 실패: 잔고 조회 실패{detail_txt}")
+                    lines.append("")
+                else:
+                    pension_base_code = _get_env_any("KR_ETF_LAA_QQQ", default="133690")
+                    cash = _get_kis_orderable_cash_precise(
+                        trader, bal, base_code=pension_base_code, fallback=0.0
+                    )
+                    holdings = bal.get("holdings", []) or []
+                    total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
+                    lines.append(f"<b>[KIS 연금저축]</b> 총 {total_eval:,.0f}원")
+                    lines.append(f"  예수금(주문가능) {cash:,.0f}원 / 보유: {_format_holdings_brief(holdings)}")
 
-                # LAA 전략 시그널 체크 (주문 없이 분석만)
-                try:
-                    kr_etf_map = {
-                        "SPY": _get_env_any("KR_ETF_LAA_SPY", "KR_ETF_SPY", default="360750"),
-                        "IWD": _get_env_any("KR_ETF_LAA_IWD", "KR_ETF_SPY", default="360750"),
-                        "GLD": _normalize_gold_kr_etf(_get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default=GOLD_KRX_ETF_CODE)),
-                        "IEF": _get_env_any("KR_ETF_LAA_IEF", "KR_ETF_AGG", default="453540"),
-                        "QQQ": _get_env_any("KR_ETF_LAA_QQQ", default="133690"),
-                        "SHY": _get_env_any("KR_ETF_LAA_SHY", default="114470"),
-                    }
-                    tickers = ["SPY", "IWD", "GLD", "IEF", "QQQ", "SHY"]
-                    price_data = {}
-                    price_ok = True
-                    for t in tickers:
-                        code = str(kr_etf_map.get(t, "")).strip()
-                        df = _get_kis_daily_local_first(trader, code, count=320) if code else None
-                        if df is None or len(df) == 0:
-                            price_ok = False
-                            break
-                        price_data[t] = df
-                        time.sleep(0.15)
+                    # LAA 전략 시그널 체크 (주문 없이 분석만)
+                    try:
+                        kr_etf_map = {
+                            "SPY": _get_env_any("KR_ETF_LAA_SPY", "KR_ETF_SPY", default="360750"),
+                            "IWD": _get_env_any("KR_ETF_LAA_IWD", "KR_ETF_SPY", default="360750"),
+                            "GLD": _normalize_gold_kr_etf(_get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default=GOLD_KRX_ETF_CODE)),
+                            "IEF": _get_env_any("KR_ETF_LAA_IEF", "KR_ETF_AGG", default="453540"),
+                            "QQQ": _get_env_any("KR_ETF_LAA_QQQ", default="133690"),
+                            "SHY": _get_env_any("KR_ETF_LAA_SHY", default="114470"),
+                        }
+                        tickers = ["SPY", "IWD", "GLD", "IEF", "QQQ", "SHY"]
+                        price_data = {}
+                        price_ok = True
+                        for t in tickers:
+                            code = str(kr_etf_map.get(t, "")).strip()
+                            df = _get_kis_daily_local_first(trader, code, count=320) if code else None
+                            if df is None or len(df) == 0:
+                                price_ok = False
+                                break
+                            price_data[t] = df
+                            time.sleep(0.15)
 
-                    if price_ok:
-                        strategy = LAAStrategy(settings={"kr_etf_map": kr_etf_map})
-                        signal = strategy.analyze(price_data)
-                        if signal:
-                            risk_label = "공격" if signal.get("risk_on") else "방어"
-                            risk_asset = signal.get("selected_risk_asset", "?")
-                            risk_kr = signal.get("selected_risk_kr_code", "?")
+                        if price_ok:
+                            strategy = LAAStrategy(settings={"kr_etf_map": kr_etf_map})
+                            signal = strategy.analyze(price_data)
+                            if signal:
+                                risk_label = "공격" if signal.get("risk_on") else "방어"
+                                risk_asset = signal.get("selected_risk_asset", "?")
+                                risk_kr = signal.get("selected_risk_kr_code", "?")
 
-                            # 목표 vs 현재 비교 → 예상 매매 내역
-                            target_weights_kr = signal.get("target_weights_kr", {})
-                            total_eval_safe = max(total_eval, 1.0)
-                            tracked = set(str(c) for c in target_weights_kr.keys())
-                            cur_vals = {c: 0.0 for c in tracked}
-                            cur_qtys = {c: 0 for c in tracked}
-                            for h in holdings:
-                                code = str(h.get("code", ""))
-                                if code in tracked:
-                                    cur_vals[code] += float(h.get("eval_amt", 0.0))
-                                    cur_qtys[code] += int(float(h.get("qty", 0)))
+                                # 목표 vs 현재 비교 → 예상 매매 내역
+                                target_weights_kr = signal.get("target_weights_kr", {})
+                                total_eval_safe = max(total_eval, 1.0)
+                                tracked = set(str(c) for c in target_weights_kr.keys())
+                                cur_vals = {c: 0.0 for c in tracked}
+                                cur_qtys = {c: 0 for c in tracked}
+                                for h in holdings:
+                                    code = str(h.get("code", ""))
+                                    if code in tracked:
+                                        cur_vals[code] += float(h.get("eval_amt", 0.0))
+                                        cur_qtys[code] += int(float(h.get("qty", 0)))
 
-                            max_gap = 0.0
-                            planned_orders = []
-                            for code, tw in target_weights_kr.items():
-                                code = str(code)
-                                cur_v = cur_vals.get(code, 0.0)
-                                cur_w = cur_v / total_eval_safe
-                                gap = abs(float(tw) - cur_w)
-                                max_gap = max(max_gap, gap)
-                                tgt_v = total_eval_safe * float(tw)
-                                price = _get_kis_price_local_first(trader, code) or 0.0
-                                if price <= 0:
-                                    continue
-                                tgt_qty = int(tgt_v / price)
-                                cur_q = cur_qtys.get(code, 0)
-                                delta = tgt_qty - cur_q
-                                if delta > 0:
-                                    planned_orders.append(f"매수 {code} {delta}주")
-                                elif delta < 0:
-                                    planned_orders.append(f"매도 {code} {abs(delta)}주")
+                                max_gap = 0.0
+                                planned_orders = []
+                                for code, tw in target_weights_kr.items():
+                                    code = str(code)
+                                    cur_v = cur_vals.get(code, 0.0)
+                                    cur_w = cur_v / total_eval_safe
+                                    gap = abs(float(tw) - cur_w)
+                                    max_gap = max(max_gap, gap)
+                                    tgt_v = total_eval_safe * float(tw)
+                                    price = _get_kis_price_local_first(trader, code) or 0.0
+                                    if price <= 0:
+                                        continue
+                                    tgt_qty = int(tgt_v / price)
+                                    cur_q = cur_qtys.get(code, 0)
+                                    delta = tgt_qty - cur_q
+                                    if delta > 0:
+                                        planned_orders.append(f"매수 {code} {delta}주")
+                                    elif delta < 0:
+                                        planned_orders.append(f"매도 {code} {abs(delta)}주")
 
-                            action = "HOLD" if max_gap <= 0.03 else "REBALANCE"
-                            lines.append(f"  LAA {risk_label} | {risk_asset}->{risk_kr} | {action} (괴리 {max_gap*100:.1f}%p)")
-                            if planned_orders:
-                                for po in planned_orders:
-                                    lines.append(f"  - {po}")
+                                action = "HOLD" if max_gap <= 0.03 else "REBALANCE"
+                                lines.append(f"  LAA {risk_label} | {risk_asset}->{risk_kr} | {action} (괴리 {max_gap*100:.1f}%p)")
+                                if planned_orders:
+                                    for po in planned_orders:
+                                        lines.append(f"  - {po}")
+                            else:
+                                lines.append("  LAA 분석 실패")
                         else:
-                            lines.append("  LAA 분석 실패")
-                    else:
-                        lines.append("  ETF 조회 실패 (시그널 생략)")
-                except Exception as sig_e:
-                    lines.append(f"  시그널 오류: {sig_e}")
+                            lines.append("  ETF 조회 실패 (시그널 생략)")
+                    except Exception as sig_e:
+                        lines.append(f"  시그널 오류: {sig_e}")
 
-                lines.append("")
+                    lines.append("")
             else:
                 lines.append(f"<b>[KIS 연금저축]</b> 인증 실패")
                 lines.append("")
@@ -2920,7 +3095,9 @@ def _check_kis_pension() -> dict:
 
         bal = _get_kis_balance_with_retry(trader, retries=3, delay_sec=0.8, log_prefix="KIS 연금저축")
         if bal is None:
-            result["balance_msg"] = "FAIL - 잔고 조회 실패"
+            probe = trader.get_balance()
+            detail = _extract_kis_balance_fail_detail(probe)
+            result["balance_msg"] = f"FAIL - 잔고 조회 실패 ({detail})" if detail else "FAIL - 잔고 조회 실패"
             return result
         result["balance"] = True
         pension_base_code = _get_env_any("KR_ETF_LAA_QQQ", default="133690")
@@ -2985,12 +3162,18 @@ def _check_kis_pension() -> dict:
                 result["order_msg"] = "FAIL - 가격호가 계산 실패"
                 return result
             order_result = trader.send_order("BUY", test_code, qty=1, price=limit_price, ord_dvsn="00")
-        if not order_result or not order_result.get("success"):
+        if not order_result:
+            result["order_msg"] = "FAIL - 주문 실패: API 응답 없음(None)"
+            return result
+        if not isinstance(order_result, dict):
+            result["order_msg"] = f"FAIL - 주문 실패: 응답 형식 오류({type(order_result).__name__})"
+            return result
+        if not order_result.get("success"):
             fail_msg = _extract_order_fail_msg(order_result)
             if _is_non_actionable_kis_order_failure(fail_msg):
                 result["order_msg"] = f"SKIP - 주문 제약: {fail_msg}"
             else:
-                result["order_msg"] = f"FAIL - 주문 실패: {order_result}"
+                result["order_msg"] = f"FAIL - 주문 실패: {fail_msg or order_result}"
             return result
 
         ord_no = order_result.get("ord_no", "")
