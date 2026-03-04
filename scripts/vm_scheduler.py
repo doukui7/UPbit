@@ -34,6 +34,7 @@ REPO_DIR = Path(__file__).resolve().parents[1]
 LOG_DIR = REPO_DIR / "logs"
 STATE_FILE = LOG_DIR / "vm_scheduler_state.json"
 LOCK_FILE = LOG_DIR / "vm_scheduler.lock"
+ONEOFF_FILE = LOG_DIR / "vm_oneoff_jobs.json"
 CHECK_INTERVAL_SEC = 5
 HEARTBEAT_INTERVAL_SEC = 30
 HEARTBEAT_EPOCH_KEY = "__heartbeat_epoch"
@@ -81,6 +82,7 @@ RULES: list[ScheduleRule] = [
         and 25 <= dt.day <= 31,
     ),
 ]
+RULE_LABELS = {rule.mode: rule.label for rule in RULES}
 
 
 def _setup_logging() -> None:
@@ -123,6 +125,44 @@ def _save_state(state: dict[str, str]) -> None:
         logging.error("상태 파일 저장 실패: %s", e)
 
 
+def _parse_oneoff_run_at(raw: str) -> datetime | None:
+    txt = str(raw or "").strip().replace("T", " ")
+    if not txt:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            dt = datetime.strptime(txt, fmt)
+            if KST is not None:
+                return dt.replace(tzinfo=KST)
+            return dt
+        except Exception:
+            continue
+    return None
+
+
+def _load_oneoff_jobs() -> list[dict]:
+    if not ONEOFF_FILE.exists():
+        return []
+    try:
+        raw = json.loads(ONEOFF_FILE.read_text(encoding="utf-8"))
+        if isinstance(raw, list):
+            return [x for x in raw if isinstance(x, dict)]
+    except Exception as e:
+        logging.warning("1회성 작업 파일 로드 실패: %s", e)
+    return []
+
+
+def _save_oneoff_jobs(jobs: list[dict]) -> None:
+    try:
+        ONEOFF_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ONEOFF_FILE.write_text(
+            json.dumps(jobs, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        logging.error("1회성 작업 파일 저장 실패: %s", e)
+
+
 def _acquire_lock() -> object:
     import fcntl
 
@@ -143,7 +183,7 @@ def _now_kst() -> datetime:
     return datetime.now(KST)
 
 
-def _run_mode(mode: str, label: str) -> None:
+def _run_mode(mode: str, label: str) -> bool:
     cmd = ["bash", "scripts/vm_run_job.sh", mode]
     logging.info("실행 시작: %s (%s)", label, mode)
     started = time.time()
@@ -159,6 +199,7 @@ def _run_mode(mode: str, label: str) -> None:
         elapsed = time.time() - started
         if res.returncode == 0:
             logging.info("실행 완료: %s (%s) %.1fs", label, mode, elapsed)
+            return True
         else:
             logging.error(
                 "실행 실패: %s (%s) code=%s %.1fs stdout=%s stderr=%s",
@@ -169,10 +210,81 @@ def _run_mode(mode: str, label: str) -> None:
                 (res.stdout or "").strip()[:600],
                 (res.stderr or "").strip()[:600],
             )
+            return False
     except subprocess.TimeoutExpired:
         logging.error("실행 타임아웃: %s (%s)", label, mode)
+        return False
     except Exception as e:
         logging.exception("실행 예외: %s (%s): %s", label, mode, e)
+        return False
+
+
+def _run_due_oneoff_jobs(now: datetime, state: dict[str, str]) -> bool:
+    jobs = _load_oneoff_jobs()
+    if not jobs:
+        return False
+
+    jobs_dirty = False
+    now_epoch = now.timestamp()
+    for job in jobs:
+        status = str(job.get("status", "pending")).strip().lower()
+        if status != "pending":
+            continue
+
+        mode = str(job.get("mode", "")).strip()
+        if mode not in RULE_LABELS:
+            job["status"] = "invalid"
+            job["error"] = f"지원하지 않는 mode: {mode}"
+            jobs_dirty = True
+            continue
+
+        run_at_dt = _parse_oneoff_run_at(str(job.get("run_at_kst", "")))
+        if run_at_dt is None:
+            job["status"] = "invalid"
+            job["error"] = "run_at_kst 형식 오류 (YYYY-MM-DD HH:MM[:SS])"
+            jobs_dirty = True
+            continue
+
+        normalized_run_at = run_at_dt.strftime("%Y-%m-%d %H:%M:%S")
+        if str(job.get("run_at_kst", "")) != normalized_run_at:
+            job["run_at_kst"] = normalized_run_at
+            jobs_dirty = True
+
+        run_epoch = run_at_dt.timestamp()
+        prev_epoch = None
+        try:
+            prev_epoch = float(job.get("run_at_epoch"))
+        except Exception:
+            prev_epoch = None
+        if prev_epoch is None or abs(prev_epoch - run_epoch) > 0.001:
+            job["run_at_epoch"] = run_epoch
+            jobs_dirty = True
+
+        if now_epoch + 0.001 < run_epoch:
+            continue
+
+        job_id = str(job.get("id", "")).strip() or f"once-{mode}-{int(run_epoch)}"
+        dedupe_key = f"once::{job_id}"
+        if state.get(dedupe_key):
+            job["status"] = "done"
+            if not str(job.get("executed_at_kst", "")).strip():
+                job["executed_at_kst"] = now.strftime("%Y-%m-%d %H:%M:%S")
+            jobs_dirty = True
+            continue
+
+        label = RULE_LABELS.get(mode, mode)
+        ok = _run_mode(mode, f"1회성 예약: {label}")
+        if ok:
+            job["status"] = "done"
+        else:
+            job["status"] = "failed"
+        job["executed_at_kst"] = now.strftime("%Y-%m-%d %H:%M:%S")
+        state[dedupe_key] = _minute_key(now)
+        jobs_dirty = True
+
+    if jobs_dirty:
+        _save_oneoff_jobs(jobs)
+    return jobs_dirty
 
 
 def _minute_key(dt: datetime) -> str:
@@ -211,7 +323,7 @@ def main() -> int:
     logging.info("VM 파이썬 스케줄러 시작 (repo=%s)", REPO_DIR)
     logging.info(
         "스케줄: upbit[01/05/09/13/17/21:00], health[+5m], daily[평일09:00], "
-        "gold[평일15:05], isa[금15:10], pension[25~31평일15:20]"
+        "gold[평일15:05], isa[금15:10], pension[25~31평일15:20], oneoff[vm_oneoff_jobs.json]"
     )
 
     try:
@@ -221,6 +333,11 @@ def main() -> int:
             state_dirty = False
 
             try:
+                if _run_due_oneoff_jobs(now, state):
+                    state_dirty = True
+                    if LAST_ERROR_KEY in state:
+                        state.pop(LAST_ERROR_KEY, None)
+
                 for rule in RULES:
                     if not rule.is_due(now):
                         continue
