@@ -34,7 +34,8 @@ REPO_DIR = Path(__file__).resolve().parents[1]
 LOG_DIR = REPO_DIR / "logs"
 STATE_FILE = LOG_DIR / "vm_scheduler_state.json"
 LOCK_FILE = LOG_DIR / "vm_scheduler.lock"
-ONEOFF_FILE = LOG_DIR / "vm_oneoff_jobs.json"
+RESERVED_ORDER_FILE = LOG_DIR / "vm_reserved_orders.json"
+LEGACY_ONEOFF_FILE = LOG_DIR / "vm_oneoff_jobs.json"
 CHECK_INTERVAL_SEC = 5
 HEARTBEAT_INTERVAL_SEC = 30
 HEARTBEAT_EPOCH_KEY = "__heartbeat_epoch"
@@ -141,12 +142,18 @@ def _parse_oneoff_run_at(raw: str) -> datetime | None:
 
 
 def _load_oneoff_jobs() -> list[dict]:
-    if not ONEOFF_FILE.exists():
-        return []
+    target = RESERVED_ORDER_FILE
+    source = target
+    if not target.exists() and LEGACY_ONEOFF_FILE.exists():
+        source = LEGACY_ONEOFF_FILE
     try:
-        raw = json.loads(ONEOFF_FILE.read_text(encoding="utf-8"))
+        raw = json.loads(source.read_text(encoding="utf-8"))
         if isinstance(raw, list):
-            return [x for x in raw if isinstance(x, dict)]
+            jobs = [x for x in raw if isinstance(x, dict)]
+            if source == LEGACY_ONEOFF_FILE and jobs:
+                # 구버전 파일을 새 예약주문 파일로 마이그레이션
+                _save_oneoff_jobs(jobs)
+            return jobs
     except Exception as e:
         logging.warning("1회성 작업 파일 로드 실패: %s", e)
     return []
@@ -154,8 +161,8 @@ def _load_oneoff_jobs() -> list[dict]:
 
 def _save_oneoff_jobs(jobs: list[dict]) -> None:
     try:
-        ONEOFF_FILE.parent.mkdir(parents=True, exist_ok=True)
-        ONEOFF_FILE.write_text(
+        RESERVED_ORDER_FILE.parent.mkdir(parents=True, exist_ok=True)
+        RESERVED_ORDER_FILE.write_text(
             json.dumps(jobs, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -323,7 +330,7 @@ def main() -> int:
     logging.info("VM 파이썬 스케줄러 시작 (repo=%s)", REPO_DIR)
     logging.info(
         "스케줄: upbit[01/05/09/13/17/21:00], health[+5m], daily[평일09:00], "
-        "gold[평일15:05], isa[금15:10], pension[25~31평일15:20], oneoff[vm_oneoff_jobs.json]"
+        "gold[평일15:05], isa[금15:10], pension[25~31평일15:20], oneoff[vm_reserved_orders.json]"
     )
 
     try:

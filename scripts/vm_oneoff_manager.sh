@@ -9,7 +9,8 @@ NOTE="${4:-}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_DIR="${REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 LOG_DIR="${LOG_DIR:-${REPO_DIR}/logs}"
-ONEOFF_FILE="${LOG_DIR}/vm_oneoff_jobs.json"
+RESERVED_FILE="${LOG_DIR}/vm_reserved_orders.json"
+LEGACY_ONEOFF_FILE="${LOG_DIR}/vm_oneoff_jobs.json"
 
 mkdir -p "${LOG_DIR}"
 
@@ -30,6 +31,13 @@ if [[ -z "${PYTHON_BIN}" ]]; then
   echo "[error] python executable not found (python3/python)"
   exit 3
 fi
+
+migrate_legacy_file() {
+  if [[ -f "${RESERVED_FILE}" || ! -f "${LEGACY_ONEOFF_FILE}" ]]; then
+    return 0
+  fi
+  cp -f "${LEGACY_ONEOFF_FILE}" "${RESERVED_FILE}" || true
+}
 
 is_valid_mode() {
   case "${1:-}" in
@@ -53,7 +61,7 @@ add_job() {
     exit 2
   fi
 
-  "${PYTHON_BIN}" - "${ONEOFF_FILE}" "${MODE}" "${RUN_AT_KST}" "${NOTE}" <<'PY'
+  "${PYTHON_BIN}" - "${RESERVED_FILE}" "${MODE}" "${RUN_AT_KST}" "${NOTE}" <<'PY'
 import json
 import os
 import random
@@ -101,34 +109,34 @@ jobs.append(job)
 with open(path, "w", encoding="utf-8") as f:
     json.dump(jobs, f, ensure_ascii=False, indent=2)
 
-print(f"[ok] oneoff added: id={job_id} mode={mode} run_at={job['run_at_kst']}")
+print(f"[ok] 예약주문 추가: id={job_id} mode={mode} run_at={job['run_at_kst']}")
 if job["note"]:
     print(f"[info] note: {job['note']}")
 PY
 }
 
 show_jobs() {
-  "${PYTHON_BIN}" - "${ONEOFF_FILE}" <<'PY'
+  "${PYTHON_BIN}" - "${RESERVED_FILE}" <<'PY'
 import json
 import os
 import sys
 
 path = sys.argv[1]
 if not os.path.exists(path):
-    print("[info] oneoff file not found")
+    print("[info] 예약주문 파일이 없습니다")
     raise SystemExit(0)
 
 try:
     jobs = json.loads(open(path, "r", encoding="utf-8").read())
 except Exception as e:
-    print(f"[error] failed to read oneoff file: {e}")
+    print(f"[error] 예약주문 파일 읽기 실패: {e}")
     raise SystemExit(1)
 
 if not isinstance(jobs, list) or len(jobs) == 0:
-    print("[info] oneoff jobs empty")
+    print("[info] 예약주문 목록이 비어 있습니다")
     raise SystemExit(0)
 
-print(f"[info] oneoff jobs ({len(jobs)}):")
+print(f"[info] 예약주문 목록 ({len(jobs)}):")
 for j in jobs:
     if not isinstance(j, dict):
         continue
@@ -154,14 +162,14 @@ remove_job() {
     exit 2
   fi
 
-  "${PYTHON_BIN}" - "${ONEOFF_FILE}" "${job_id}" <<'PY'
+  "${PYTHON_BIN}" - "${RESERVED_FILE}" "${job_id}" <<'PY'
 import json
 import os
 import sys
 
 path, job_id = sys.argv[1], sys.argv[2]
 if not os.path.exists(path):
-    print("[info] oneoff file not found")
+    print("[info] 예약주문 파일이 없습니다")
     raise SystemExit(0)
 
 jobs = []
@@ -180,41 +188,45 @@ with open(path, "w", encoding="utf-8") as f:
     json.dump(jobs, f, ensure_ascii=False, indent=2)
 
 if after < before:
-    print(f"[ok] oneoff removed: {job_id}")
+    print(f"[ok] 예약주문 삭제: {job_id}")
 else:
-    print(f"[warn] oneoff id not found: {job_id}")
+    print(f"[warn] 예약주문 ID를 찾지 못했습니다: {job_id}")
 PY
 }
 
 clear_jobs() {
-  "${PYTHON_BIN}" - "${ONEOFF_FILE}" <<'PY'
+  "${PYTHON_BIN}" - "${RESERVED_FILE}" <<'PY'
 import json
 import os
 import sys
 
 path = sys.argv[1]
 if not os.path.exists(path):
-    print("[info] oneoff file not found")
+    print("[info] 예약주문 파일이 없습니다")
     raise SystemExit(0)
 with open(path, "w", encoding="utf-8") as f:
     json.dump([], f, ensure_ascii=False, indent=2)
-print("[ok] oneoff jobs cleared")
+print("[ok] 예약주문 전체 삭제 완료")
 PY
 }
 
 case "${ACTION}" in
   add)
+    migrate_legacy_file
     add_job
     show_jobs
     ;;
   show)
+    migrate_legacy_file
     show_jobs
     ;;
   remove)
+    migrate_legacy_file
     remove_job
     show_jobs
     ;;
   clear)
+    migrate_legacy_file
     clear_jobs
     ;;
   *)
