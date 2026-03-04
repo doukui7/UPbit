@@ -8,7 +8,7 @@ if [[ -z "${MODE}" ]]; then
 fi
 
 case "${MODE}" in
-  upbit|health_check|daily_status|kiwoom_gold|kis_isa|kis_pension) ;;
+  upbit|health_check|daily_status|kiwoom_gold|kis_isa|kis_pension|account_sync) ;;
   *)
     echo "[error] unsupported mode: ${MODE}"
     exit 2

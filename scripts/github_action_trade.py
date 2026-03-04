@@ -41,6 +41,7 @@ SIGNAL_STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath
 # ── 잔고 캐시 파일 (로컬 UI에서 조회용) ──
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BALANCE_CACHE_FILE = os.path.join(_PROJECT_ROOT, "balance_cache.json")
+ACCOUNT_CACHE_FILE = os.path.join(_PROJECT_ROOT, "account_cache.json")
 
 
 def _load_signal_state() -> dict:
@@ -3308,6 +3309,100 @@ def run_daily_status_report():
     _send_telegram(report)
 
 
+def run_account_sync():
+    """
+    VM 경유 계좌 데이터 동기화.
+    Upbit API로 잔고/체결내역/입출금 내역을 조회하여
+    account_cache.json으로 GitHub에 push한다.
+    Streamlit UI에서 IP 제한 우회 조회용.
+    """
+    load_dotenv()
+    kst = timezone(timedelta(hours=9))
+    now_kst = datetime.now(kst)
+
+    ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY")
+    SECRET_KEY = os.getenv("UPBIT_SECRET_KEY")
+    if not ACCESS_KEY or not SECRET_KEY:
+        logger.error("account_sync: UPBIT API 키 미설정")
+        return
+
+    trader = UpbitTrader(ACCESS_KEY, SECRET_KEY)
+
+    cache = {
+        "updated_at": now_kst.strftime("%Y-%m-%d %H:%M:%S KST"),
+        "balances": {},
+        "orders": [],
+        "deposits": [],
+        "withdraws": [],
+    }
+
+    # 1) 잔고
+    try:
+        all_bal = trader.get_all_balances()
+        if isinstance(all_bal, dict):
+            cache["balances"] = {k: float(v) for k, v in all_bal.items()}
+    except Exception as e:
+        logger.error(f"account_sync 잔고 조회 실패: {e}")
+
+    # 2) 체결 주문 내역
+    try:
+        orders, err = trader.get_history("order")
+        if orders:
+            cache["orders"] = orders
+        if err:
+            logger.warning(f"account_sync 주문 조회 경고: {err}")
+    except Exception as e:
+        logger.error(f"account_sync 주문 조회 실패: {e}")
+
+    # 3) 입금 내역
+    try:
+        deposits, err = trader.get_history("deposit")
+        if deposits:
+            cache["deposits"] = deposits
+        if err:
+            logger.warning(f"account_sync 입금 조회 경고: {err}")
+    except Exception as e:
+        logger.error(f"account_sync 입금 조회 실패: {e}")
+
+    # 4) 출금 내역
+    try:
+        withdraws, err = trader.get_history("withdraw")
+        if withdraws:
+            cache["withdraws"] = withdraws
+        if err:
+            logger.warning(f"account_sync 출금 조회 경고: {err}")
+    except Exception as e:
+        logger.error(f"account_sync 출금 조회 실패: {e}")
+
+    # 로컬 저장 + GitHub push
+    try:
+        content = json.dumps(cache, indent=2, ensure_ascii=False, default=str)
+        with open(ACCOUNT_CACHE_FILE, 'w', encoding='utf-8') as f:
+            f.write(content)
+        logger.info(f"account_cache 로컬 저장 완료: {ACCOUNT_CACHE_FILE}")
+        _push_file_to_github(
+            repo_path="account_cache.json",
+            content=content,
+            commit_message="auto: 계좌 데이터 동기화",
+        )
+    except Exception as e:
+        logger.error(f"account_cache 저장 실패: {e}")
+
+    # 잔고 캐시도 함께 갱신
+    if cache["balances"]:
+        _save_balance_cache(cache["balances"])
+
+    logger.info(f"account_sync 완료 - 잔고: {len(cache['balances'])}종, "
+                f"주문: {len(cache['orders'])}건, "
+                f"입금: {len(cache['deposits'])}건, "
+                f"출금: {len(cache['withdraws'])}건")
+    _send_telegram(
+        f"<b>계좌 동기화 완료</b>\n"
+        f"시각: {now_kst.strftime('%m-%d %H:%M')}\n"
+        f"잔고: {len(cache['balances'])}종 | 주문: {len(cache['orders'])}건"
+    )
+
+
 def run_telegram_test_ping():
     """
     텔레그램 알림 경로 점검용: 매 정각 실행 가능한 경량 핑 메시지 전송.
@@ -3652,6 +3747,8 @@ if __name__ == "__main__":
             run_health_check()
         elif mode == "daily_status":
             run_daily_status_report()
+        elif mode == "account_sync":
+            run_account_sync()
         elif mode == "telegram_test_ping":
             run_telegram_test_ping()
         else:

@@ -16,6 +16,7 @@ on:
           - health_check
           - trade
           - manual_trade
+          - account_sync
           - kiwoom_gold
           - kis_isa
           - kis_pension
@@ -108,6 +109,32 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
           FORCE_TRADE: '1'
+
+  # ── 계좌 데이터 VM 경유 동기화 (잔고/체결/입출금) ──
+  account_sync:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'account_sync'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync Account Data via Cloud VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          capture_stdout: true
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_run_job.sh account_sync
+        env:
+          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
+          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          TRADING_MODE: account_sync
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
 
   # ── 키움 금현물 자동매매 ─────────────────────────────────
   kiwoom_gold:
