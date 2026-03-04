@@ -2790,7 +2790,10 @@ def run_daily_status_report():
                         trader, bal, base_code=pension_base_code, fallback=0.0
                     )
                     holdings = bal.get("holdings", []) or []
-                    total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
+                    stock_eval = float(bal.get("stock_eval", 0.0)) or sum(
+                        float(h.get("eval_amt", 0.0) or 0.0) for h in holdings
+                    )
+                    total_eval = cash + stock_eval
                     lines.append(f"<b>[KIS 연금저축]</b> 총 {total_eval:,.0f}원")
                     lines.append(f"  예수금(주문가능) {cash:,.0f}원 / 보유: {_format_holdings_brief(holdings)}")
 
@@ -3105,8 +3108,15 @@ def _check_kis_pension() -> dict:
             trader, bal, base_code=pension_base_code, fallback=0.0
         )
         holdings = bal.get("holdings", []) or []
-        total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
-        result["balance_msg"] = f"예수금(주문가능) {cash:,.0f} / 총평가 {total_eval:,.0f}"
+        stock_eval = float(bal.get("stock_eval", 0.0)) or sum(
+            float(h.get("eval_amt", 0.0) or 0.0) for h in holdings
+        )
+        total_eval = cash + stock_eval
+        holding_brief = _format_holdings_brief(holdings)
+        result["balance_msg"] = (
+            f"예수금(주문가능) {cash:,.0f} / 주식평가 {stock_eval:,.0f} / 총평가 {total_eval:,.0f}"
+            f" / 보유 {holding_brief}"
+        )
 
         tickers = ["SPY", "IWD", "GLD", "IEF", "QQQ", "SHY"]
         kr_etf_map = {
