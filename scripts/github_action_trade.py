@@ -28,6 +28,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger()
 
 MIN_ORDER_KRW = 5000
+UPBIT_TEST_MIN_KRW = 5100
+UPBIT_TEST_BUY_MULTIPLIER = 0.5    # 현재가 -50%
+UPBIT_TEST_SELL_MULTIPLIER = 2.5   # 현재가 +150%
 ISA_WDR_TRADE_ETF_CODES = {"418660", "409820", "423920", "426030", "465610", "461910"}
 GOLD_KRX_ETF_CODE = "411060"
 GOLD_LEGACY_ETF_CODES = {"132030"}
@@ -414,6 +417,191 @@ def _abs_gap(value: float | None) -> float:
     return abs(v)
 
 
+def _upbit_tick_size(price: float) -> float:
+    p = _safe_float(price, default=0.0)
+    if p >= 2000000:
+        return 1000.0
+    if p >= 1000000:
+        return 500.0
+    if p >= 500000:
+        return 100.0
+    if p >= 100000:
+        return 50.0
+    if p >= 10000:
+        return 10.0
+    if p >= 1000:
+        return 5.0
+    if p >= 100:
+        return 1.0
+    if p >= 10:
+        return 0.1
+    if p >= 1:
+        return 0.01
+    return 0.001
+
+
+def _round_upbit_price(price: float, mode: str = "floor") -> float:
+    p = _safe_float(price, default=0.0)
+    if not math.isfinite(p) or p <= 0:
+        return 0.0
+    tick = _upbit_tick_size(p)
+    ratio = p / tick
+    if mode == "ceil":
+        q = math.ceil(ratio - 1e-12)
+    elif mode == "nearest":
+        q = round(ratio)
+    else:
+        q = math.floor(ratio + 1e-12)
+    out = q * tick
+    if tick >= 1:
+        return float(int(round(out)))
+    if tick >= 0.1:
+        return round(out, 1)
+    if tick >= 0.01:
+        return round(out, 2)
+    return round(out, 3)
+
+
+def _ceil_volume_8(volume: float) -> float:
+    v = _safe_float(volume, default=0.0)
+    if not math.isfinite(v) or v <= 0:
+        return 0.0
+    return math.ceil(v * 1e8) / 1e8
+
+
+def _extract_order_error_text(order_resp) -> str:
+    if order_resp is None:
+        return "응답 없음(None)"
+    if isinstance(order_resp, dict):
+        err = order_resp.get("error")
+        if err:
+            return str(err)
+    return ""
+
+
+def _select_upbit_test_ticker(portfolio: list[dict], analyses: list[dict] | None = None) -> str:
+    if analyses:
+        for a in analyses:
+            t = str(a.get("ticker", "")).strip().upper()
+            if t.startswith("KRW-"):
+                return t
+    for item in portfolio or []:
+        market = str(item.get("market", "KRW")).strip().upper() or "KRW"
+        coin = str(item.get("coin", "")).strip().upper()
+        if market == "KRW" and coin:
+            return f"{market}-{coin}"
+    return ""
+
+
+def _submit_and_cancel_upbit_test_order(
+    trader: UpbitTrader,
+    *,
+    ticker: str,
+    side: str,
+    price: float,
+    volume: float,
+) -> tuple[bool, str]:
+    side_u = str(side).upper()
+    if side_u == "BUY":
+        order = trader.buy_limit(ticker, price, volume)
+    else:
+        order = trader.sell_limit(ticker, price, volume)
+
+    err = _extract_order_error_text(order)
+    if err:
+        return False, f"{side_u} FAIL - 주문실패: {err}"
+    if not isinstance(order, dict):
+        return False, f"{side_u} FAIL - 주문응답 형식오류({type(order).__name__})"
+
+    order_uuid = str(order.get("uuid", "")).strip()
+    if not order_uuid:
+        return False, f"{side_u} FAIL - 주문 UUID 없음"
+
+    time.sleep(1.0)
+    cancel = trader.cancel_order(order_uuid)
+    cancel_err = _extract_order_error_text(cancel)
+    cancel_ok = not bool(cancel_err)
+    time.sleep(0.8)
+
+    still_wait = False
+    try:
+        pending_after = trader.get_orders(ticker, state="wait") or []
+        still_wait = any(
+            isinstance(o, dict) and str(o.get("uuid", "")).strip() == order_uuid
+            for o in pending_after
+        )
+    except Exception:
+        still_wait = False
+
+    if cancel_ok and not still_wait:
+        return True, f"{side_u} PASS - 주문/취소 완료 (가격 {price:,.0f}, 수량 {volume:.8f})"
+    if cancel_ok and still_wait:
+        return False, f"{side_u} FAIL - 취소 후 대기주문 잔존(uuid={order_uuid})"
+    return False, f"{side_u} FAIL - 취소실패(uuid={order_uuid}, err={cancel_err or 'unknown'})"
+
+
+def _run_upbit_cycle_test_orders(
+    trader: UpbitTrader,
+    *,
+    portfolio: list[dict],
+    analyses: list[dict] | None = None,
+) -> list[str]:
+    notes: list[str] = []
+    ticker = _select_upbit_test_ticker(portfolio, analyses)
+    if not ticker:
+        return ["테스트주문 SKIP - 대상 코인 없음"]
+
+    current_price = _safe_float(trader.get_current_price(ticker), default=0.0)
+    if current_price <= 0:
+        return [f"테스트주문 SKIP - 현재가 조회 실패 ({ticker})"]
+
+    # 1) 매수 테스트: 현재가 -50% 지정가로 최소금액 주문 후 즉시 취소
+    buy_price = _round_upbit_price(current_price * UPBIT_TEST_BUY_MULTIPLIER, mode="floor")
+    if buy_price <= 0:
+        notes.append(f"테스트주문 BUY SKIP - 테스트가격 계산 실패 ({ticker})")
+    else:
+        krw = _safe_float(trader.get_balance("KRW"), default=0.0)
+        if krw < UPBIT_TEST_MIN_KRW:
+            notes.append(
+                f"테스트주문 BUY SKIP - KRW 부족 ({krw:,.0f} < {UPBIT_TEST_MIN_KRW:,.0f})"
+            )
+        else:
+            buy_volume = _ceil_volume_8(UPBIT_TEST_MIN_KRW / buy_price)
+            _, msg = _submit_and_cancel_upbit_test_order(
+                trader,
+                ticker=ticker,
+                side="BUY",
+                price=buy_price,
+                volume=buy_volume,
+            )
+            notes.append(f"[{ticker}] 테스트주문 {msg}")
+
+    # 2) 매도 테스트: 현재가 +150% 지정가로 최소금액 주문 후 즉시 취소
+    sell_price = _round_upbit_price(current_price * UPBIT_TEST_SELL_MULTIPLIER, mode="ceil")
+    if sell_price <= 0:
+        notes.append(f"테스트주문 SELL SKIP - 테스트가격 계산 실패 ({ticker})")
+    else:
+        coin_sym = ticker.split("-")[-1]
+        coin_balance = _safe_float(trader.get_balance(coin_sym), default=0.0)
+        min_sell_volume = _ceil_volume_8(UPBIT_TEST_MIN_KRW / sell_price)
+        if coin_balance < min_sell_volume:
+            notes.append(
+                f"테스트주문 SELL SKIP - 보유수량 부족 "
+                f"({coin_sym} {coin_balance:.8f} < 필요 {min_sell_volume:.8f})"
+            )
+        else:
+            _, msg = _submit_and_cancel_upbit_test_order(
+                trader,
+                ticker=ticker,
+                side="SELL",
+                price=sell_price,
+                volume=min_sell_volume,
+            )
+            notes.append(f"[{ticker}] 테스트주문 {msg}")
+
+    return notes
+
+
 def _pick_focus_target(
     *,
     buy_label: str,
@@ -702,11 +890,14 @@ def _is_coin_interval_due(interval: str, now_kst: datetime) -> bool:
     """
     iv = _normalize_coin_interval(interval)
     hour = int(now_kst.hour)
+    minute = int(now_kst.minute)
 
+    # 정시 경계 실행은 네트워크/스케줄 지연을 고려해 10분 윈도우만 허용
+    due_window_min = 10
     if iv == "day":
-        return hour in (8, 9, 10)
+        return hour == 9 and minute <= due_window_min
     if iv == "minute240":
-        return (hour % 4) in (0, 1, 2)
+        return hour in (1, 5, 9, 13, 17, 21) and minute <= due_window_min
     return True
 
 
@@ -865,14 +1056,21 @@ def run_auto_trade():
 
     # 이전 포지션 상태 로드 (전환 감지용)
     signal_state = _load_signal_state()
+    test_order_notes: list[str] = []
 
     logger.info(f"=== Portfolio Auto Trade ({len(portfolio)} assets) ===")
 
-    # ── 1단계: 전체 포지션 상태 분석 (주기 필터 없이 전부 분석) ──
+    # ── 1단계: 전체 포지션 상태 분석 (전략 주기 필터 적용) ──
     analyses = []
     analyze_errors = []
+    skipped_by_interval = []
     for item in portfolio:
         ticker = f"{item.get('market', 'KRW')}-{str(item.get('coin', '')).upper()}"
+        iv = _normalize_coin_interval(item.get("interval", "day"))
+        if not _is_coin_interval_due(iv, now_kst):
+            skipped_by_interval.append((ticker, iv))
+            logger.info(f"[{ticker}] 주기 미도래({iv}) - 이번 실행에서 스킵")
+            continue
         try:
             result = analyze_asset(trader, item)
             if result:
@@ -891,10 +1089,31 @@ def run_auto_trade():
             analyze_errors.append(f"{ticker}=ERROR({e})")
 
     if not analyses:
+        test_order_notes = _run_upbit_cycle_test_orders(
+            trader,
+            portfolio=portfolio,
+            analyses=analyses,
+        )
+        for _note in test_order_notes:
+            logger.info(_note)
+
+        if skipped_by_interval and not analyze_errors:
+            logger.info(
+                "이번 실행은 주기 미도래 전략만 존재하여 주문 없이 종료: "
+                + ", ".join(f"{t}({iv})" for t, iv in skipped_by_interval[:8])
+            )
+            return
         logger.error("No assets analyzed. Exiting.")
         details = [f"원인: 분석 결과 없음 (대상 {len(portfolio)}개)"]
+        if skipped_by_interval:
+            details.append(
+                "주기스킵: "
+                + ", ".join(f"{t}({iv})" for t, iv in skipped_by_interval[:8])
+            )
         if analyze_errors:
             details.append(f"오류: {'; '.join(analyze_errors[:8])}")
+        if test_order_notes:
+            details.append(f"주문경로테스트: {' | '.join(test_order_notes[:3])}")
         _send_trade_notice("실패", details)
         return
 
@@ -1053,6 +1272,14 @@ def run_auto_trade():
             signal_state[a['signal_key']] = a['position_state']
     _save_signal_state(signal_state)
 
+    test_order_notes = _run_upbit_cycle_test_orders(
+        trader,
+        portfolio=portfolio,
+        analyses=analyses,
+    )
+    for _note in test_order_notes:
+        logger.info(_note)
+
     logger.info("=== Done ===")
 
     # 텔레그램 상세 전송 (잔고 + 체결 내역)
@@ -1143,6 +1370,12 @@ def run_auto_trade():
 
         if _printed_exec:
             tg_lines.append("")
+
+    if test_order_notes:
+        tg_lines.append("<b>주문 경로 테스트</b>")
+        for _note in test_order_notes:
+            tg_lines.append(_note)
+        tg_lines.append("")
 
     tg_lines.append("")
     tg_lines.append(f"<b>잔고</b>")
@@ -3153,13 +3386,16 @@ def _check_kis_pension() -> dict:
             f"{sig.get('selected_risk_asset')}->{sig.get('selected_risk_kr_code')}"
         )
 
-        # 주문 테스트: 목표 종목 중 1개로 1주 지정가 주문 후 즉시 취소
+        # 주문 테스트: 채권 ETF(SHY 매핑) 1주 지정가 주문 후 즉시 취소
+        # - 기본: SHY 국내 매핑 코드(114470)
+        # - 선택: KIS_PENSION_TEST_ORDER_CODE 환경변수로 일시 오버라이드 가능
         order_phase = _get_kr_order_phase()
         if order_phase == "closed":
             result["order_msg"] = "SKIP - 주문 가능 시간이 아닙니다 (09:00~15:30, 16:00~18:00 KST)"
             return result
 
-        test_code = next(iter(sig.get("target_weights_kr", {}).keys()), "")
+        default_bond_code = str(kr_etf_map.get("SHY", "114470")).strip() or "114470"
+        test_code = str(_get_env_any("KIS_PENSION_TEST_ORDER_CODE", default=default_bond_code)).strip()
         if not test_code:
             result["order_msg"] = "FAIL - 테스트 종목 없음"
             return result
@@ -3198,12 +3434,12 @@ def _check_kis_pension() -> dict:
 
         if found and cancel_ok and not still_there:
             result["order_test"] = True
-            result["order_msg"] = "PASS - 주문/취소 정상"
+            result["order_msg"] = f"PASS - 주문/취소 정상 ({test_code})"
         elif found and cancel_ok:
             result["order_test"] = True
-            result["order_msg"] = "PASS - 취소 전파 지연 가능"
+            result["order_msg"] = f"PASS - 취소 전파 지연 가능 ({test_code})"
         else:
-            result["order_msg"] = f"FAIL - 주문={bool(ord_no)}, 조회={found}, 취소={cancel_ok}"
+            result["order_msg"] = f"FAIL - 주문={bool(ord_no)}, 조회={found}, 취소={cancel_ok} ({test_code})"
 
     except Exception as e:
         result["order_msg"] = result.get("order_msg") or f"ERROR: {e}"

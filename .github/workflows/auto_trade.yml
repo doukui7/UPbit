@@ -2,8 +2,8 @@ name: Auto Trade
 
 on:
   schedule:
-    # Backup plan: VM 스케줄러 생존 감시(15분 주기)
-    - cron: "*/15 * * * *"
+    # Backup plan: VM 스케줄러 생존 감시(5분 주기)
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       run_job:

@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_DIR="${REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 LOG_DIR="${LOG_DIR:-${REPO_DIR}/logs}"
 PID_FILE="${LOG_DIR}/vm_scheduler.pid"
+STATE_FILE="${LOG_DIR}/vm_scheduler_state.json"
+MAX_HEARTBEAT_AGE_SEC="${MAX_HEARTBEAT_AGE_SEC:-180}"
 
 mkdir -p "${LOG_DIR}"
 
@@ -38,6 +40,39 @@ is_running() {
     return 0
   fi
   return 1
+}
+
+heartbeat_age_sec() {
+  if [[ ! -f "${STATE_FILE}" ]]; then
+    echo ""
+    return 0
+  fi
+
+  local py
+  if ! py="$(choose_python)"; then
+    echo ""
+    return 0
+  fi
+
+  "${py}" - "${STATE_FILE}" <<'PY'
+import json
+import sys
+import time
+
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    raw = data.get("__heartbeat_epoch")
+    if raw in (None, ""):
+        print("")
+        raise SystemExit(0)
+    ts = float(raw)
+    age = int(max(0, time.time() - ts))
+    print(age)
+except Exception:
+    print("")
+PY
 }
 
 start_scheduler() {
@@ -104,6 +139,14 @@ show_status() {
     if [[ -f "${LOG_DIR}/vm_scheduler_state.json" ]]; then
       echo "[info] scheduler state:"
       tail -n 40 "${LOG_DIR}/vm_scheduler_state.json" || true
+      echo ""
+      local hb_age
+      hb_age="$(heartbeat_age_sec)"
+      if [[ -n "${hb_age}" ]]; then
+        echo "[info] scheduler heartbeat age: ${hb_age}s (threshold=${MAX_HEARTBEAT_AGE_SEC}s)"
+      else
+        echo "[warn] scheduler heartbeat not found in state file"
+      fi
     fi
     if [[ -f "${LOG_DIR}/upbit.log" ]]; then
       echo "[info] latest upbit log:"
@@ -127,7 +170,24 @@ show_status() {
 
 ensure_scheduler() {
   if is_running; then
-    echo "[ok] scheduler already running (pid=$(cat "${PID_FILE}"))"
+    local pid
+    pid="$(cat "${PID_FILE}")"
+    local hb_age
+    hb_age="$(heartbeat_age_sec)"
+
+    if [[ -n "${hb_age}" ]] && [[ "${hb_age}" =~ ^[0-9]+$ ]] && (( hb_age > MAX_HEARTBEAT_AGE_SEC )); then
+      echo "[warn] scheduler process is alive but heartbeat is stale (${hb_age}s > ${MAX_HEARTBEAT_AGE_SEC}s). restarting..."
+      stop_scheduler
+      start_scheduler
+      return 0
+    fi
+
+    echo "[ok] scheduler already running (pid=${pid})"
+    if [[ -n "${hb_age}" ]]; then
+      echo "[info] scheduler heartbeat age: ${hb_age}s"
+    else
+      echo "[warn] scheduler heartbeat unavailable (older scheduler state format)"
+    fi
     return 0
   fi
   echo "[warn] scheduler not running. starting now..."

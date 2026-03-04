@@ -2,7 +2,7 @@ import pyupbit
 import time
 import logging
 from src.strategy.sma import SMAStrategy
-import src.engine.data_cache
+import src.engine.data_cache as data_cache
 
 logger = logging.getLogger(__name__)
 
@@ -288,8 +288,11 @@ class UpbitTrader:
         - price_offset_pct: 현재가 대비 지정가 오프셋 (0.02 = 0.02% 위)
         Returns: {"filled_amount": 총 체결 수량, "avg_price": 평균 체결가, "logs": [...]}
         """
+        min_order_krw = 5000.0
         config = INTERVAL_EXEC_CONFIG.get(interval, INTERVAL_EXEC_CONFIG["day"])
-        splits = config["splits"]
+        req_splits = int(config["splits"])
+        max_splits_by_notional = max(1, int(float(krw_amount) // min_order_krw))
+        splits = max(1, min(req_splits, max_splits_by_notional))
         wait_sec = config["wait_sec"]
         timeout_sec = config["timeout_sec"]
         fallback = config["fallback_market"]
@@ -301,10 +304,13 @@ class UpbitTrader:
         remaining_krw = krw_amount
 
         for i in range(splits):
-            if remaining_krw < 5000:
+            if remaining_krw < min_order_krw:
                 break
 
             amount = min(per_split, remaining_krw)
+            if amount < min_order_krw and remaining_krw >= min_order_krw:
+                # 마지막 잔여분이 최소주문을 만족하면 한 번에 집행
+                amount = remaining_krw
             current_price = self.get_current_price(ticker)
             if not current_price:
                 logs.append({"split": i+1, "status": "error", "msg": "가격 조회 실패"})
@@ -334,7 +340,7 @@ class UpbitTrader:
                 break
 
             # 체결 대기
-            per_timeout = timeout_sec // splits
+            per_timeout = max(5, timeout_sec // splits)
             filled, detail = self._wait_for_fill(uuid, timeout_sec=per_timeout, check_interval=wait_sec)
 
             if filled and detail:
@@ -343,15 +349,16 @@ class UpbitTrader:
                 # trades에서 실제 체결 평균가 계산
                 trades = detail.get('trades', [])
                 if trades:
-                    t_krw = sum(float(t['funds']) for t in trades)
+                    spent_krw = sum(float(t['funds']) for t in trades)
                     t_vol = sum(float(t['volume']) for t in trades)
-                    exec_price = t_krw / t_vol if t_vol > 0 else limit_price
-                    total_filled_krw += t_krw
+                    exec_price = spent_krw / t_vol if t_vol > 0 else limit_price
+                    total_filled_krw += spent_krw
                 else:
-                    total_filled_krw += exec_vol * limit_price
+                    spent_krw = exec_vol * limit_price
+                    total_filled_krw += spent_krw
 
                 total_filled_volume += exec_vol
-                remaining_krw -= exec_vol * limit_price
+                remaining_krw -= float(spent_krw)
                 logs.append({
                     "split": i+1, "status": "filled", "volume": exec_vol,
                     "price": exec_price, "limit_price": limit_price
@@ -373,7 +380,7 @@ class UpbitTrader:
                 })
 
         # 잔여금이 있으면 시장가 마무리
-        if remaining_krw >= 5000 and fallback:
+        if remaining_krw >= min_order_krw and fallback:
             logger.info(f"[{ticker}] Fallback market buy: {remaining_krw:,.0f} KRW")
             result = self.buy_market(ticker, remaining_krw * 0.999)
             if isinstance(result, dict) and not result.get('error'):
@@ -431,8 +438,15 @@ class UpbitTrader:
         - price_offset_pct: 현재가 대비 지정가 오프셋
         Returns: {"filled_krw": 총 체결 금액, "avg_price": 평균 체결가, "logs": [...]}
         """
+        min_order_krw = 5000.0
         config = INTERVAL_EXEC_CONFIG.get(interval, INTERVAL_EXEC_CONFIG["day"])
-        splits = config["splits"]
+        req_splits = int(config["splits"])
+        est_price = self.get_current_price(ticker) or 0
+        if est_price > 0:
+            max_splits_by_notional = max(1, int((float(volume) * float(est_price)) // min_order_krw))
+        else:
+            max_splits_by_notional = req_splits
+        splits = max(1, min(req_splits, max_splits_by_notional))
         wait_sec = config["wait_sec"]
         timeout_sec = config["timeout_sec"]
         fallback = config["fallback_market"]
@@ -449,6 +463,9 @@ class UpbitTrader:
                 break
 
             sell_vol = min(per_split, remaining_volume)
+            if sell_vol * current_price < min_order_krw and remaining_volume * current_price >= min_order_krw:
+                # 최소 주문금액 미달 분할은 잔여 전량으로 올려 한 번에 집행
+                sell_vol = remaining_volume
 
             # 호가 1호가 아래 지정가 (매도 유리 가격)
             ob = self.get_orderbook(ticker)
@@ -471,7 +488,7 @@ class UpbitTrader:
                 logs.append({"split": i+1, "status": "error", "msg": "주문 UUID 없음"})
                 break
 
-            per_timeout = timeout_sec // splits
+            per_timeout = max(5, timeout_sec // splits)
             filled, detail = self._wait_for_fill(uuid, timeout_sec=per_timeout, check_interval=wait_sec)
 
             if filled and detail:
@@ -508,7 +525,7 @@ class UpbitTrader:
 
         # 잔여 수량 시장가 매도
         current_price = self.get_current_price(ticker) or 0
-        if remaining_volume > 0 and remaining_volume * current_price >= 5000 and fallback:
+        if remaining_volume > 0 and remaining_volume * current_price >= min_order_krw and fallback:
             logger.info(f"[{ticker}] Fallback market sell: {remaining_volume:.6f}")
             result = self.sell_market(ticker, remaining_volume)
             if isinstance(result, dict) and not result.get('error'):
@@ -630,6 +647,7 @@ class UpbitTrader:
                         amount_to_exec = remaining_krw
 
             if buy_now and amount_to_exec >= 5000:
+                action_kind = "buy_all" if slippage_pct <= 0.1 else "buy_10pct"
                 # Use Smart Buy for the chunk (Limit Order logic)
                 # Note: Smart Buy handles splits internally. 
                 # For small 10% chunk, it might not split much.
@@ -650,7 +668,7 @@ class UpbitTrader:
                 
                 logs.append({
                     "iter": iteration, "slippage": slippage_pct, 
-                    "action": "buy_all" if amount_to_exec == remaining_krw else "buy_10%",
+                    "action": action_kind,
                     "spent": spent, "avg": avg
                 })
 

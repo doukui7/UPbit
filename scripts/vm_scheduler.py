@@ -35,6 +35,11 @@ LOG_DIR = REPO_DIR / "logs"
 STATE_FILE = LOG_DIR / "vm_scheduler_state.json"
 LOCK_FILE = LOG_DIR / "vm_scheduler.lock"
 CHECK_INTERVAL_SEC = 5
+HEARTBEAT_INTERVAL_SEC = 30
+HEARTBEAT_EPOCH_KEY = "__heartbeat_epoch"
+HEARTBEAT_KST_KEY = "__heartbeat_kst"
+STARTED_AT_KEY = "__started_at_kst"
+LAST_ERROR_KEY = "__last_error"
 
 
 def _is_weekday(dt: datetime) -> bool:
@@ -174,6 +179,25 @@ def _minute_key(dt: datetime) -> str:
     return dt.strftime("%Y%m%d%H%M")
 
 
+def _touch_heartbeat(state: dict[str, str], now: datetime, *, force: bool = False) -> bool:
+    """
+    상태 파일에 heartbeat를 기록한다.
+    - force=False일 때는 디스크 쓰기 과다를 피하려고 일정 주기(HEARTBEAT_INTERVAL_SEC)로만 갱신
+    """
+    cur_epoch = time.time()
+    prev_epoch_raw = state.get(HEARTBEAT_EPOCH_KEY, "0")
+    try:
+        prev_epoch = float(prev_epoch_raw)
+    except Exception:
+        prev_epoch = 0.0
+    if not force and (cur_epoch - prev_epoch) < HEARTBEAT_INTERVAL_SEC:
+        return False
+
+    state[HEARTBEAT_EPOCH_KEY] = f"{cur_epoch:.3f}"
+    state[HEARTBEAT_KST_KEY] = now.strftime("%Y-%m-%d %H:%M:%S")
+    return True
+
+
 def main() -> int:
     _setup_logging()
     signal.signal(signal.SIGTERM, _handle_signal)
@@ -181,6 +205,9 @@ def main() -> int:
     _lock_fp = _acquire_lock()
 
     state = _load_state()
+    state[STARTED_AT_KEY] = _now_kst().strftime("%Y-%m-%d %H:%M:%S")
+    _touch_heartbeat(state, _now_kst(), force=True)
+    _save_state(state)
     logging.info("VM 파이썬 스케줄러 시작 (repo=%s)", REPO_DIR)
     logging.info(
         "스케줄: upbit[01/05/09/13/17/21:00], health[+5m], daily[평일09:00], "
@@ -191,14 +218,28 @@ def main() -> int:
         while RUNNING:
             now = _now_kst()
             mk = _minute_key(now)
+            state_dirty = False
 
-            for rule in RULES:
-                if not rule.is_due(now):
-                    continue
-                if state.get(rule.mode) == mk:
-                    continue
-                _run_mode(rule.mode, rule.label)
-                state[rule.mode] = mk
+            try:
+                for rule in RULES:
+                    if not rule.is_due(now):
+                        continue
+                    if state.get(rule.mode) == mk:
+                        continue
+                    _run_mode(rule.mode, rule.label)
+                    state[rule.mode] = mk
+                    state_dirty = True
+                    if LAST_ERROR_KEY in state:
+                        state.pop(LAST_ERROR_KEY, None)
+            except Exception as e:
+                # 루프 전체가 죽지 않도록 방어하고 다음 tick에서 계속 진행한다.
+                logging.exception("스케줄 루프 예외: %s", e)
+                state[LAST_ERROR_KEY] = f"{now.strftime('%Y-%m-%d %H:%M:%S')} | {type(e).__name__}: {e}"
+                state_dirty = True
+
+            if _touch_heartbeat(state, now, force=state_dirty):
+                state_dirty = True
+            if state_dirty:
                 _save_state(state)
 
             # Keep loop lightweight and stable.
