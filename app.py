@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 # --- Import Constants & Config ---
 from src.constants import *
-from src.utils.helpers import load_config, save_config
+from src.utils.helpers import load_config, save_config, load_mode_config, save_mode_config
 
 # --- UI Modes ---
 from src.ui.coin_mode import render_coin_mode
@@ -61,6 +61,28 @@ def main():
 
     # 전역 앱 설정 로드
     config = load_config()
+
+    # ── 텔레그램 설정 (모든 모드 공통, config/common.json) ──
+    from src.utils.helpers import _get_runtime_value
+    from src.constants import IS_CLOUD
+    _common_cfg = load_mode_config("common")
+    _tg_token = str(_common_cfg.get("telegram_bot_token", "") or config.get("telegram_bot_token", "") or _get_runtime_value(("TELEGRAM_BOT_TOKEN", "TELEGRAM_TOKEN"), ""))
+    _tg_chat = str(_common_cfg.get("telegram_chat_id", "") or config.get("telegram_chat_id", "") or _get_runtime_value(("TELEGRAM_CHAT_ID",), ""))
+    if not IS_CLOUD:
+        with st.sidebar.expander("📬 텔레그램 알림", expanded=False):
+            _tg_token = st.text_input("봇 토큰", value=_tg_token, type="password", key="global_tg_bot_token")
+            _tg_chat = st.text_input("Chat ID", value=_tg_chat, key="global_tg_chat_id")
+            if st.button("텔레그램 설정 저장", key="save_tg_cfg"):
+                _common_cfg["telegram_bot_token"] = str(_tg_token).strip()
+                _common_cfg["telegram_chat_id"] = str(_tg_chat).strip()
+                save_mode_config("common", _common_cfg)
+                # 전역 config에도 반영 (하위호환)
+                config["telegram_bot_token"] = str(_tg_token).strip()
+                config["telegram_chat_id"] = str(_tg_chat).strip()
+                save_config(config)
+                st.success("텔레그램 설정 저장 완료!")
+    st.session_state["_tg_bot_token"] = _tg_token
+    st.session_state["_tg_chat_id"] = _tg_chat
 
     # 모드별 UI 렌더링
     if trading_mode == "GOLD":

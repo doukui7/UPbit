@@ -147,47 +147,48 @@ class WDRStrategy:
     def calc_growth_trend(self, weekly_df: pd.DataFrame) -> np.ndarray:
         """
         성장 추세선 계산 (초기 260주는 Expanding Window, 이후 Rolling Window 260주).
-        최소 2개 이상의 데이터가 있을 때부터 로그 선형 회귀 수행.
-
-        Args:
-            weekly_df: 주봉 DataFrame (index=datetime, columns=['close'])
-
-        Returns:
-            numpy array: 추세선 값
+        완전 벡터화된 NumPy 구현 (for 루프 제거).
         """
-        prices = weekly_df['close'].values
-        dates = weekly_df.index
-        window = self.settings['trend_period_weeks']
+        prices = weekly_df['close'].values.astype(np.float64)
+        n = len(prices)
+        window = int(self.settings['trend_period_weeks'])
 
-        # 엑셀 날짜 형식 (1899-12-31 기준 일수)
-        excel_dates = np.array([
-            (pd.Timestamp(d) - pd.Timestamp("1899-12-31")).days
-            for d in dates
-        ])
+        # x값 (상대적 인덱스 또는 날짜 기준 일수)
+        # O(n) 처리를 위해 인덱스 기반으로 우선 계산 (성능 최적화)
+        x = np.arange(n, dtype=np.float64)
+        y = np.log(prices)
 
-        trend = np.full(len(prices), np.nan)
+        # 1) Expanding Window (1 ~ window)
+        sx_exp  = np.cumsum(x)
+        sy_exp  = np.cumsum(y)
+        sx2_exp = np.cumsum(x**2)
+        sxy_exp = np.cumsum(x * y)
+        w_exp   = np.arange(1, n + 1, dtype=np.float64)
+        
+        # 2) Rolling Window (size=window)
+        # 윈도우 합산: sum[i] = cumsum[i] - cumsum[i-window]
+        def rolling_sum(arr, win):
+            res = arr.copy()
+            res[win:] = arr[win:] - arr[:-win]
+            return res
 
-        # 인덱스 1(두 번째 데이터)부터 계산 시작 (expanding -> rolling)
-        for i in range(1, len(prices)):
-            # 현재까지의 데이터 개수와 설정된 윈도우 크기 중 작은 것을 선택 (+1은 현재 포인트 포함)
-            current_window_size = min(i + 1, window + 1)
-            start_idx = i - (current_window_size - 1)
-            
-            current_dates = excel_dates[start_idx:i + 1]
-            current_prices = prices[start_idx:i + 1]
-
-            if len(current_prices) < 2:
-                continue
-
-            # 로그 변환 후 선형 회귀
-            try:
-                log_prices = np.log(current_prices)
-                slope, intercept = np.polyfit(current_dates, log_prices, 1)
-                trend[i] = np.exp(slope * excel_dates[i] + intercept)
-            except Exception:
-                continue
-
-        return trend
+        sx  = rolling_sum(sx_exp, window)
+        sy  = rolling_sum(sy_exp, window)
+        sx2 = rolling_sum(sx2_exp, window)
+        sxy = rolling_sum(sxy_exp, window)
+        
+        # 윈도우 크기 결정: i < window 인 구간은 i+1, 이후는 window
+        w = np.where(w_exp < window, w_exp, float(window))
+        
+        denom = w * sx2 - sx * sx
+        # denom이 0인 경우 방지 (최소 1e-12)
+        denom = np.where(np.abs(denom) < 1e-12, 1e-12, denom)
+        
+        slope = (w * sxy - sx * sy) / denom
+        intercept = (sy - slope * sx) / w
+        
+        log_trend = slope * x + intercept
+        return np.exp(log_trend)
 
     # ─────────────────────────────────────────────────────
     # 이격도 & 시장 상태
@@ -288,6 +289,12 @@ class WDRStrategy:
             max_buy_cash = cash - max(0, total_value * min_cash_ratio)
             buy_amount = min(buy_amount, max(0, max_buy_cash))
 
+            # 최대 주식 비율 확인
+            max_stock_ratio = self.settings.get('max_stock_ratio', 1.0)
+            current_stock_value = current_shares * current_price
+            max_stock_buy_cash = (total_value * max_stock_ratio) - current_stock_value
+            buy_amount = min(buy_amount, max(0, max_stock_buy_cash))
+
             quantity = int(buy_amount / current_price)
 
             if quantity > 0 and (quantity * current_price) <= cash:
@@ -359,58 +366,56 @@ class WDRStrategy:
         start_date=None,
         fee_rate: float | None = None,
         initial_stock_ratio: float | None = None,
+        precomputed_merged: pd.DataFrame | None = None,
     ) -> dict | None:
         """
         WDR 주간 리밸런싱 백테스트.
-
-        Args:
-            signal_daily_df: 시그널 계산용 일봉 (예: QQQ, 133690)
-            trade_daily_df: 실제 매매 대상 일봉 (없으면 signal_daily_df 사용)
-            initial_balance: 초기자본
-            start_date: 백테스트 시작일 (None이면 전체)
-
-        Returns:
-            dict:
-              - equity_df: date index, columns=[equity, cash, shares, price, divergence, action]
-              - trades: 거래 로그 리스트
-              - benchmark_df: 벤치마크(매수후보유) 수익률(%)
-              - metrics: 성과 지표
+        precomputed_merged: 미리 계산된 merged DataFrame (signal_close, divergence, trade_close 컬럼).
+                            제공 시 trend 계산/데이터 변환 과정 생략 → 배치 사전 계산 시 대폭 고속화.
         """
-        if signal_daily_df is None or len(signal_daily_df) < 60:
-            return None
-        if trade_daily_df is None:
-            trade_daily_df = signal_daily_df
-        if trade_daily_df is None or len(trade_daily_df) < 60:
-            return None
+        # 1) precomputed_merged가 있으면 바로 사용
+        if precomputed_merged is not None:
+            merged = precomputed_merged
+            if start_date is not None:
+                merged = merged[merged.index >= pd.Timestamp(start_date)]
+            if len(merged) < 5:
+                return None
+        else:
+            if signal_daily_df is None or len(signal_daily_df) < 60:
+                return None
+            if trade_daily_df is None:
+                trade_daily_df = signal_daily_df
+            if trade_daily_df is None or len(trade_daily_df) < 60:
+                return None
 
-        weekly_signal = self.daily_to_weekly(signal_daily_df)
-        weekly_trade = self.daily_to_weekly(trade_daily_df)
-        if weekly_signal is None or weekly_trade is None:
-            return None
-        if len(weekly_signal) < 10 or len(weekly_trade) < 10:
-            return None
+            weekly_signal = self.daily_to_weekly(signal_daily_df)
+            weekly_trade = self.daily_to_weekly(trade_daily_df)
+            if weekly_signal is None or weekly_trade is None:
+                return None
+            if len(weekly_signal) < 10 or len(weekly_trade) < 10:
+                return None
 
-        trend = self.calc_growth_trend(weekly_signal)
-        sig_df = weekly_signal.copy()
-        sig_df["trend"] = trend
-        sig_df = sig_df.dropna(subset=["trend"])
-        if sig_df.empty:
-            return None
+            trend = self.calc_growth_trend(weekly_signal)
+            sig_df = weekly_signal.copy()
+            sig_df["trend"] = trend
+            sig_df = sig_df.dropna(subset=["trend"])
+            if sig_df.empty:
+                return None
 
-        sig_df["divergence"] = (
-            (sig_df["close"] - sig_df["trend"]) / sig_df["trend"] * 100.0
-        )
+            sig_df["divergence"] = (
+                (sig_df["close"] - sig_df["trend"]) / sig_df["trend"] * 100.0
+            )
 
-        merged = sig_df[["close", "divergence"]].rename(columns={"close": "signal_close"}).join(
-            weekly_trade.rename(columns={"close": "trade_close"}),
-            how="inner",
-        ).dropna(subset=["trade_close"])
+            merged = sig_df[["close", "divergence"]].rename(columns={"close": "signal_close"}).join(
+                weekly_trade.rename(columns={"close": "trade_close"}),
+                how="inner",
+            ).dropna(subset=["trade_close"])
 
-        if start_date is not None:
-            merged = merged[merged.index >= pd.Timestamp(start_date)]
+            if start_date is not None:
+                merged = merged[merged.index >= pd.Timestamp(start_date)]
 
-        if len(merged) < 5:
-            return None
+            if len(merged) < 5:
+                return None
 
         commission_rate = float(fee_rate) if fee_rate is not None else float(self.settings.get("commission_rate", 0.00015))
         first_price = float(merged["trade_close"].iloc[0])
@@ -422,8 +427,8 @@ class WDRStrategy:
         first_div = float(merged["divergence"].iloc[0])
 
         if initial_stock_ratio is not None:
-            # 외부에서 지정 (예: QQQ→TQQQ 참조 백테스트 비중 계승)
-            buy_ratio = float(initial_stock_ratio)
+            # 다이얼에서 직접 지정한 비율 사용 (0.0 = 전액 현금도 유효)
+            buy_ratio = max(0.0, min(1.0, float(initial_stock_ratio)))
         else:
             mode = self.settings.get("evaluation_mode", 3)
             if mode == 5:
@@ -471,10 +476,16 @@ class WDRStrategy:
         sell_count = 0
         win_count = 0
 
+        # 벡터화된 사전 추출 (pandas .iloc 반복 호출 제거)
+        _trade_prices   = merged["trade_close"].to_numpy(dtype=np.float64)
+        _signal_closes  = merged["signal_close"].to_numpy(dtype=np.float64)
+        _divergences    = merged["divergence"].to_numpy(dtype=np.float64)
+        _dates          = merged.index
+
         for i in range(1, len(merged)):
-            cur_price = float(merged["trade_close"].iloc[i])
-            prev_price = float(merged["trade_close"].iloc[i - 1])
-            divergence = float(merged["divergence"].iloc[i])
+            cur_price  = _trade_prices[i]
+            prev_price = _trade_prices[i - 1]
+            divergence = _divergences[i]
             weekly_pnl = (cur_price - prev_price) * shares
 
             action = self.get_rebalance_action(
@@ -485,8 +496,10 @@ class WDRStrategy:
                 cash=cash,
             )
 
-            if action["action"] == "SELL" and action["quantity"] > 0:
-                qty = int(action["quantity"])
+            act = action["action"]
+            qty = int(action["quantity"])
+
+            if act == "SELL" and qty > 0:
                 amount = qty * cur_price
                 fee = amount * commission_rate
                 cash += amount - fee
@@ -495,15 +508,14 @@ class WDRStrategy:
                 if weekly_pnl > 0:
                     win_count += 1
                 trades.append({
-                    "date": merged.index[i].strftime("%Y-%m-%d"),
+                    "date": _dates[i].strftime("%Y-%m-%d"),
                     "action": "SELL",
                     "price": cur_price,
                     "quantity": qty,
                     "cash": cash,
                     "shares": shares,
                 })
-            elif action["action"] == "BUY" and action["quantity"] > 0:
-                qty = int(action["quantity"])
+            elif act == "BUY" and qty > 0:
                 amount = qty * cur_price
                 fee = amount * commission_rate
                 total_cost = amount + fee
@@ -511,7 +523,7 @@ class WDRStrategy:
                     cash -= total_cost
                     shares += qty
                     trades.append({
-                        "date": merged.index[i].strftime("%Y-%m-%d"),
+                        "date": _dates[i].strftime("%Y-%m-%d"),
                         "action": "BUY",
                         "price": cur_price,
                         "quantity": qty,
@@ -520,44 +532,50 @@ class WDRStrategy:
                     })
 
             equity_records.append({
-                "date": merged.index[i],
+                "date": _dates[i],
                 "equity": cash + shares * cur_price,
                 "cash": cash,
                 "shares": shares,
                 "price": cur_price,
-                "signal_close": float(merged["signal_close"].iloc[i]),
+                "signal_close": _signal_closes[i],
                 "divergence": divergence,
-                "action": action["action"] or "HOLD",
-                "quantity": int(action["quantity"]),
+                "action": act or "HOLD",
+                "quantity": qty,
             })
 
         equity_df = pd.DataFrame(equity_records).set_index("date")
         if equity_df.empty:
             return None
 
-        equity = equity_df["equity"]
-        final_equity = float(equity.iloc[-1])
+        equity = equity_df["equity"].to_numpy(dtype=np.float64)
+        equity_idx = equity_df.index
+        final_equity = equity[-1]
         total_return = (final_equity / init_balance - 1.0) * 100.0
 
-        days = (equity.index[-1] - equity.index[0]).days
+        days = (equity_idx[-1] - equity_idx[0]).days
         cagr = ((final_equity / init_balance) ** (365.0 / days) - 1.0) * 100.0 if days > 0 else 0.0
 
-        peak = equity.cummax()
-        drawdown = (equity - peak) / peak * 100.0
-        mdd = float(drawdown.min()) if len(drawdown) > 0 else 0.0
+        peak = np.maximum.accumulate(equity)
+        drawdown_arr = (equity - peak) / peak * 100.0
+        mdd = float(drawdown_arr.min()) if len(drawdown_arr) > 0 else 0.0
+        drawdown = pd.Series(drawdown_arr, index=equity_idx)
 
         yearly_mdds = drawdown.groupby(drawdown.index.year).min() if len(drawdown) > 0 else pd.Series(dtype=float)
         avg_yearly_mdd = float(yearly_mdds.mean()) if len(yearly_mdds) > 0 else mdd
 
-        weekly_returns = equity.pct_change().dropna()
+        eq_series = pd.Series(equity, index=equity_idx)
+        weekly_returns = eq_series.pct_change().dropna().to_numpy(dtype=np.float64)
         sharpe = 0.0
-        if len(weekly_returns) > 1 and weekly_returns.std() > 0:
-            sharpe = float((weekly_returns.mean() / weekly_returns.std()) * np.sqrt(52))
+        if len(weekly_returns) > 1:
+            std = weekly_returns.std()
+            if std > 0:
+                sharpe = float((weekly_returns.mean() / std) * np.sqrt(52))
 
         calmar = abs(cagr / mdd) if mdd != 0 else 0.0
         win_rate = (win_count / sell_count * 100.0) if sell_count > 0 else 0.0
 
-        benchmark_pct = (merged["signal_close"] / merged["signal_close"].iloc[0] - 1.0) * 100.0
+        sig_close_arr = merged["signal_close"].to_numpy(dtype=np.float64)
+        benchmark_pct = (sig_close_arr / sig_close_arr[0] - 1.0) * 100.0
         benchmark_df = pd.DataFrame({"benchmark_return_pct": benchmark_pct}, index=merged.index)
 
         return {

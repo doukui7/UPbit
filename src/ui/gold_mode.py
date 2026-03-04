@@ -12,6 +12,7 @@ from src.ui.components.triggers import render_strategy_trigger_tab
 
 def render_gold_mode(config, save_config):
     """금(Gold) 현물 거래 모드 - 키움증권 KRX 금시장 (코인 탭과 동일한 구조)"""
+    from src.utils.helpers import load_mode_config, save_mode_config
     from src.engine.kiwoom_gold import KiwoomGoldTrader, GOLD_CODE_1KG
     from src.backtest.engine import BacktestEngine
 
@@ -42,8 +43,9 @@ def render_gold_mode(config, save_config):
     st.sidebar.subheader("전략 설정")
     st.sidebar.caption("여러 전략을 추가하여 포트폴리오를 구성할 수 있습니다.")
 
+    _gold_mode_cfg = load_mode_config("gold")
     _gold_cfg_default = [{"strategy": "Donchian", "buy": 90, "sell": 55, "weight": 100}]
-    _gold_cfg = config.get("gold_strategy", _gold_cfg_default)
+    _gold_cfg = _gold_mode_cfg.get("gold_strategy", None) or config.get("gold_strategy", _gold_cfg_default)
 
     df_gold_strat = pd.DataFrame(_gold_cfg)
     if IS_CLOUD:
@@ -94,12 +96,12 @@ def render_gold_mode(config, save_config):
 
     # 공통 설정
     st.sidebar.subheader("공통 설정")
-    _gold_start_default = config.get("gold_start_date", "2022-06-01")
+    _gold_start_default = _gold_mode_cfg.get("gold_start_date", None) or config.get("gold_start_date", "2022-06-01")
     gold_start_date = st.sidebar.date_input(
         "기준 시작일", value=pd.to_datetime(_gold_start_default).date(),
         help="백테스트 평가 시작일", disabled=IS_CLOUD, key="gold_start_date"
     )
-    _gold_cap_default = config.get("gold_initial_cap", 10_000_000)
+    _gold_cap_default = _gold_mode_cfg.get("gold_initial_cap", None) or config.get("gold_initial_cap", 10_000_000)
     gold_initial_cap = st.sidebar.number_input(
         "초기 자본금 (KRW)", value=_gold_cap_default, step=100_000, format="%d",
         disabled=IS_CLOUD, key="gold_initial_cap"
@@ -108,10 +110,15 @@ def render_gold_mode(config, save_config):
 
     if not IS_CLOUD:
         if st.sidebar.button("💾 Gold 설정 저장", key="gold_save_btn"):
+            gold_data = {
+                "gold_strategy": edited_gold_strat.to_dict("records"),
+                "gold_start_date": str(gold_start_date),
+                "gold_initial_cap": gold_initial_cap,
+            }
+            save_mode_config("gold", gold_data)
+            # 전역 config에도 반영 (하위호환)
             new_gold_cfg = config.copy()
-            new_gold_cfg["gold_strategy"]    = edited_gold_strat.to_dict("records")
-            new_gold_cfg["gold_start_date"]  = str(gold_start_date)
-            new_gold_cfg["gold_initial_cap"] = gold_initial_cap
+            new_gold_cfg.update(gold_data)
             save_config(new_gold_cfg)
             st.sidebar.success("저장 완료!")
 
@@ -154,7 +161,7 @@ def render_gold_mode(config, save_config):
             if df_w is not None and len(df_w) >= buy_p + 5:
                 return df_w
         # 3순위: CSV 파일 (오프라인 폴백)
-        csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "krx_gold_daily.csv")
+        csv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "krx_gold_daily.csv")
         if os.path.exists(csv_path):
             df_csv = pd.read_csv(csv_path, index_col="Date", parse_dates=True)
             df_csv.columns = [c.lower() for c in df_csv.columns]

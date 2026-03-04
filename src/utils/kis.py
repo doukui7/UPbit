@@ -24,8 +24,17 @@ def _get_kis_token(trader, acct_key, ak):
 
 def _compute_kis_balance_summary(bal):
     """KIS 계좌 잔고 데이터를 공통 형식으로 요약."""
-    if not bal or "output1" not in bal:
-        return {"buyable_cash": 0.0, "holdings": [], "stock_eval": 0.0, "total_eval": 0.0}
+    if not bal:
+        return {"cash": 0.0, "buyable_cash": 0.0, "holdings": [], "stock_eval": 0.0, "total_eval": 0.0}
+    
+    # 이미 요약된 형태인 경우 그대로 반환 (단, 필드 누락 방지)
+    if "buyable_cash" in bal and "holdings" in bal:
+        if "cash" not in bal:
+            bal["cash"] = bal.get("buyable_cash", 0.0)
+        return bal
+
+    if "output1" not in bal:
+        return {"cash": 0.0, "buyable_cash": 0.0, "holdings": [], "stock_eval": 0.0, "total_eval": 0.0}
     
     out1 = bal.get("output1", [])
     out2 = bal.get("output2", [{}])[0]
@@ -43,8 +52,10 @@ def _compute_kis_balance_summary(bal):
                 "pnl_pct": _safe_float(h.get("evl_pnl_rt"))
             })
             
+    cash_val = _safe_float(out2.get("dnca_tot_amt"))
     return {
-        "buyable_cash": _safe_float(out2.get("dnca_tot_amt")),
+        "cash": cash_val,
+        "buyable_cash": cash_val,
         "holdings": holdings,
         "stock_eval": _safe_float(out2.get("scts_evl_amt")),
         "total_eval": _safe_float(out2.get("tot_evl_amt"))

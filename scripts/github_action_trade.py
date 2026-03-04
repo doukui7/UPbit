@@ -1024,6 +1024,48 @@ def _wait_for_candle_boundary(now_kst: datetime, max_wait_sec: int = 720) -> dat
     return datetime.now(kst)
 
 
+def _safe_get_upbit_ohlcv(ticker: str, interval: str, count: int, max_retries: int = 4, wait_sec: int = 5):
+    """
+    OHLCV 데이터 최신성 검증 래퍼 함수.
+    Upbit 서버의 캔들 생성 지연으로 인해 과거 캔들이 최신인 것처럼 응답되는 것을 방지.
+    """
+    import src.engine.data_cache as dc
+    expected_start = dc._expected_latest_candle_start_kst(interval, now_kst=None)
+    
+    for attempt in range(max_retries):
+        df = _get_upbit_ohlcv_local_first(ticker, interval=interval, count=count)
+        if df is not None and not df.empty and expected_start is not None:
+            last_dt = dc._to_kst_timestamp(df.index[-1])
+            if last_dt is not None and last_dt >= expected_start:
+                return df
+                
+        logger.warning(f"[{ticker}] 캔들 갱신 대기 (시도 {attempt+1}/{max_retries}). {wait_sec}초 후 재조회...")
+        time.sleep(wait_sec)
+        
+    # 최대 시도 후에도 갱신 안 됨 -> 실시간 현재가로 캔들을 인위적으로 생성하여 추가
+    logger.error(f"[{ticker}] 최신 캔들 수신 실패. 실시간 현재가 기반 가상 캔들 추가 Fallback 실행.")
+    df = _get_upbit_ohlcv_local_first(ticker, interval=interval, count=count)
+    if df is not None and not df.empty and expected_start is not None:
+        try:
+            current_price = _get_upbit_price_local_first(ticker)
+            if current_price and current_price > 0:
+                import pandas as pd
+                new_idx = pd.to_datetime([expected_start])
+                new_row = pd.DataFrame({
+                    'open': [current_price],
+                    'high': [current_price],
+                    'low': [current_price],
+                    'close': [current_price],
+                    'volume': [0.0]
+                }, index=new_idx)
+                df = pd.concat([df, new_row])
+                logger.info(f"[{ticker}] 가상 캔들 추가 완료: {expected_start} close={current_price}")
+        except Exception as e:
+            logger.error(f"가상 캔들 추가 실패: {e}")
+            
+    return df
+
+
 def analyze_asset(trader, item):
     """1단계: 데이터 조회 → 포지션 상태 계산 → 보유 현황 확인"""
     ticker = f"{item['market']}-{item['coin'].upper()}"
@@ -1035,9 +1077,9 @@ def analyze_asset(trader, item):
 
     logger.info(f"--- [{ticker}] {strategy_name}({param}), {weight}%, {interval_raw}->{interval} ---")
 
-    # Fetch data
+    # Fetch data (안전한 조회 로직으로 변경)
     count = max(200, param * 3)
-    df = _get_upbit_ohlcv_local_first(ticker, interval=interval, count=count)
+    df = _safe_get_upbit_ohlcv(ticker, interval=interval, count=count)
     if df is None or len(df) < param + 5:
         logger.error(f"[{ticker}] Insufficient data (got {len(df) if df is not None else 0}, need {param + 5})")
         return None

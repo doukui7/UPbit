@@ -27,7 +27,7 @@ try:
 except Exception:
     pass
 
-CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
+CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "cache")
 
 # 시간봉별 하루 캔들 수 (갭 계산용)
 CANDLES_PER_DAY = {
@@ -69,49 +69,35 @@ def _estimate_gap_count(last_cached_time, interval):
     return int(gap_days * cpd) + 10  # 여유분 +10
 
 
-def _cache_path(ticker, interval):
-    safe_name = ticker.replace("-", "_")
-    return os.path.join(CACHE_DIR, f"{safe_name}_{interval}.parquet")
-
-
 def load_cached(ticker, interval):
-    """캐시된 데이터 로드. 없으면 None"""
-    path = _cache_path(ticker, interval)
-    if os.path.exists(path):
-        try:
-            df = pd.read_parquet(path)
-            return df
-        except Exception:
-            return None
+    """DB에서 OHLCV 데이터 로드. 없으면 None"""
+    from src.utils.db_manager import DBManager
+    db = DBManager()
+    df = db.load_ohlcv(ticker, interval)
+    if df is not None and not df.empty:
+        return df
     return None
 
 
 def save_cache(ticker, interval, df):
-    """데이터를 parquet으로 저장"""
-    _ensure_cache_dir()
-    path = _cache_path(ticker, interval)
-    df.to_parquet(path)
+    """데이터를 DB에 저장"""
+    if df is None or df.empty:
+        return
+    from src.utils.db_manager import DBManager
+    db = DBManager()
+    db.save_ohlcv(ticker, interval, df)
 
 
 def get_cache_info(ticker, interval):
-    """캐시 파일 정보 반환"""
-    path = _cache_path(ticker, interval)
-    if os.path.exists(path):
-        size = os.path.getsize(path)
-        mtime = datetime.fromtimestamp(os.path.getmtime(path))
-        try:
-            df = pd.read_parquet(path)
-            return {
-                "exists": True,
-                "path": path,
-                "size_kb": size / 1024,
-                "modified": mtime,
-                "rows": len(df),
-                "start": df.index[0],
-                "end": df.index[-1]
-            }
-        except Exception:
-            return {"exists": True, "path": path, "size_kb": size / 1024, "modified": mtime, "rows": 0}
+    """캐시(DB) 정보 반환"""
+    df = load_cached(ticker, interval)
+    if df is not None and not df.empty:
+        return {
+            "exists": True,
+            "rows": len(df),
+            "start": df.index[0],
+            "end": df.index[-1]
+        }
     return {"exists": False}
 
 
@@ -261,6 +247,57 @@ def get_ohlcv_cached(ticker, interval="day", to=None, count=200, progress_callba
     return fetch_and_cache(ticker, interval, to=to, count=count, progress_callback=progress_callback)
 
 
+def _to_kst_timestamp(ts):
+    try:
+        t = pd.Timestamp(ts)
+    except Exception:
+        return None
+    try:
+        if getattr(t, "tzinfo", None) is None:
+            return t.tz_localize("Asia/Seoul")
+        return t.tz_convert("Asia/Seoul")
+    except Exception:
+        try:
+            return t.tz_localize("Asia/Seoul")
+        except Exception:
+            return None
+
+
+def _expected_latest_candle_start_kst(interval: str, now_kst=None):
+    iv = str(interval or "day").strip().lower()
+    now = _to_kst_timestamp(now_kst if now_kst is not None else pd.Timestamp.now())
+    if now is None:
+        return None
+    now = now.replace(second=0, microsecond=0, nanosecond=0)
+
+    if iv == "day":
+        if now.hour >= 9:
+            return now.replace(hour=9, minute=0)
+        prev = now - pd.Timedelta(days=1)
+        return prev.replace(hour=9, minute=0)
+
+    if iv == "minute240":
+        slots = (1, 5, 9, 13, 17, 21)
+        for h in reversed(slots):
+            slot = now.replace(hour=h, minute=0)
+            if now >= slot:
+                return slot
+        prev = now - pd.Timedelta(days=1)
+        return prev.replace(hour=21, minute=0)
+
+    return None
+
+
+def _is_ohlcv_cache_stale(last_ts, interval: str) -> bool:
+    expected = _expected_latest_candle_start_kst(interval)
+    if expected is None:
+        return False
+    last_kst = _to_kst_timestamp(last_ts)
+    if last_kst is None:
+        return True
+    return last_kst < expected
+
+
 def get_ohlcv_local_first(ticker, interval="day", to=None, count=200, allow_api_fallback=True, progress_callback=None):
     """
     로컬(parquet) 우선으로 OHLCV 조회.
@@ -281,7 +318,8 @@ def get_ohlcv_local_first(ticker, interval="day", to=None, count=200, allow_api_
             except Exception:
                 pass
         if subset is not None and len(subset) > 0:
-            if len(subset) >= req_count:
+            stale = _is_ohlcv_cache_stale(subset.index[-1], interval)
+            if len(subset) >= req_count and not (allow_api_fallback and stale):
                 return subset.tail(req_count)
             if not allow_api_fallback:
                 return subset
@@ -525,27 +563,25 @@ def batch_download(tickers, intervals=None, count=10000, progress_callback=None)
 # Gold 캐시 (KRX 금현물 일봉)
 # ═══════════════════════════════════════════════════════
 
-def _gold_cache_path(code, interval="day"):
-    safe = code.replace("/", "_").replace("-", "_")
-    return os.path.join(CACHE_DIR, f"GOLD_{safe}_{interval}.parquet")
-
-
 def load_cached_gold(code="M04020000", interval="day"):
-    """Gold 캐시 로드. 없으면 None"""
-    path = _gold_cache_path(code, interval)
-    if os.path.exists(path):
-        try:
-            return pd.read_parquet(path)
-        except Exception:
-            return None
+    """Gold DB 로드. 없으면 None"""
+    from src.utils.db_manager import DBManager
+    db = DBManager()
+    ticker = f"GOLD_{code}"
+    df = db.load_ohlcv(ticker, interval)
+    if df is not None and not df.empty:
+        return df
     return None
 
 
 def save_cache_gold(code, interval, df):
-    """Gold 데이터를 parquet으로 저장"""
-    _ensure_cache_dir()
-    path = _gold_cache_path(code, interval)
-    df.to_parquet(path)
+    """Gold 데이터를 DB에 저장"""
+    if df is None or df.empty:
+        return
+    from src.utils.db_manager import DBManager
+    db = DBManager()
+    ticker = f"GOLD_{code}"
+    db.save_ohlcv(ticker, interval, df)
 
 
 def fetch_and_cache_gold(trader, code="M04020000", count=2000, progress_callback=None):
@@ -600,19 +636,15 @@ def fetch_and_cache_gold(trader, code="M04020000", count=2000, progress_callback
 
 
 def gold_cache_info(code="M04020000"):
-    """Gold 캐시 정보 반환"""
-    path = _gold_cache_path(code, "day")
-    if os.path.exists(path):
-        try:
-            df = pd.read_parquet(path)
-            return {
-                "exists": True,
-                "rows": len(df),
-                "start": df.index[0],
-                "end": df.index[-1],
-            }
-        except Exception:
-            return {"exists": False}
+    """Gold DB 정보 반환"""
+    df = load_cached_gold(code)
+    if df is not None and not df.empty:
+        return {
+            "exists": True,
+            "rows": len(df),
+            "start": df.index[0],
+            "end": df.index[-1],
+        }
     return {"exists": False}
 
 
@@ -678,14 +710,19 @@ def get_gold_current_price_local_first(trader=None, code="M04020000", allow_api_
     # 루트 번들 CSV 최종 fallback
     if p <= 0:
         try:
-            csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "krx_gold_daily.csv")
-            if os.path.exists(csv_path):
+            local_csv = os.path.join(os.path.dirname(os.path.abspath(__file__)), "krx_gold_daily.csv")
+            root_csv = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "krx_gold_daily.csv")
+            for csv_path in (local_csv, root_csv):
+                if not os.path.exists(csv_path):
+                    continue
                 _df = pd.read_csv(csv_path)
-                if not _df.empty:
-                    cols = {str(c).lower(): c for c in _df.columns}
-                    close_col = cols.get("close")
-                    if close_col:
-                        p = float(_df[close_col].iloc[-1])
+                if _df.empty:
+                    continue
+                cols = {str(c).lower(): c for c in _df.columns}
+                close_col = cols.get("close")
+                if close_col:
+                    p = float(_df[close_col].iloc[-1])
+                    break
         except Exception:
             p = 0.0
 
@@ -697,7 +734,7 @@ def get_gold_current_price_local_first(trader=None, code="M04020000", allow_api_
 # ═══════════════════════════════════════════════════════
 # 번들 CSV 데이터 (오프라인 fallback용)
 # ═══════════════════════════════════════════════════════
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data")
 
 
 WDR_TICKER_START_RATIO = {
@@ -728,7 +765,7 @@ def get_wdr_v10_stock_ratio(trade_etf_code: str, target_date):
     위대리 V1.0.csv 파일을 읽어 특정 날짜의 현금비중(Y열)을 가져오고 주식 비중을 계산한다.
     target_date: datetime 또는 pd.Timestamp 또는 YYYY-MM-DD 문자열
     """
-    csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "위대리 V1.0.csv")
+    csv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "위대리 V1.0.csv")
     if not os.path.exists(csv_path):
         # Fallback to ticker preset
         code = str(trade_etf_code or "").strip()
@@ -793,12 +830,76 @@ def get_wdr_v10_stock_ratio(trade_etf_code: str, target_date):
         return None
 
 
+def _next_friday(d) -> str:
+    """주어진 날짜(d)를 포함하여 가장 가까운 이후 금요일(주중 4, weekday=4)을 YYYY-MM-DD로 반환."""
+    d = pd.to_datetime(d).date()
+    days_ahead = (4 - d.weekday()) % 7  # 금요일=4
+    return str(d + pd.Timedelta(days=days_ahead))
+
+
 def get_wdr_trade_listing_date(trade_etf_code: str):
-    """ISA 위대리 매매 ETF 상장일(YYYY-MM-DD) 반환."""
+    """ISA 위대리 매매 ETF 첫 거래일(YYYY-MM-DD) 반환.
+    DB의 price_data에서 실제 첫 날짜를 조회하고, 없으면 하드코딩 폴백.
+    반환값은 상장일 이후 가장 가까운 금요일(첫 리밸런싱 가능일)임.
+    """
     code = str(trade_etf_code or "").strip()
     if not code:
         return None
-    return WDR_TICKER_LISTING_DATE.get(code)
+
+    # 1) DB에서 실제 첫 거래일 조회
+    first_date = None
+    try:
+        from src.utils.db_manager import DBManager
+        _db = DBManager()
+        _ts = _db.get_first_date(code, "1d")
+        if _ts is not None:
+            first_date = str(_ts.date())
+    except Exception:
+        pass
+
+    # 2) DB에 없으면 하드코딩 폴백
+    if not first_date:
+        _fallback = {
+            "409820": "2021-12-09",
+            "418660": "2021-12-09",
+            "423920": "2022-04-19",
+            "426030": "2022-05-10",
+            "465610": "2023-09-12",
+            "461910": "2023-07-18",
+        }
+        first_date = _fallback.get(code)
+
+    if not first_date:
+        return None
+
+    # 3) 상장일 이후 첫 금요일 반환
+    return _next_friday(first_date)
+
+
+def get_wdr_default_initial_stock_ratio(trade_etf_code: str) -> float | None:
+    """ETF 첫 거래일 기준 TQQQ 위대리 초기 주식 비중 반환 (0.0~1.0).
+    
+    우선순위:
+      1) WDR_TICKER_START_RATIO 하드코딩 (가장 정확, CSV 없어도 동작)
+      2) get_wdr_v10_stock_ratio() — 위대리 V1.0.csv에서 첫 거래일 기준 조회
+    """
+    code = str(trade_etf_code or "").strip()
+    if not code:
+        return None
+
+    # 1) 하드코딩 우선
+    item = WDR_TICKER_START_RATIO.get(code)
+    if item:
+        return float(item["stock_ratio"])
+
+    # 2) CSV 기반 동적 조회 (첫 거래일 기준)
+    first_friday = get_wdr_trade_listing_date(code)
+    if first_friday:
+        result = get_wdr_v10_stock_ratio(code, first_friday)
+        if result:
+            return float(result["stock_ratio"])
+
+    return None
 
 
 def load_bundled_csv(ticker):
@@ -842,20 +943,21 @@ def _kis_cache_path(ticker, is_overseas=False):
 
 
 def load_cached_kis(ticker, is_overseas=False):
-    path = _kis_cache_path(ticker, is_overseas)
-    if os.path.exists(path):
-        try:
-            return pd.read_parquet(path)
-        except Exception:
-            return None
+    from src.utils.db_manager import DBManager
+    db = DBManager()
+    prefix = "KIS_OS" if is_overseas else "KIS_DOM"
+    df = db.load_ohlcv(f"{prefix}_{ticker}", "day")
+    if df is not None and not df.empty:
+        return df
     return None
 
 
 def save_cache_kis(ticker, is_overseas=False, df=None):
     if df is None or df.empty: return
-    _ensure_cache_dir()
-    path = _kis_cache_path(ticker, is_overseas)
-    df.to_parquet(path)
+    from src.utils.db_manager import DBManager
+    db = DBManager()
+    prefix = "KIS_OS" if is_overseas else "KIS_DOM"
+    db.save_ohlcv(f"{prefix}_{ticker}", "day", df)
 
 
 def fetch_and_cache_kis_domestic(trader, ticker, count=1500, progress_callback=None):
@@ -941,7 +1043,17 @@ def get_kis_domestic_local_first(
                 pass
 
         if len(local_df) >= cnt:
-            return local_df.tail(cnt)
+            # [수정] 데이터 개수가 충분하더라도, 마지막 날짜가 오늘인지 체크하여 실시간성을 보장
+            _last_date = local_df.index[-1].date()
+            _today = datetime.now().date()
+            
+            # 마지막 데이터가 오늘 이전이라면 (장이 열려있는 시간이거나 어제자라면) 
+            # 1분봉/호가가 아닌 일봉이므로 세부 시간(ttl)보다는 '날짜' 기준으로 갱신 여부 판단
+            if _last_date < _today:
+                # 너무 잦은 API 호출 방지를 위해 세션당 1회 이상은 fetch 하도록 유도 (여기서는 우선 API 호출로 보강)
+                pass # 아래 allow_api_fallback 블록으로 넘어가게 함
+            else:
+                return local_df.tail(cnt)
 
     if allow_api_fallback and trader is not None:
         try:
@@ -1012,26 +1124,21 @@ def _yf_csv_path(ticker):
 
 
 def load_cached_yf(ticker):
-    """yfinance 로컬 CSV 로드. 없으면 None."""
-    path = _yf_csv_path(ticker)
-    if not os.path.exists(path):
-        return None
-    try:
-        df = pd.read_csv(path, parse_dates=["date"], index_col="date")
-        df.columns = [c.lower() for c in df.columns]
+    """yfinance DB 로드. 없으면 None."""
+    from src.utils.db_manager import DBManager
+    db = DBManager()
+    df = db.load_ohlcv(f"YF_{ticker}", "day")
+    if df is not None and not df.empty:
         return df
-    except Exception:
-        return None
+    return None
 
 
 def save_cache_yf(ticker, df):
-    """yfinance 데이터를 CSV로 저장."""
-    os.makedirs(DATA_DIR, exist_ok=True)
-    path = _yf_csv_path(ticker)
-    _df = df.copy()
-    _df.index.name = "date"
-    _df.columns = [c.lower() for c in _df.columns]
-    _df.to_csv(path)
+    """yfinance 데이터를 DB에 저장."""
+    if df is None or df.empty: return
+    from src.utils.db_manager import DBManager
+    db = DBManager()
+    db.save_ohlcv(f"YF_{ticker}", "day", df)
 
 
 def fetch_and_cache_yf(ticker, start="2010-01-01", force_refresh: bool = False):

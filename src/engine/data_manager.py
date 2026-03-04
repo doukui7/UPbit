@@ -1,7 +1,7 @@
 import threading
 import time
 import datetime
-import src.engine.data_cache
+import src.engine.data_cache as data_cache
 
 class MarketDataWorker:
     _instance = None

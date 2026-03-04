@@ -4,7 +4,7 @@ import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from src.strategy.sma import SMAStrategy
 from src.strategy.donchian import DonchianStrategy
-import src.engine.data_cache
+import src.engine.data_cache as data_cache
 
 # CPU 코어 수 기반 워커 수 (최소 2, 최대 물리코어 -1)
 _NUM_WORKERS = max(2, min((os.cpu_count() or 4) - 1, 12))

@@ -62,7 +62,7 @@ def _trigger_gh_workflow(job_name: str) -> tuple[bool, str]:
 
 
 def _sync_account_cache_from_github():
-    """GitHub에서 account_cache.json을 pull (git pull 또는 GitHub API)."""
+    """GitHub에서 account_cache.json을 pull (git fetch + checkout)."""
     import subprocess
     try:
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -71,12 +71,73 @@ def _sync_account_cache_from_github():
             cwd=project_root, capture_output=True, timeout=15,
         )
         subprocess.run(
-            ["git", "checkout", "origin/master", "--", "account_cache.json", "balance_cache.json"],
+            ["git", "checkout", "origin/master", "--",
+             "account_cache.json", "balance_cache.json", "signal_state.json"],
             cwd=project_root, capture_output=True, timeout=15,
         )
         return True
     except Exception:
         return False
+
+
+def _trigger_and_wait_gh(job_name: str, status_placeholder=None) -> tuple[bool, str]:
+    """workflow 트리거 → 완료 대기 → 캐시 pull. 한 번에 처리."""
+    import subprocess
+
+    # 1) 트리거
+    if status_placeholder:
+        status_placeholder.text("워크플로우 트리거 중...")
+    ok, msg = _trigger_gh_workflow(job_name)
+    if not ok:
+        return False, msg
+
+    # 2) run ID 찾기 (최대 10초 대기)
+    run_id = None
+    for _ in range(5):
+        time.sleep(2)
+        try:
+            r = subprocess.run(
+                ["gh", "run", "list", "--workflow=auto_trade.yml", "--limit", "1",
+                 "--json", "databaseId,status,conclusion"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode == 0:
+                runs = json.loads(r.stdout)
+                if runs:
+                    run_id = runs[0].get("databaseId")
+                    break
+        except Exception:
+            pass
+    if not run_id:
+        return False, "실행 ID를 찾을 수 없습니다."
+
+    # 3) 완료 대기 (최대 90초)
+    if status_placeholder:
+        status_placeholder.text(f"실행 중... (run #{run_id})")
+    for i in range(30):
+        time.sleep(3)
+        if status_placeholder:
+            status_placeholder.text(f"실행 중... ({(i+1)*3}초 경과)")
+        try:
+            r = subprocess.run(
+                ["gh", "run", "view", str(run_id), "--json", "status,conclusion"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode == 0:
+                info = json.loads(r.stdout)
+                if info.get("status") == "completed":
+                    success = info.get("conclusion") == "success"
+                    # 4) 캐시 pull
+                    if status_placeholder:
+                        status_placeholder.text("결과 가져오는 중...")
+                    _sync_account_cache_from_github()
+                    return success, f"{'성공' if success else '실패'} ({(i+1)*3}초)"
+        except Exception:
+            pass
+
+    # 타임아웃 - 그래도 pull 시도
+    _sync_account_cache_from_github()
+    return False, "타임아웃 (90초) - 캐시는 업데이트 시도했습니다."
 
 
 def _load_signal_state():
@@ -2026,36 +2087,27 @@ def render_coin_mode(config, save_config):
         st.header("수동 주문")
 
         # ── VM 경유 전략 기반 즉시 매매 ──
-        st.subheader("VM 경유 자동매매 (전략 기반)")
-        vm_t1, vm_t2, vm_t3 = st.columns([2, 2, 3])
-        if vm_t1.button("전략 기반 즉시 매매", key="btn_manual_trade", type="primary"):
-            ok, msg = _trigger_gh_workflow("manual_trade")
-            if ok:
-                st.toast("VM 경유 매매 요청 완료! 약 30초 소요됩니다.", icon="✅")
-            else:
-                st.toast(msg, icon="❌")
-        if vm_t2.button("계좌 동기화", key="btn_mt_sync"):
-            ok, msg = _trigger_gh_workflow("account_sync")
-            if ok:
-                st.toast("계좌 동기화 요청 완료!", icon="✅")
-            else:
-                st.toast(msg, icon="❌")
         _acct = _load_account_cache()
         if _acct.get("updated_at"):
-            vm_t3.caption(f"마지막 동기화: {_acct['updated_at']}")
-            # 잔고 요약 표시
             bals = _acct.get("balances", {})
-            if bals:
-                bal_parts = []
-                krw = bals.get("KRW", 0)
-                if krw > 0:
-                    bal_parts.append(f"KRW: {krw:,.0f}")
-                for k, v in bals.items():
-                    if k != "KRW" and float(v) > 0:
-                        bal_parts.append(f"{k}: {float(v):.8f}")
-                if bal_parts:
-                    vm_t3.caption(" | ".join(bal_parts))
-        st.caption("포트폴리오 전략(SMA/Donchian) 시그널에 따라 VM → 업비트 경로로 즉시 매매를 실행합니다.")
+            bal_parts = []
+            krw = bals.get("KRW", 0)
+            if krw > 0:
+                bal_parts.append(f"KRW: {krw:,.0f}")
+            for k, v in bals.items():
+                if k != "KRW" and float(v) > 0:
+                    bal_parts.append(f"{k}: {float(v):.8f}")
+            if bal_parts:
+                st.caption(f"잔고 ({_acct['updated_at']}): " + " | ".join(bal_parts))
+
+        if st.button("전략 기반 즉시 매매 (VM 경유)", key="btn_manual_trade", type="primary", use_container_width=True):
+            _status = st.empty()
+            ok, result_msg = _trigger_and_wait_gh("manual_trade", _status)
+            if ok:
+                _status.success(f"매매 완료 ({result_msg})")
+            else:
+                _status.error(f"매매 실패: {result_msg}")
+        st.caption("포트폴리오 전략(SMA/Donchian) 시그널에 따라 VM → 업비트 경로로 즉시 매매합니다.")
         st.divider()
 
         # ── 거래소 스타일 직접 주문 (로컬 API 필요) ──
@@ -2497,29 +2549,6 @@ def render_coin_mode(config, save_config):
         with hist_tab1:
             st.subheader("실제 거래 내역")
 
-            # ── VM 경유 동기화 섹션 ──
-            vm_c1, vm_c2, vm_c3 = st.columns([2, 2, 3])
-            if vm_c1.button("VM 경유 조회 동기화", key="btn_account_sync", type="primary"):
-                ok, msg = _trigger_gh_workflow("account_sync")
-                if ok:
-                    st.toast(f"VM 동기화 요청 완료! 약 30초 후 '캐시 새로고침' 버튼을 눌러주세요.", icon="✅")
-                else:
-                    st.toast(msg, icon="❌")
-            if vm_c2.button("캐시 새로고침", key="btn_sync_pull"):
-                with st.spinner("GitHub에서 최신 데이터 가져오는 중..."):
-                    _sync_account_cache_from_github()
-                st.toast("캐시 새로고침 완료!", icon="✅")
-                st.rerun()
-
-            # 캐시 상태 표시
-            _acct_cache = _load_account_cache()
-            if _acct_cache.get("updated_at"):
-                vm_c3.caption(f"마지막 동기화: {_acct_cache['updated_at']}")
-            else:
-                vm_c3.caption("캐시 없음 - VM 동기화를 실행해주세요")
-
-            st.divider()
-
             c_h1, c_h2 = st.columns(2)
             h_type = c_h1.selectbox("조회 유형", ["전체", "입금", "출금", "체결 주문"])
             h_curr = c_h2.selectbox("화폐", ["전체", "KRW", "BTC", "ETH", "XRP", "SOL", "USDT", "DOGE", "ADA", "AVAX", "LINK"])
@@ -2529,7 +2558,6 @@ def render_coin_mode(config, save_config):
             h_date_end = d_h2.date_input("조회 종료일", value=datetime.now().date(), key="hist_end")
 
             def _parse_deposit_withdraw(raw, type_label):
-                """입금/출금 데이터를 통합 포맷으로 변환"""
                 rows = []
                 for r in raw:
                     done = r.get('done_at', r.get('created_at', ''))
@@ -2553,7 +2581,6 @@ def render_coin_mode(config, save_config):
                 return rows
 
             def _parse_orders(raw):
-                """체결 주문 데이터를 통합 포맷으로 변환"""
                 rows = []
                 for r in raw:
                     market = r.get('market', '')
@@ -2589,8 +2616,7 @@ def render_coin_mode(config, save_config):
                     })
                 return rows
 
-            def _display_history_df(all_rows, h_date_start, h_date_end, h_type, h_curr):
-                """거래 내역 DataFrame 표시 (API/캐시 공통)"""
+            def _display_history_df(all_rows):
                 if all_rows:
                     result_df = pd.DataFrame(all_rows)
                     try:
@@ -2617,16 +2643,32 @@ def render_coin_mode(config, save_config):
                 else:
                     st.warning(f"조회 결과 없음. (유형: {h_type}, 화폐: {h_curr})")
 
-            # ── 조회 버튼 ──
-            q_c1, q_c2 = st.columns(2)
-            use_api = q_c1.button("API 직접 조회", key="hist_api_query") if trader else False
-            use_cache = q_c2.button("캐시 데이터 조회", key="hist_cache_query")
+            def _get_rows_from_cache(acct, h_type, h_curr):
+                """캐시 데이터에서 행 추출"""
+                api_curr = None if h_curr == "전체" else h_curr
+                rows = []
+                if h_type in ("전체", "입금"):
+                    rows.extend(_parse_deposit_withdraw(acct.get("deposits", []), "입금"))
+                if h_type in ("전체", "출금"):
+                    rows.extend(_parse_deposit_withdraw(acct.get("withdraws", []), "출금"))
+                if h_type in ("전체", "체결 주문"):
+                    rows.extend(_parse_orders(acct.get("orders", [])))
+                if api_curr and rows:
+                    rows = [r for r in rows if api_curr.upper() in r.get("화폐/코인", "").upper()]
+                return rows
 
-            if use_api and trader:
-                with st.spinner("Upbit API 조회 중..."):
+            # ── 조회 버튼 하나 ──
+            _acct_cache = _load_account_cache()
+            _cache_time = _acct_cache.get("updated_at", "")
+            if _cache_time:
+                st.caption(f"마지막 동기화: {_cache_time}")
+
+            if st.button("조회", key="hist_query", type="primary"):
+                # 1) 로컬 API 시도
+                all_rows = []
+                ip_blocked = False
+                if trader:
                     api_curr = None if h_curr == "전체" else h_curr
-                    all_rows = []
-                    error_msgs = []
                     query_types = []
                     if h_type == "전체":
                         query_types = [("deposit", "입금"), ("withdraw", "출금"), ("order", "체결")]
@@ -2637,57 +2679,47 @@ def render_coin_mode(config, save_config):
                     elif "체결" in h_type:
                         query_types = [("order", "체결")]
 
-                    for api_type, label in query_types:
-                        try:
-                            data, err = trader.get_history(api_type, api_curr)
-                            if err:
-                                error_msgs.append(f"{label}: {err}")
-                            if data:
-                                if api_type in ("deposit", "withdraw"):
-                                    all_rows.extend(_parse_deposit_withdraw(data, label))
-                                else:
-                                    all_rows.extend(_parse_orders(data))
-                        except Exception as e:
-                            error_msgs.append(f"{label}: {e}")
+                    with st.spinner("API 조회 중..."):
+                        for api_type, label in query_types:
+                            try:
+                                data, err = trader.get_history(api_type, api_curr)
+                                if err and ("authorization_ip" in err or "verified IP" in err):
+                                    ip_blocked = True
+                                    break
+                                if data:
+                                    if api_type in ("deposit", "withdraw"):
+                                        all_rows.extend(_parse_deposit_withdraw(data, label))
+                                    else:
+                                        all_rows.extend(_parse_orders(data))
+                            except Exception:
+                                ip_blocked = True
+                                break
 
-                    for em in error_msgs:
-                        if "authorization_ip" in em or "verified IP" in em:
-                            st.error(f"IP 차단: {em.split(':')[0]} - VM 경유 동기화를 사용하세요.")
-                        elif "out_of_scope" in em or "권한" in em:
-                            st.error(f"API 권한 부족 ({em.split(':')[0]})")
-                        else:
-                            st.error(f"API 오류: {em}")
-
-                    if error_msgs and not all_rows:
-                        st.info("로컬 IP가 차단된 경우 위의 **VM 경유 조회 동기화** 버튼을 사용하세요.")
-
-                    _display_history_df(all_rows, h_date_start, h_date_end, h_type, h_curr)
-
-            elif use_cache:
-                acct = _load_account_cache()
-                if not acct or not acct.get("updated_at"):
-                    st.warning("캐시 데이터가 없습니다. 먼저 **VM 경유 조회 동기화**를 실행해주세요.")
+                if all_rows and not ip_blocked:
+                    # 로컬 API 성공
+                    _display_history_df(all_rows)
                 else:
-                    st.info(f"캐시 데이터 (동기화 시각: {acct['updated_at']})")
-                    api_curr = None if h_curr == "전체" else h_curr
-                    all_rows = []
+                    # 2) IP 차단 또는 API 키 없음 → VM 경유 자동 동기화
+                    if ip_blocked:
+                        st.info("로컬 IP 차단 감지 → VM 경유 조회를 자동 실행합니다.")
 
-                    # 캐시에서 데이터 추출
-                    if h_type in ("전체", "입금"):
-                        all_rows.extend(_parse_deposit_withdraw(acct.get("deposits", []), "입금"))
-                    if h_type in ("전체", "출금"):
-                        all_rows.extend(_parse_deposit_withdraw(acct.get("withdraws", []), "출금"))
-                    if h_type in ("전체", "체결 주문"):
-                        all_rows.extend(_parse_orders(acct.get("orders", [])))
+                    # 캐시가 있으면 먼저 캐시 표시 후 백그라운드 동기화
+                    if _acct_cache.get("orders") or _acct_cache.get("deposits"):
+                        st.info(f"캐시 데이터 표시 중 (동기화: {_cache_time})")
+                        _display_history_df(_get_rows_from_cache(_acct_cache, h_type, h_curr))
 
-                    # 화폐 필터
-                    if api_curr and all_rows:
-                        all_rows = [r for r in all_rows if api_curr.upper() in r.get("화폐/코인", "").upper()]
+                    # VM 동기화 자동 실행
+                    _status = st.empty()
+                    ok, result_msg = _trigger_and_wait_gh("account_sync", _status)
+                    if ok:
+                        _status.success(f"VM 동기화 완료 ({result_msg})")
+                        # 새로운 캐시 데이터로 표시
+                        fresh = _load_account_cache()
+                        if fresh.get("updated_at"):
+                            _display_history_df(_get_rows_from_cache(fresh, h_type, h_curr))
+                    else:
+                        _status.warning(f"VM 동기화: {result_msg}")
 
-                    _display_history_df(all_rows, h_date_start, h_date_end, h_type, h_curr)
-
-            if not trader:
-                st.info("API 키 미설정 - **캐시 데이터 조회**만 사용 가능합니다.")
             st.caption("Upbit API 제한: 최근 100건까지 조회 가능")
 
         with hist_tab2:
