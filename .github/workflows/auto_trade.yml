@@ -1,4 +1,4 @@
-name: Auto Trade
+﻿name: Auto Trade
 
 on:
   schedule:
@@ -53,7 +53,7 @@ jobs:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
           PORTFOLIO: ${{ secrets.PORTFOLIO }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
           TRADING_MODE: upbit
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
@@ -243,7 +243,7 @@ jobs:
           KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
           HEALTHCHECK_UPBIT_RECOVERY: '1'
 
   vm_scheduler_ensure:
@@ -308,7 +308,7 @@ jobs:
           KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
           HEALTHCHECK_UPBIT_RECOVERY: '1'
 
   vm_scheduler_status:
@@ -363,7 +363,7 @@ jobs:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
           PORTFOLIO: ${{ secrets.PORTFOLIO }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
           # 키움 금현물
           KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
           KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
@@ -407,7 +407,7 @@ jobs:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
           PORTFOLIO: ${{ secrets.PORTFOLIO }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
           # Kiwoom Gold
           KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
           KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
@@ -424,3 +424,4 @@ jobs:
           TRADING_MODE: daily_status
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
+
