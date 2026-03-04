@@ -49,9 +49,14 @@ def _load_signal_state() -> dict:
     try:
         if os.path.exists(SIGNAL_STATE_FILE):
             with open(SIGNAL_STATE_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-    except Exception:
-        pass
+                data = json.load(f)
+            non_meta = {k: v for k, v in data.items() if not k.startswith('__')}
+            logger.info(f"signal_state 로드: {SIGNAL_STATE_FILE} ({len(non_meta)}개 전략키)")
+            return data
+        else:
+            logger.info(f"signal_state 파일 없음(최초): {SIGNAL_STATE_FILE}")
+    except Exception as e:
+        logger.warning(f"signal_state 로드 실패: {e} (경로={SIGNAL_STATE_FILE})")
     return {}
 
 
@@ -1359,10 +1364,24 @@ def run_auto_trade():
             continue
         sig = str(a.get("signal", "")).upper()
         prev = str(a.get("prev_state", "")).upper() or "-"
+        pos_state = str(a.get("position_state", "")).upper()
         strat_label = str(a.get("strategy_label", ""))
         ticker = str(a.get("ticker", ""))
 
         if sig == "HOLD":
+            # HOLD 신호여도 실제 포지션과 이전 상태가 다르면 동기화
+            # 예: prev=None이고 position_state=BUY이면 → BUY 보유 중임을 저장
+            # 예: prev=None이고 position_state=SELL이고 미보유면 → SELL 저장
+            if prev == "-" and pos_state in ("BUY", "SELL"):
+                # 최초 실행인데 HOLD 신호인 경우 현재 포지션으로 상태 초기화
+                if pos_state == "BUY" and bool(a.get("is_holding")):
+                    next_signal_state[key] = "BUY"
+                    logger.info(f"[{ticker}] 상태초기화(최초): BUY (현재 보유 중, HOLD 신호)")
+                elif pos_state == "SELL" and not bool(a.get("is_holding")):
+                    next_signal_state[key] = "SELL"
+                    logger.info(f"[{ticker}] 상태초기화(최초): SELL (미보유, HOLD 신호)")
+                else:
+                    logger.info(f"[{ticker}] 상태미기록(최초HOLD): pos={pos_state}, holding={a.get('is_holding')}")
             continue
 
         if sig == "SELL":
@@ -3388,9 +3407,26 @@ def run_account_sync():
     except Exception as e:
         logger.error(f"account_cache 저장 실패: {e}")
 
-    # 잔고 캐시도 함께 갱신
+    # 잔고 캐시도 함께 갱신 (현재가 포함)
     if cache["balances"]:
-        _save_balance_cache(cache["balances"])
+        # 포트폴리오의 코인 현재가 조회
+        try:
+            from src.trading.upbit_trader import UpbitTrader as _UT
+            _prices: dict = {}
+            for sym in list(cache["balances"].keys()):
+                if sym == "KRW":
+                    continue
+                _ticker = f"KRW-{sym}"
+                try:
+                    _p = float(trader.get_current_price(_ticker) or 0.0)
+                    if _p > 0:
+                        _prices[_ticker] = _p
+                except Exception:
+                    pass
+            _save_balance_cache(cache["balances"], _prices if _prices else None)
+        except Exception as _e:
+            logger.warning(f"account_sync 현재가 조회 실패, 가격 없이 저장: {_e}")
+            _save_balance_cache(cache["balances"])
 
     logger.info(f"account_sync 완료 - 잔고: {len(cache['balances'])}종, "
                 f"주문: {len(cache['orders'])}건, "

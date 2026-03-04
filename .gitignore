@@ -43,6 +43,12 @@ portfolio.json.bak
 user_config.json
 !.env.example
 
+# VM Runtime Cache (생성은 GitHub API로, git reset --hard에 의해 덮어쓰이면 안 됨)
+balance_cache.json
+account_cache.json
+signal_state.json
+.vm_runtime_env
+
 # Large Data (Git LFS recommended for these)
 data/ohlcv/
 data/raw/
