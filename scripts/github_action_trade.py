@@ -55,10 +55,17 @@ def _load_signal_state() -> dict:
 
 
 def _save_signal_state(state: dict):
-    """전략별 포지션 상태 저장."""
+    """전략별 포지션 상태 저장 + GitHub 동기화."""
     try:
+        content = json.dumps(state, indent=2, ensure_ascii=False)
         with open(SIGNAL_STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(state, f, indent=2, ensure_ascii=False)
+            f.write(content)
+        logger.info(f"signal_state 저장 완료: {SIGNAL_STATE_FILE}")
+        _push_file_to_github(
+            repo_path="signal_state.json",
+            content=content,
+            commit_message="auto: 시그널 상태 업데이트",
+        )
     except Exception as e:
         logger.error(f"signal_state 저장 실패: {e}")
 
@@ -79,33 +86,59 @@ def _save_balance_cache(balances: dict, prices: dict = None):
         with open(BALANCE_CACHE_FILE, 'w', encoding='utf-8') as f:
             f.write(content)
         logger.info(f"잔고 캐시 저장 완료: {BALANCE_CACHE_FILE}")
-        # GitHub API로 push
-        _push_to_github(content)
+        _push_file_to_github(
+            repo_path="balance_cache.json",
+            content=content,
+            commit_message="auto: 잔고 캐시 업데이트",
+        )
     except Exception as e:
         logger.error(f"잔고 캐시 저장 실패: {e}")
 
 
-def _push_to_github(content: str):
-    """GitHub REST API로 balance_cache.json 업데이트."""
+def _push_file_to_github(repo_path: str, content: str, commit_message: str):
+    """GitHub REST API로 저장소 파일 생성/업데이트."""
     import base64
     import requests as _req
+
     gh_token = os.environ.get('GH_TOKEN', '')
     if not gh_token:
         logger.info("GH_TOKEN 없음 - GitHub push 생략")
-        return
-    url = "https://api.github.com/repos/doukui7/UPbit/contents/balance_cache.json"
+        return False
+
+    repo_name = (
+        os.environ.get("GH_REPO")
+        or os.environ.get("GITHUB_REPOSITORY")
+        or "doukui7/UPbit"
+    )
+    url = f"https://api.github.com/repos/{repo_name}/contents/{repo_path}"
     headers = {"Authorization": f"token {gh_token}", "Accept": "application/vnd.github.v3+json"}
+
     # 기존 파일 SHA 조회
     sha = None
+    remote_content = None
     try:
         resp = _req.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
-            sha = resp.json().get("sha")
+            payload = resp.json() if isinstance(resp.json(), dict) else {}
+            sha = payload.get("sha")
+            if str(payload.get("encoding", "")).lower() == "base64":
+                raw = str(payload.get("content", "")).replace("\n", "")
+                if raw:
+                    try:
+                        remote_content = base64.b64decode(raw).decode("utf-8")
+                    except Exception:
+                        remote_content = None
     except Exception:
         pass
+
+    # 변경이 없으면 커밋/푸시 생략
+    if remote_content is not None and remote_content.strip() == str(content).strip():
+        logger.info(f"{repo_path} GitHub push 생략 (내용 동일)")
+        return True
+
     # 파일 생성/업데이트
     payload = {
-        "message": "auto: 잔고 캐시 업데이트",
+        "message": commit_message,
         "content": base64.b64encode(content.encode()).decode(),
         "committer": {"name": "auto-trade-bot", "email": "bot@auto-trade"}
     }
@@ -114,11 +147,16 @@ def _push_to_github(content: str):
     try:
         resp = _req.put(url, json=payload, headers=headers, timeout=15)
         if resp.status_code in (200, 201):
-            logger.info("잔고 캐시 GitHub push 완료")
+            logger.info(f"{repo_path} GitHub push 완료")
+            return True
         else:
-            logger.warning(f"잔고 캐시 GitHub push 실패: {resp.status_code}")
+            logger.warning(
+                f"{repo_path} GitHub push 실패: {resp.status_code} {resp.text[:200]}"
+            )
+            return False
     except Exception as e:
-        logger.warning(f"잔고 캐시 GitHub push 에러: {e}")
+        logger.warning(f"{repo_path} GitHub push 에러: {e}")
+        return False
 
 
 def _make_signal_key(item: dict) -> str:
@@ -147,6 +185,36 @@ def _determine_signal(position_state: str, prev_state: str | None) -> str:
     if position_state == prev_state:
         return 'HOLD'
     return position_state
+
+
+def _is_filled_exec_result(result: dict, side: str) -> bool:
+    """체결 결과(dict)가 실제 체결을 포함하는지 판별."""
+    if not isinstance(result, dict):
+        return False
+    side_l = str(side or "").strip().lower()
+    typ = str(result.get("type", "")).strip().lower()
+    if side_l == "buy" and "buy" not in typ:
+        return False
+    if side_l == "sell" and "sell" not in typ:
+        return False
+    filled_vol = _safe_float(result.get("filled_volume", 0.0), default=0.0)
+    filled_krw = _safe_float(result.get("total_krw", 0.0), default=0.0)
+    return (filled_vol > 0) or (filled_krw > 0)
+
+
+def _has_strategy_filled_exec(
+    exec_results: dict,
+    ticker: str,
+    strategy_label: str,
+    side: str,
+) -> bool:
+    """특정 전략/방향의 체결 성공 여부."""
+    for ex in exec_results.get(ticker, []) or []:
+        if strategy_label and str(ex.get("_strategy_label", "")) != str(strategy_label):
+            continue
+        if _is_filled_exec_result(ex, side=side):
+            return True
+    return False
 
 
 def _sanitize_isa_trade_etf(code: str, default: str = "418660") -> str:
@@ -1266,11 +1334,41 @@ def run_auto_trade():
             )
             logger.info(f"[{a['ticker']}] 조건: {a.get('condition_summary', '')}")
 
-    # ── 4단계: 포지션 상태 저장 ──
+    # ── 4단계: 포지션 상태 저장 (실제 체결/무보유 기준) ──
+    next_signal_state = dict(signal_state)
     for a in analyses:
-        if a['position_state'] != 'HOLD':  # HOLD(중립구간)은 이전 상태 유지
-            signal_state[a['signal_key']] = a['position_state']
-    _save_signal_state(signal_state)
+        key = a.get("signal_key")
+        if not key:
+            continue
+        sig = str(a.get("signal", "")).upper()
+        prev = str(a.get("prev_state", "")).upper() or "-"
+        strat_label = str(a.get("strategy_label", ""))
+        ticker = str(a.get("ticker", ""))
+
+        if sig == "HOLD":
+            continue
+
+        if sig == "SELL":
+            if not bool(a.get("is_holding")):
+                next_signal_state[key] = "SELL"
+                logger.info(f"[{ticker}] 상태저장: SELL (이미 미보유)")
+                continue
+            if _has_strategy_filled_exec(exec_results, ticker, strat_label, side="sell"):
+                next_signal_state[key] = "SELL"
+                logger.info(f"[{ticker}] 상태저장: SELL (매도 체결 확인)")
+                continue
+            logger.info(f"[{ticker}] 상태유지: {prev} (SELL 미체결)")
+            continue
+
+        if sig == "BUY":
+            if _has_strategy_filled_exec(exec_results, ticker, strat_label, side="buy"):
+                next_signal_state[key] = "BUY"
+                logger.info(f"[{ticker}] 상태저장: BUY (매수 체결 확인)")
+                continue
+            logger.info(f"[{ticker}] 상태유지: {prev} (BUY 미체결)")
+            continue
+
+    _save_signal_state(next_signal_state)
 
     test_order_notes = _run_upbit_cycle_test_orders(
         trader,
@@ -2496,8 +2594,12 @@ def _check_upbit() -> dict:
         'signal': False, 'signal_msg': '',
         'order_test': False, 'order_msg': '',
         'schedule_ok': False, 'schedule_msg': '',
+        'sync': False, 'sync_msg': '',
+        'recovery_run': False, 'recovery_msg': '',
         'steps': [],
     }
+    sync_balances = None
+    sync_prices = None
 
     try:
         schedule_ok, schedule_msg = _check_upbit_schedule_status()
@@ -2543,6 +2645,7 @@ def _check_upbit() -> dict:
             return result
 
         krw = _safe_float(all_bal.get('KRW', 0))
+        sync_balances = all_bal
         result['auth'] = True
         result['auth_msg'] = 'PASS'
         _currencies = sorted([str(k) for k in all_bal.keys()])
@@ -2590,8 +2693,7 @@ def _check_upbit() -> dict:
             result['price'] = True
             result['price_msg'] = ", ".join(f"{t}={p:,.0f}" for t, p in prices.items())
             _append_step(result, "4. 시세 조회", "PASS", f"요청 {len(tickers)}개 / 성공 {len(prices)}개")
-            # 잔고+시세 캐시 저장 (로컬 UI 표시용)
-            _save_balance_cache(all_bal, prices)
+            sync_prices = prices
         else:
             result['price_msg'] = 'FAIL - 시세 조회 실패'
             _append_step(result, "4. 시세 조회", "FAIL", result['price_msg'])
@@ -2753,6 +2855,26 @@ def _check_upbit() -> dict:
         result['order_msg'] = result.get('order_msg') or f'ERROR: {e}'
         _append_step(result, "예외", "FAIL", str(e))
         logger.exception(f"업비트 헬스체크 오류: {e}")
+    finally:
+        # 헬스체크 실행 시마다 캐시/상태 동기화
+        try:
+            _state = _load_signal_state()
+            if not isinstance(_state, dict):
+                _state = {}
+            _save_signal_state(_state)
+            if isinstance(sync_balances, dict) and sync_balances:
+                _save_balance_cache(sync_balances, sync_prices if isinstance(sync_prices, dict) else None)
+                if isinstance(sync_prices, dict) and sync_prices:
+                    result['sync_msg'] = 'balance_cache + signal_state 동기화 완료'
+                else:
+                    result['sync_msg'] = 'balance_cache(잔고) + signal_state 동기화 완료'
+            else:
+                result['sync_msg'] = 'signal_state 동기화 완료'
+            result['sync'] = True
+            _append_step(result, "7. 상태 동기화", "PASS", result['sync_msg'])
+        except Exception as e:
+            result['sync_msg'] = f"FAIL - 동기화 오류: {e}"
+            _append_step(result, "7. 상태 동기화", "FAIL", result['sync_msg'])
 
     return result
 
@@ -2777,6 +2899,8 @@ def _print_health_report(results: dict):
             logger.info(f"  {c}: {r.get(c, False)} - {r.get(msg_key_map[c], '')}")
         if key == "upbit":
             logger.info(f"  schedule: {r.get('schedule_ok', False)} - {r.get('schedule_msg', '')}")
+            logger.info(f"  sync: {r.get('sync', False)} - {r.get('sync_msg', '')}")
+            logger.info(f"  recovery: {r.get('recovery_run', False)} - {r.get('recovery_msg', '')}")
         for s in (r.get('steps') or []):
             logger.info(f"  {s}")
 
@@ -2795,6 +2919,13 @@ def _print_health_report(results: dict):
         schedule_ok = _is_ok_or_skip(r.get("schedule_ok", False), schedule_msg) if schedule_msg else True
         if not schedule_ok:
             all_pass = False
+        if key == "upbit":
+            sync_msg = str(r.get("sync_msg", "")).strip()
+            if sync_msg and not _is_ok_or_skip(r.get("sync", False), sync_msg):
+                all_pass = False
+            recovery_msg = str(r.get("recovery_msg", "")).strip()
+            if recovery_msg.upper().startswith("FAIL"):
+                all_pass = False
         if all_pass:
             pass_count += 1
 
@@ -2812,6 +2943,12 @@ def _print_health_report(results: dict):
             lines.append(f"  시그널: {sig_msg}")
         if key == "upbit" and schedule_msg:
             lines.append(f"  누락여부: {schedule_msg}")
+            _sync_msg = str(r.get("sync_msg", "")).strip()
+            if _sync_msg:
+                lines.append(f"  동기화: {_sync_msg}")
+            _recovery_msg = str(r.get("recovery_msg", "")).strip()
+            if _recovery_msg:
+                lines.append(f"  복구주문: {_recovery_msg}")
 
         # 실패 항목만 표시
         check_labels = {'auth': '인증', 'balance': '잔고', 'price': '시세',
@@ -2823,6 +2960,13 @@ def _print_health_report(results: dict):
                 lines.append(f"  FAIL {check_labels[c]}: {msg}")
         if key == "upbit" and schedule_msg and not schedule_ok:
             lines.append(f"  FAIL 누락: {schedule_msg}")
+        if key == "upbit":
+            _sync_msg = str(r.get("sync_msg", "")).strip()
+            if _sync_msg and not _is_ok_or_skip(r.get("sync", False), _sync_msg):
+                lines.append(f"  FAIL 동기화: {_sync_msg}")
+            _recovery_msg = str(r.get("recovery_msg", "")).strip()
+            if _recovery_msg.upper().startswith("FAIL"):
+                lines.append(f"  FAIL 복구주문: {_recovery_msg}")
 
         lines.append("")
 
@@ -2842,7 +2986,35 @@ def run_health_check():
 
     # 업비트 (24시간)
     if os.getenv("UPBIT_ACCESS_KEY"):
-        results['upbit'] = _check_upbit()
+        upbit_result = _check_upbit()
+        results['upbit'] = upbit_result
+
+        # 정시 주문 누락/확인불가 시 헬스체크 경로에서 복구 실행
+        _recovery_env = str(os.getenv("HEALTHCHECK_UPBIT_RECOVERY", "1")).strip().lower()
+        recovery_enabled = _recovery_env not in {"0", "false", "no", "off"}
+        schedule_msg = str(upbit_result.get("schedule_msg", "")).strip()
+        schedule_ok = _is_ok_or_skip(upbit_result.get("schedule_ok", False), schedule_msg)
+        schedule_unknown = schedule_msg.upper().startswith("SKIP")
+        need_recovery = (not schedule_ok) or schedule_unknown
+
+        if recovery_enabled and need_recovery:
+            try:
+                logger.warning(f"[업비트] 누락/미확인 감지로 복구 주문 실행: {schedule_msg}")
+                run_auto_trade()
+                upbit_result["recovery_run"] = True
+                upbit_result["recovery_msg"] = (
+                    f"복구 실행 완료 ({'미확인' if schedule_unknown else '누락 감지'}: {schedule_msg})"
+                )
+            except Exception as e:
+                upbit_result["recovery_run"] = False
+                upbit_result["recovery_msg"] = f"FAIL - 복구 주문 실행 오류: {e}"
+                logger.exception(f"[업비트] 헬스체크 복구 주문 오류: {e}")
+        else:
+            upbit_result["recovery_run"] = False
+            if not recovery_enabled:
+                upbit_result["recovery_msg"] = "복구 기능 비활성(HEALTHCHECK_UPBIT_RECOVERY=0)"
+            else:
+                upbit_result["recovery_msg"] = f"복구 실행 생략 (정상: {schedule_msg})"
         logger.info("--- 업비트 점검 완료 ---")
 
     # 키움 금현물

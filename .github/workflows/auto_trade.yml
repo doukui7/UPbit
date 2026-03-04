@@ -192,7 +192,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 5m
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN,HEALTHCHECK_UPBIT_RECOVERY
           script: |
             cd ~/upbit
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
@@ -215,6 +215,8 @@ jobs:
               printf "KIS_PENSION_ACCOUNT_NO=%q\n" "${KIS_PENSION_ACCOUNT_NO}"
               printf "TELEGRAM_BOT_TOKEN=%q\n" "${TELEGRAM_BOT_TOKEN}"
               printf "TELEGRAM_CHAT_ID=%q\n" "${TELEGRAM_CHAT_ID}"
+              printf "GH_TOKEN=%q\n" "${GH_TOKEN}"
+              printf "HEALTHCHECK_UPBIT_RECOVERY=%q\n" "${HEALTHCHECK_UPBIT_RECOVERY}"
             } > .vm_runtime_env
             chmod 600 .vm_runtime_env
             bash scripts/vm_scheduler_manager.sh start
@@ -241,6 +243,8 @@ jobs:
           KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          HEALTHCHECK_UPBIT_RECOVERY: '1'
 
   vm_scheduler_ensure:
     if: (github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_scheduler_ensure') || github.event_name == 'schedule'
@@ -253,7 +257,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 5m
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN,HEALTHCHECK_UPBIT_RECOVERY
           script: |
             cd ~/upbit
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
@@ -276,6 +280,8 @@ jobs:
               printf "KIS_PENSION_ACCOUNT_NO=%q\n" "${KIS_PENSION_ACCOUNT_NO}"
               printf "TELEGRAM_BOT_TOKEN=%q\n" "${TELEGRAM_BOT_TOKEN}"
               printf "TELEGRAM_CHAT_ID=%q\n" "${TELEGRAM_CHAT_ID}"
+              printf "GH_TOKEN=%q\n" "${GH_TOKEN}"
+              printf "HEALTHCHECK_UPBIT_RECOVERY=%q\n" "${HEALTHCHECK_UPBIT_RECOVERY}"
             } > .vm_runtime_env
             chmod 600 .vm_runtime_env
             bash scripts/vm_scheduler_manager.sh ensure
@@ -302,6 +308,8 @@ jobs:
           KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          HEALTHCHECK_UPBIT_RECOVERY: '1'
 
   vm_scheduler_status:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_scheduler_status'
@@ -345,7 +353,7 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 15m
           capture_stdout: true
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN,HEALTHCHECK_UPBIT_RECOVERY
           script: |
             cd ~/upbit
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
@@ -375,6 +383,7 @@ jobs:
           TRADING_MODE: health_check
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
+          HEALTHCHECK_UPBIT_RECOVERY: '1'
 
   # ── 일일 자산 현황 리포트 (VM SSH 경유) ──────────
   daily_status:
