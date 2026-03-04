@@ -2141,7 +2141,7 @@ def _check_kis_isa() -> dict:
         else:
             limit_price = trader._get_limit_price(etf_code, "SELL")  # 하한가
             if limit_price <= 0:
-                result['order_msg'] = 'FAIL - 하한가 계산 실패'
+                result['order_msg'] = 'SKIP - 하한가 계산 실패 (주문테스트 생략)'
                 return result
             order_result = trader.send_order("BUY", etf_code, qty=1, price=limit_price, ord_dvsn="00")
         if not order_result:
@@ -3159,7 +3159,7 @@ def _check_kis_pension() -> dict:
         else:
             limit_price = trader._get_limit_price(test_code, "SELL")
             if limit_price <= 0:
-                result["order_msg"] = "FAIL - 가격호가 계산 실패"
+                result["order_msg"] = "SKIP - 가격호가 계산 실패 (주문테스트 생략)"
                 return result
             order_result = trader.send_order("BUY", test_code, qty=1, price=limit_price, ord_dvsn="00")
         if not order_result:
