@@ -70,7 +70,7 @@ RULES: list[ScheduleRule] = [
     ScheduleRule(
         mode="kis_pension",
         label="KIS 연금저축",
-        is_due=lambda dt: dt.minute == 10
+        is_due=lambda dt: dt.minute == 20
         and dt.hour == 15
         and _is_weekday(dt)
         and 25 <= dt.day <= 31,
@@ -142,13 +142,14 @@ def _run_mode(mode: str, label: str) -> None:
     cmd = ["bash", "scripts/vm_run_job.sh", mode]
     logging.info("실행 시작: %s (%s)", label, mode)
     started = time.time()
+    timeout_sec = 60 * 80 if mode == "kis_pension" else 60 * 40
     try:
         res = subprocess.run(
             cmd,
             cwd=str(REPO_DIR),
             text=True,
             capture_output=True,
-            timeout=60 * 40,
+            timeout=timeout_sec,
         )
         elapsed = time.time() - started
         if res.returncode == 0:
@@ -183,7 +184,7 @@ def main() -> int:
     logging.info("VM 파이썬 스케줄러 시작 (repo=%s)", REPO_DIR)
     logging.info(
         "스케줄: upbit[01/05/09/13/17/21:00], health[+5m], daily[평일09:00], "
-        "gold[평일15:05], isa[금15:10], pension[25~31평일15:10]"
+        "gold[평일15:05], isa[금15:10], pension[25~31평일15:20]"
     )
 
     try:

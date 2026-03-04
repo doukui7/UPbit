@@ -656,6 +656,224 @@ class KISTrader:
     # ?????????????????????????????????????????????????????
     # 二쇰Ц
     # ?????????????????????????????????????????????????????
+    def get_daily_ccld_history(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        side: str = "00",
+        ccld: str = "00",
+        stock_code: str = "",
+        order_no: str = "",
+        max_rows: int = 200,
+    ) -> dict:
+        """주식 일별 주문/체결 조회(3개월 이내)."""
+        if not self._ensure_token():
+            return {"success": False, "msg": "auth failed", "rows": [], "summary": {}}
+        cano, prdt = self._account_params()
+
+        tr_id = "VTTC0081R" if self.is_mock else "TTTC0081R"
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+
+        _today = datetime.now().strftime("%Y%m%d")
+        _start = str(start_date or _today).replace("-", "")
+        _end = str(end_date or _today).replace("-", "")
+        if len(_start) != 8 or not _start.isdigit():
+            _start = _today
+        if len(_end) != 8 or not _end.isdigit():
+            _end = _today
+        if _start > _end:
+            _start, _end = _end, _start
+
+        _side = str(side or "00")
+        if _side not in ("00", "01", "02"):
+            _side = "00"
+        _ccld = str(ccld or "00")
+        if _ccld not in ("00", "01", "02"):
+            _ccld = "00"
+
+        params = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": prdt,
+            "INQR_STRT_DT": _start,
+            "INQR_END_DT": _end,
+            "SLL_BUY_DVSN_CD": _side,
+            "INQR_DVSN": "00",
+            "PDNO": str(stock_code or "").strip(),
+            "CCLD_DVSN": _ccld,
+            "ORD_GNO_BRNO": "",
+            "ODNO": str(order_no or "").strip(),
+            "INQR_DVSN_3": "00",
+            "INQR_DVSN_1": "",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+            "EXCG_ID_DVSN_CD": "KRX",
+        }
+
+        try:
+            res = self._session.get(url, params=params, headers=self._headers(tr_id), timeout=10)
+            data = res.json()
+            if str(data.get("rt_cd", "")) != "0":
+                msg = f"{data.get('msg_cd', '')} {data.get('msg1', '')}".strip()
+                logger.warning(f"주식일별주문체결조회 실패: {msg}")
+                return {"success": False, "msg": msg or "조회 실패", "rows": [], "summary": {}}
+
+            rows = data.get("output1", [])
+            if not isinstance(rows, list):
+                rows = []
+
+            output2 = data.get("output2", {})
+            if isinstance(output2, list):
+                summary = output2[0] if output2 else {}
+            elif isinstance(output2, dict):
+                summary = output2
+            else:
+                summary = {}
+
+            if int(max_rows or 0) > 0 and len(rows) > int(max_rows):
+                rows = rows[: int(max_rows)]
+
+            return {
+                "success": True,
+                "msg": "ok",
+                "rows": rows,
+                "summary": summary,
+                "source": "inquire-daily-ccld",
+            }
+        except Exception as e:
+            logger.warning(f"주식일별주문체결조회 예외: {e}")
+            return {"success": False, "msg": str(e), "rows": [], "summary": {}}
+
+    def get_pension_daily_ccld(
+        self,
+        side: str = "00",
+        ccld_nccs: str = "%%",
+        max_rows: int = 200,
+    ) -> dict:
+        """연금(퇴직연금) 주문/체결 조회."""
+        if not self._ensure_token():
+            return {"success": False, "msg": "auth failed", "rows": [], "summary": {}}
+        cano, prdt = self._account_params()
+
+        tr_id = "VTTC2201R" if self.is_mock else "TTTC2201R"
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/pension/inquire-daily-ccld"
+
+        _side = str(side or "00")
+        if _side not in ("00", "01", "02"):
+            _side = "00"
+        _ccld = str(ccld_nccs or "%%")
+        if _ccld not in ("%%", "01", "02"):
+            _ccld = "%%"
+
+        params = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": prdt,
+            "USER_DVSN_CD": "%%",
+            "SLL_BUY_DVSN_CD": _side,
+            "CCLD_NCCS_DVSN": _ccld,
+            "INQR_DVSN_3": "00",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+
+        try:
+            res = self._session.get(url, params=params, headers=self._headers(tr_id), timeout=10)
+            data = res.json()
+            if str(data.get("rt_cd", "")) != "0":
+                msg = f"{data.get('msg_cd', '')} {data.get('msg1', '')}".strip()
+                logger.warning(f"연금 주문/체결 조회 실패: {msg}")
+                return {"success": False, "msg": msg or "조회 실패", "rows": [], "summary": {}}
+
+            rows = data.get("output", [])
+            if isinstance(rows, dict):
+                rows = [rows]
+            if not isinstance(rows, list):
+                rows = []
+
+            if int(max_rows or 0) > 0 and len(rows) > int(max_rows):
+                rows = rows[: int(max_rows)]
+
+            return {
+                "success": True,
+                "msg": "ok",
+                "rows": rows,
+                "summary": {},
+                "source": "pension/inquire-daily-ccld",
+            }
+        except Exception as e:
+            logger.warning(f"연금 주문/체결 조회 예외: {e}")
+            return {"success": False, "msg": str(e), "rows": [], "summary": {}}
+
+    def get_pension_trade_history(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        side: str = "00",
+        ccld: str = "00",
+        stock_code: str = "",
+        order_no: str = "",
+        max_rows: int = 200,
+    ) -> dict:
+        """연금 계좌 거래내역 조회(일반 조회 우선, 실패 시 연금 전용 조회)."""
+        primary = self.get_daily_ccld_history(
+            start_date=start_date,
+            end_date=end_date,
+            side=side,
+            ccld=ccld,
+            stock_code=stock_code,
+            order_no=order_no,
+            max_rows=max_rows,
+        )
+        if primary.get("success"):
+            return primary
+
+        _ccld_map = {"00": "%%", "01": "01", "02": "02"}
+        secondary = self.get_pension_daily_ccld(
+            side=side,
+            ccld_nccs=_ccld_map.get(str(ccld or "00"), "%%"),
+            max_rows=max_rows,
+        )
+        if secondary.get("success") and primary.get("msg"):
+            secondary["fallback_msg"] = primary.get("msg", "")
+        return secondary
+
+    def get_pension_deposit_info(self, acca_dvsn_cd: str = "00") -> dict:
+        """연금(퇴직연금) 예수금/정산 정보 조회."""
+        if not self._ensure_token():
+            return {"success": False, "msg": "auth failed", "data": {}}
+        cano, prdt = self._account_params()
+
+        tr_id = "VTTC0506R" if self.is_mock else "TTTC0506R"
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/pension/inquire-deposit"
+        params = {
+            "CANO": cano,
+            "ACNT_PRDT_CD": prdt,
+            "ACCA_DVSN_CD": str(acca_dvsn_cd or "00"),
+        }
+
+        try:
+            res = self._session.get(url, params=params, headers=self._headers(tr_id), timeout=10)
+            data = res.json()
+            if str(data.get("rt_cd", "")) != "0":
+                msg = f"{data.get('msg_cd', '')} {data.get('msg1', '')}".strip()
+                logger.warning(f"연금 예수금 조회 실패: {msg}")
+                return {"success": False, "msg": msg or "조회 실패", "data": {}}
+
+            output = data.get("output", {})
+            if isinstance(output, list):
+                output = output[0] if output else {}
+            if not isinstance(output, dict):
+                output = {}
+
+            return {
+                "success": True,
+                "msg": "ok",
+                "data": output,
+                "source": "pension/inquire-deposit",
+            }
+        except Exception as e:
+            logger.warning(f"연금 예수금 조회 예외: {e}")
+            return {"success": False, "msg": str(e), "data": {}}
+
     def send_order(self, order_type: str, stock_code: str, qty: int,
                    price: int = 0, ord_dvsn: str = "01") -> dict | None:
         """
@@ -871,6 +1089,34 @@ class KISTrader:
         else:
             return ((raw + tick - 1) // tick) * tick
 
+    def _wait_until_after_hours_open(self, max_wait_sec: int = 60 * 50) -> bool:
+        """
+        동시호가 미체결분 시간외단일가 재주문 전에 16:00 개시까지 대기.
+        너무 이른 호출(오전 등)로 장시간 블로킹되는 것을 막기 위해 최대 대기시간 제한.
+        """
+        now = datetime.now()
+        target = now.replace(hour=16, minute=0, second=0, microsecond=0)
+        if now >= target:
+            return True
+
+        wait_sec = int((target - now).total_seconds())
+        if wait_sec <= 0:
+            return True
+        if wait_sec > max_wait_sec:
+            logger.warning(
+                "[시간외단일가] 대기시간 초과로 재주문 대기 생략: need=%ss max=%ss",
+                wait_sec,
+                max_wait_sec,
+            )
+            return False
+
+        logger.info(f"[시간외단일가] 16:00 개시까지 {wait_sec}초 대기 후 재주문")
+        while wait_sec > 0:
+            step = 30 if wait_sec > 30 else wait_sec
+            time.sleep(step)
+            wait_sec -= step
+        return True
+
     def execute_closing_auction_buy(self, stock_code: str, qty: int) -> dict:
         """
         ?λ쭏媛??숈떆?멸? 留ㅼ닔 + 誘몄껜寃????쒓컙???ъ＜臾?
@@ -919,6 +1165,13 @@ class KISTrader:
             logger.error(f"[?숈떆?멸? 留ㅼ닔] 痍⑥냼 ?ㅽ뙣: {cancel_result}")
             return {"success": False, "phase1_result": phase1, "phase2_result": None,
                     "filled_qty": filled, "remaining_qty": remaining, "method": "cancel_failed"}
+
+        if not self._wait_until_after_hours_open():
+            logger.warning(
+                f"[시간외 매수] 개시 전 대기 불가로 재주문 보류: {stock_code} {remaining}주"
+            )
+            return {"success": False, "phase1_result": phase1, "phase2_result": None,
+                    "filled_qty": filled, "remaining_qty": remaining, "method": "after_hours_wait_skipped"}
 
         # ?쒓컙??醫낃? ?ъ＜臾?(ord_dvsn="06", price=0)
         logger.info(f"[?쒓컙??留ㅼ닔] {stock_code} {remaining}二?(ord_dvsn=06)")
@@ -976,6 +1229,13 @@ class KISTrader:
             logger.error(f"[동시호가 매도] 취소 실패: {cancel_result}")
             return {"success": False, "phase1_result": phase1, "phase2_result": None,
                     "filled_qty": filled, "remaining_qty": remaining, "method": "cancel_failed"}
+
+        if not self._wait_until_after_hours_open():
+            logger.warning(
+                f"[시간외 매도] 개시 전 대기 불가로 재주문 보류: {stock_code} {remaining}주"
+            )
+            return {"success": False, "phase1_result": phase1, "phase2_result": None,
+                    "filled_qty": filled, "remaining_qty": remaining, "method": "after_hours_wait_skipped"}
 
         logger.info(f"[시간외 매도] {stock_code} {remaining}주 (ord_dvsn=06)")
         phase2 = self.send_order("SELL", stock_code, remaining, price=0, ord_dvsn="06")
