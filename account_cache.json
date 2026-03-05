@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-03-06 03:18:09 KST",
+  "updated_at": "2026-03-06 05:50:57 KST",
   "balances": {
     "BTC": 0.00073971,
     "KRW": 22504.42095688
@@ -2278,29 +2278,6 @@
       "application_name": "self_issued_open_api",
       "thirdparty": false,
       "is_cancel_and_newable": false
-    },
-    {
-      "uuid": "a88d7812-e981-47df-a2ed-567f9c930151",
-      "side": "ask",
-      "ord_type": "limit",
-      "price": "778.9",
-      "avg_price": "778.51055",
-      "state": "cancel",
-      "market": "KRW-ZETA",
-      "created_at": "2025-01-16T17:46:57+09:00",
-      "volume": "646.93584518",
-      "remaining_volume": "621.25860806",
-      "prevented_volume": "0",
-      "reserved_fee": "0",
-      "remaining_fee": "0",
-      "paid_fee": "9.999999996384",
-      "locked": "621.25860806",
-      "prevented_locked": "0",
-      "executed_volume": "25.67723712",
-      "trades_count": 1,
-      "application_name": "android",
-      "thirdparty": false,
-      "is_cancel_and_newable": true
     }
   ],
   "deposits": [
