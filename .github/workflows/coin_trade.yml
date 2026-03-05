@@ -93,8 +93,8 @@ jobs:
           envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN
           script: |
             cd ~/upbit
-            echo "=== git pull ==="
-            ssh-keyscan -t ed25519 github.com 2>/dev/null >> ~/.ssh/known_hosts
+            echo "=== git sync ==="
+            git remote set-url origin https://github.com/doukui7/UPbit.git 2>/dev/null || true
             git fetch origin 2>&1 || echo "WARN: git fetch failed"
             git reset --hard origin/master 2>&1 || echo "WARN: git reset failed"
             git log --oneline -1
