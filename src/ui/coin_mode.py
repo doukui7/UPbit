@@ -934,7 +934,6 @@ def render_coin_mode(config, save_config):
     # 실시간 가격 & 자산 — 대시보드 최상단 (10초 자동 갱신)
     # ═══════════════════════════════════════════════════════════════
     # fragment 내부에서 참조할 변수를 closure로 캡처
-    _frag_trader = trader
     _frag_portfolio = portfolio_list
     _frag_initial_cap = initial_cap
 
@@ -946,19 +945,27 @@ def render_coin_mode(config, save_config):
         _from_cache = False
         _cache_time = ""
 
-        # 1) 잔고: API 직접 → 실패 시 캐시
-        _live_bal = None
-        if _frag_trader:
-            try:
-                raw = _frag_trader.get_all_balances()
-                if raw and isinstance(raw, dict) and len(raw) > 0:
-                    _live_bal = raw
-            except Exception:
-                pass
+        # 잔고 동기화 버튼 (fragment 내부)
+        _sync_col1, _sync_col2 = st.columns([1, 5])
+        with _sync_col1:
+            if st.button("잔고 동기화", key="top_bal_sync", help="VM 경유로 최신 잔고를 가져옵니다"):
+                with st.spinner("GitHub에서 잔고 가져오는 중..."):
+                    _sync_account_cache_from_github()
+                st.rerun(scope="fragment")
 
-        if _live_bal and isinstance(_live_bal, dict) and len(_live_bal) > 0:
-            _krw = float(_live_bal.get('KRW', 0) or 0)
-            for _c, _v in _live_bal.items():
+        # 1) 잔고: GitHub에서 pull한 캐시 사용 (로컬 API는 IP 차단으로 불가)
+        # 60초마다 자동으로 git에서 최신 캐시 pull
+        _bal_pull_key = "__t_bal_git_pull"
+        _now_ts = time.time()
+        if (_now_ts - st.session_state.get(_bal_pull_key, 0)) > 60:
+            _sync_account_cache_from_github()
+            st.session_state[_bal_pull_key] = _now_ts
+
+        _cached = _load_balance_cache()
+        if _cached and _cached.get("balances"):
+            _bal = _cached["balances"]
+            _krw = float(_bal.get('KRW', 0) or 0)
+            for _c, _v in _bal.items():
                 _c = str(_c).upper()
                 if _c != 'KRW':
                     try:
@@ -967,22 +974,8 @@ def render_coin_mode(config, save_config):
                             _balances[_c] = _fv
                     except (ValueError, TypeError):
                         pass
-        else:
-            _cached = _load_balance_cache()
-            if _cached and _cached.get("balances"):
-                _bal = _cached["balances"]
-                _krw = float(_bal.get('KRW', 0) or 0)
-                for _c, _v in _bal.items():
-                    _c = str(_c).upper()
-                    if _c != 'KRW':
-                        try:
-                            _fv = float(_v or 0)
-                            if _fv > 0:
-                                _balances[_c] = _fv
-                        except (ValueError, TypeError):
-                            pass
-                _from_cache = True
-                _cache_time = _cached.get("updated_at", "")
+            _from_cache = True
+            _cache_time = _cached.get("updated_at", "")
 
         # 2) 가격: Public API (IP 차단 무관, 항상 최신)
         _coins = set(_balances.keys())
