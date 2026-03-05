@@ -986,6 +986,13 @@ def render_coin_mode(config, save_config):
         # BTC 가격
         _btc_price = _top_prices.get("KRW-BTC", 0) or 0
 
+        # 가격 조회 시각
+        _price_fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # TTL 캐시 타임스탬프가 있으면 그 시각 사용
+        _price_ts = st.session_state.get("__t_prices_t1")
+        if _price_ts:
+            _price_fetch_time = datetime.fromtimestamp(_price_ts).strftime("%Y-%m-%d %H:%M:%S")
+
         # 상단 요약 패널
         _tc1, _tc2, _tc3, _tc4, _tc5 = st.columns(5)
         _tc1.metric("BTC", f"{_btc_price:,.0f}원")
@@ -999,8 +1006,10 @@ def render_coin_mode(config, save_config):
         _pnl_delta = f"{_top_pnl:+,.0f}원 ({_top_pnl_pct:+.2f}%)"
         _tc4.metric("손익 (P&L)", _pnl_delta)
         _tc5.metric("현금 (KRW)", f"{_top_krw:,.0f}원")
+        _cache_note = f"기준 시각: {_price_fetch_time}"
         if _top_from_cache and _top_cache_time:
-            st.caption(f"잔고: VM 캐시 기준 ({_top_cache_time})")
+            _cache_note += f" | 잔고: VM 캐시 ({_top_cache_time})"
+        st.caption(_cache_note)
 
     # --- Tabs ---
     tab1, tab5, tab3, tab4, tab6 = st.tabs(["🚀 실시간 포트폴리오", "🛒 수동 주문", "📜 거래 내역", "📊 백테스트", "⏰ 트리거"])
