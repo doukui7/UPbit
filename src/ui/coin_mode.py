@@ -940,21 +940,8 @@ def render_coin_mode(config, save_config):
     _top_from_cache = False
     _top_cache_time = ""
 
-    if trader and portfolio_list:
-        _top_unique_coins = list(dict.fromkeys(item['coin'].upper() for item in portfolio_list))
-        _top_unique_tickers = list(dict.fromkeys(f"{item['market']}-{item['coin'].upper()}" for item in portfolio_list))
-
-        # BTC 가격은 항상 표시
-        if "KRW-BTC" not in _top_unique_tickers:
-            _top_unique_tickers.append("KRW-BTC")
-
-        def _fetch_top_prices():
-            _force = bool(st.session_state.pop("coin_force_price_refresh_once", False))
-            return data_cache.get_current_prices_local_first(
-                _top_unique_tickers, ttl_sec=0.0 if _force else 5.0, allow_api_fallback=True,
-            )
-        _top_prices = _ttl_cache("prices_t1", _fetch_top_prices, ttl=5) or {}
-
+    if trader:
+        # 1) 잔고 조회: 업비트 계좌 전체 (포트폴리오 무관)
         def _fetch_top_balances():
             if hasattr(trader, 'get_all_balances'):
                 raw = trader.get_all_balances()
@@ -965,19 +952,34 @@ def render_coin_mode(config, save_config):
 
         if _top_live_bal and isinstance(_top_live_bal, dict) and len(_top_live_bal) > 0:
             _top_krw = float(_top_live_bal.get('KRW', 0) or 0)
-            _top_balances = {c: float(_top_live_bal.get(c, 0) or 0) for c in _top_unique_coins}
+            _top_balances = {c: float(v) for c, v in _top_live_bal.items() if c != 'KRW' and float(v or 0) > 0}
         else:
             _cached = _load_balance_cache()
             if _cached and _cached.get("balances"):
                 _bal = _cached["balances"]
                 _top_krw = float(_bal.get('KRW', 0) or 0)
-                _top_balances = {c: float(_bal.get(c, 0) or 0) for c in _top_unique_coins}
+                _top_balances = {c: float(v) for c, v in _bal.items() if c != 'KRW' and float(v or 0) > 0}
                 _top_from_cache = True
                 _top_cache_time = _cached.get("updated_at", "")
 
+        # 2) 가격 조회: 잔고에 있는 모든 코인 + 포트폴리오 코인 + BTC
+        _all_held_coins = set(_top_balances.keys())
+        if portfolio_list:
+            _all_held_coins.update(item['coin'].upper() for item in portfolio_list)
+        _all_held_coins.add("BTC")
+        _top_unique_tickers = [f"KRW-{c}" for c in sorted(_all_held_coins)]
+
+        def _fetch_top_prices():
+            _force = bool(st.session_state.pop("coin_force_price_refresh_once", False))
+            return data_cache.get_current_prices_local_first(
+                _top_unique_tickers, ttl_sec=0.0 if _force else 5.0, allow_api_fallback=True,
+            )
+        _top_prices = _ttl_cache("prices_t1", _fetch_top_prices, ttl=5) or {}
+
+        # 3) 총자산 계산: 실제 보유 코인 전체
         _top_coin_val = sum(
-            _top_balances.get(c, 0) * (_top_prices.get(f"KRW-{c}", 0) or 0)
-            for c in _top_unique_coins
+            bal * (_top_prices.get(f"KRW-{c}", 0) or 0)
+            for c, bal in _top_balances.items()
         )
         _top_total_asset = _top_krw + _top_coin_val
         _top_pnl = _top_total_asset - initial_cap
@@ -988,24 +990,46 @@ def render_coin_mode(config, save_config):
 
         # 가격 조회 시각
         _price_fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # TTL 캐시 타임스탬프가 있으면 그 시각 사용
         _price_ts = st.session_state.get("__t_prices_t1")
         if _price_ts:
             _price_fetch_time = datetime.fromtimestamp(_price_ts).strftime("%Y-%m-%d %H:%M:%S")
 
+        # 보유 코인 목록 (금액 순 정렬)
+        _held_coins_sorted = sorted(
+            [(c, bal, bal * (_top_prices.get(f"KRW-{c}", 0) or 0))
+             for c, bal in _top_balances.items()],
+            key=lambda x: -x[2],
+        )
+
         # 상단 요약 패널
-        _tc1, _tc2, _tc3, _tc4, _tc5 = st.columns(5)
-        _tc1.metric("BTC", f"{_btc_price:,.0f}원")
-        for _pi in portfolio_list:
-            _ptk = f"{_pi['market']}-{_pi['coin'].upper()}"
-            _pp = _top_prices.get(_ptk, 0) or 0
-            if _ptk != "KRW-BTC":
-                _tc2.metric(_pi['coin'].upper(), f"{_pp:,.0f}원")
+        _n_cols = min(2 + len(_held_coins_sorted), 6)
+        _top_cols = st.columns(_n_cols)
+        _col_idx = 0
+        # BTC 가격 (항상 표시)
+        _top_cols[_col_idx].metric("BTC", f"{_btc_price:,.0f}원")
+        _col_idx += 1
+        # 보유 코인 가격 (BTC 제외, 최대 3개)
+        _shown = 0
+        for _hc, _hbal, _hval in _held_coins_sorted:
+            if _hc == "BTC" or _shown >= 3:
+                continue
+            if _col_idx >= _n_cols:
                 break
-        _tc3.metric("총 자산", f"{_top_total_asset:,.0f}원")
+            _hp = _top_prices.get(f"KRW-{_hc}", 0) or 0
+            _top_cols[_col_idx].metric(
+                _hc,
+                f"{_hp:,.0f}원",
+                f"{_hbal:.4f}" if _hbal < 10 else f"{_hbal:,.2f}",
+            )
+            _col_idx += 1
+            _shown += 1
+
+        # 자산 요약 (나머지 칸)
+        _asset_cols = st.columns(3)
+        _asset_cols[0].metric("총 자산", f"{_top_total_asset:,.0f}원")
         _pnl_delta = f"{_top_pnl:+,.0f}원 ({_top_pnl_pct:+.2f}%)"
-        _tc4.metric("손익 (P&L)", _pnl_delta)
-        _tc5.metric("현금 (KRW)", f"{_top_krw:,.0f}원")
+        _asset_cols[1].metric("손익 (P&L)", _pnl_delta)
+        _asset_cols[2].metric("현금 (KRW)", f"{_top_krw:,.0f}원")
         _cache_note = f"기준 시각: {_price_fetch_time}"
         if _top_from_cache and _top_cache_time:
             _cache_note += f" | 잔고: VM 캐시 ({_top_cache_time})"
@@ -1111,9 +1135,10 @@ def render_coin_mode(config, save_config):
                 # Add reserved cash to Theo Value (as it stays as cash)
                 total_theo_val = reserved_cash
 
-                # --- 전체 자산 현황 테이블 (캐시된 데이터 사용) ---
+                # --- 전체 자산 현황 테이블 (실제 계좌 전체 반영) ---
                 asset_summary_rows = [{"자산": "KRW (현금)", "보유량": f"{krw_bal:,.0f}", "현재가": "-", "평가금액(KRW)": f"{krw_bal:,.0f}", "상태": "-"}]
                 seen_coins_summary = set()
+                # 포트폴리오 코인
                 for s_item in portfolio_list:
                     s_coin = s_item['coin'].upper()
                     if s_coin in seen_coins_summary:
@@ -1131,10 +1156,48 @@ def render_coin_mode(config, save_config):
                         "평가금액(KRW)": f"{s_val:,.0f}",
                         "상태": "보유중" if is_holding else "미보유",
                     })
+                # 포트폴리오에 없지만 계좌에 보유 중인 코인 추가
+                if _live_bal and isinstance(_live_bal, dict):
+                    for _extra_c, _extra_v in _live_bal.items():
+                        _extra_c = str(_extra_c).upper()
+                        if _extra_c == 'KRW' or _extra_c in seen_coins_summary:
+                            continue
+                        _extra_bal = float(_extra_v or 0)
+                        if _extra_bal <= 0:
+                            continue
+                        _extra_ticker = f"KRW-{_extra_c}"
+                        _extra_price = all_prices.get(_extra_ticker, 0) or 0
+                        # 가격이 없으면 API로 한 번 시도
+                        if _extra_price == 0:
+                            try:
+                                _extra_prices = data_cache.get_current_prices_local_first(
+                                    [_extra_ticker], ttl_sec=5.0, allow_api_fallback=True,
+                                )
+                                _extra_price = (_extra_prices or {}).get(_extra_ticker, 0) or 0
+                            except Exception:
+                                pass
+                        _extra_val = _extra_bal * _extra_price
+                        if _extra_val < 100:
+                            continue
+                        seen_coins_summary.add(_extra_c)
+                        asset_summary_rows.append({
+                            "자산": f"{_extra_c} *",
+                            "보유량": (f"{_extra_bal:.8f}" if _extra_bal < 1 else f"{_extra_bal:,.4f}"),
+                            "현재가": f"{_extra_price:,.0f}" if _extra_price > 0 else "-",
+                            "평가금액(KRW)": f"{_extra_val:,.0f}",
+                            "상태": "미등록 보유",
+                        })
                 total_real_summary = krw_bal + sum(
-                    all_balances.get(c, 0) * (all_prices.get(f"KRW-{c}", 0) or 0)
+                    float(all_balances.get(c, 0) or 0) * (all_prices.get(f"KRW-{c}", 0) or 0)
                     for c in seen_coins_summary
                 )
+                # 미등록 코인도 합산 (all_balances에 없을 수 있으므로 _live_bal 기준 재계산)
+                if _live_bal and isinstance(_live_bal, dict):
+                    for _sc in seen_coins_summary:
+                        if _sc not in all_balances:
+                            _sb = float(_live_bal.get(_sc, 0) or 0)
+                            _sp = all_prices.get(f"KRW-{_sc}", 0) or 0
+                            total_real_summary += _sb * _sp
                 asset_summary_rows.append({
                     "자산": "합계",
                     "보유량": "",
@@ -1144,6 +1207,7 @@ def render_coin_mode(config, save_config):
                 })
                 with st.expander(f"💰 전체 자산 현황 (Total: {total_real_summary:,.0f} KRW)", expanded=True):
                     st.dataframe(pd.DataFrame(asset_summary_rows), use_container_width=True, hide_index=True)
+                    st.caption("* 표시 = 포트폴리오 미등록 코인 (계좌에 보유 중)")
 
                     # ── 포트폴리오 리밸런싱 (자산현황 내 통합) ──
                     st.divider()
