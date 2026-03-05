@@ -55,39 +55,21 @@ class UpbitTrader:
             return None
 
     def get_history(self, kind="deposit", currency=None):
-        """입출금/체결 내역 조회. Upbit API 직접 호출로 안정성 확보.
+        """입출금/체결 내역 조회. pyupbit 인증 방식 그대로 사용.
         currency=None이면 전체 화폐 조회.
         Returns: (data_list, error_string_or_None)
         """
-        import jwt
-        import uuid as _uuid
-        import hashlib
-        from urllib.parse import urlencode, unquote
         import requests
 
         server_url = "https://api.upbit.com"
-
-        def _auth_header(query_params=None):
-            payload = {
-                'access_key': self.upbit.access if hasattr(self.upbit, 'access') else '',
-                'nonce': str(_uuid.uuid4()),
-            }
-            if query_params:
-                # Upbit API는 unquote된 쿼리 문자열로 해시 검증 (pyupbit 동일 방식)
-                query_string = unquote(urlencode(query_params, doseq=True))
-                m = hashlib.sha512()
-                m.update(query_string.encode())
-                payload['query_hash'] = m.hexdigest()
-                payload['query_hash_alg'] = 'SHA512'
-            token = jwt.encode(payload, self.upbit.secret if hasattr(self.upbit, 'secret') else '')
-            return {"Authorization": f"Bearer {token}"}
 
         try:
             if kind == 'deposit':
                 params = {"limit": 100, "order_by": "desc"}
                 if currency:
                     params["currency"] = currency
-                res = requests.get(f"{server_url}/v1/deposits", params=params, headers=_auth_header(params))
+                headers = self.upbit._request_headers(params)
+                res = requests.get(f"{server_url}/v1/deposits", headers=headers, data=params)
                 if res.status_code == 200:
                     return res.json(), None
                 err = f"Deposit API {res.status_code}: {res.text}"
@@ -98,7 +80,8 @@ class UpbitTrader:
                 params = {"limit": 100, "order_by": "desc"}
                 if currency:
                     params["currency"] = currency
-                res = requests.get(f"{server_url}/v1/withdraws", params=params, headers=_auth_header(params))
+                headers = self.upbit._request_headers(params)
+                res = requests.get(f"{server_url}/v1/withdraws", headers=headers, data=params)
                 if res.status_code == 200:
                     return res.json(), None
                 err = f"Withdraw API {res.status_code}: {res.text}"
@@ -106,25 +89,15 @@ class UpbitTrader:
                 return [], err
 
             elif kind == 'order':
-                # 1) /v1/orders/closed — closed 전용 엔드포인트 (states 파라미터 불필요)
-                params_closed = {"limit": 100, "order_by": "desc"}
+                # pyupbit 방식: /v1/orders + state 파라미터 + data= 전송
+                params = {"state": "done", "limit": 100, "order_by": "desc"}
                 if currency and currency != "KRW":
-                    params_closed["market"] = f"KRW-{currency}"
-                res = requests.get(f"{server_url}/v1/orders/closed",
-                                   params=params_closed,
-                                   headers=_auth_header(params_closed))
+                    params["market"] = f"KRW-{currency}"
+                headers = self.upbit._request_headers(params)
+                res = requests.get(f"{server_url}/v1/orders", headers=headers, data=params)
                 if res.status_code == 200:
                     return res.json(), None
-                # 2) fallback: /v1/orders — states[] 배열 필요
-                params_legacy = {"states[]": ["done", "cancel"], "limit": 100, "order_by": "desc"}
-                if currency and currency != "KRW":
-                    params_legacy["market"] = f"KRW-{currency}"
-                res2 = requests.get(f"{server_url}/v1/orders",
-                                    params=params_legacy,
-                                    headers=_auth_header(params_legacy))
-                if res2.status_code == 200:
-                    return res2.json(), None
-                err = f"Order API {res.status_code}: {res.text} / fallback {res2.status_code}: {res2.text}"
+                err = f"Order API {res.status_code}: {res.text}"
                 logger.error(err)
                 return [], err
 
