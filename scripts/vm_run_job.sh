@@ -59,7 +59,7 @@ fi
 
 echo "[$(date '+%F %T')] start mode=${MODE}" >> "${LOG_FILE}"
 # python script loads .env via python-dotenv internally.
-if TRADING_MODE="${MODE}" python scripts/github_action_trade.py >> "${LOG_FILE}" 2>&1; then
+if TRADING_MODE="${MODE}" python scripts/github_action_trade.py 2>&1 | tee -a "${LOG_FILE}"; then
   echo "[$(date '+%F %T')] done mode=${MODE}" >> "${LOG_FILE}"
 
   # 상태 파일 업데이트 — 스케줄러 외부 실행(수동/GitHub Actions)도 헬스체크에서 인식
