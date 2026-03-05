@@ -91,7 +91,11 @@ jobs:
           envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN
           script: |
             cd ~/upbit
-            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            echo "=== git pull ==="
+            git fetch origin 2>&1 || echo "WARN: git fetch failed"
+            git reset --hard origin/master 2>&1 || echo "WARN: git reset failed"
+            git log --oneline -1
+            echo "=== run ==="
             bash scripts/vm_run_job.sh account_sync
             echo "=== account_sync log tail ==="
             tail -30 ~/upbit/logs/account_sync.log 2>/dev/null || echo "(no log)"
