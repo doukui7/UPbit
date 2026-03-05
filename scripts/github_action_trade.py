@@ -65,11 +65,6 @@ def _append_trade_log(entry: dict):
     try:
         with open(TRADE_LOG_FILE, "w", encoding="utf-8") as f:
             f.write(content)
-        _push_file_to_github(
-            repo_path="trade_log.json",
-            content=content,
-            commit_message="auto: 주문 로그 업데이트",
-        )
     except Exception as e:
         logger.warning(f"trade_log 저장 실패: {e}")
 
@@ -97,11 +92,6 @@ def _save_signal_state(state: dict):
         with open(SIGNAL_STATE_FILE, 'w', encoding='utf-8') as f:
             f.write(content)
         logger.info(f"signal_state 저장 완료: {SIGNAL_STATE_FILE}")
-        _push_file_to_github(
-            repo_path="signal_state.json",
-            content=content,
-            commit_message="auto: 시그널 상태 업데이트",
-        )
     except Exception as e:
         logger.error(f"signal_state 저장 실패: {e}")
 
@@ -122,77 +112,9 @@ def _save_balance_cache(balances: dict, prices: dict = None):
         with open(BALANCE_CACHE_FILE, 'w', encoding='utf-8') as f:
             f.write(content)
         logger.info(f"잔고 캐시 저장 완료: {BALANCE_CACHE_FILE}")
-        _push_file_to_github(
-            repo_path="balance_cache.json",
-            content=content,
-            commit_message="auto: 잔고 캐시 업데이트",
-        )
     except Exception as e:
         logger.error(f"잔고 캐시 저장 실패: {e}")
 
-
-def _push_file_to_github(repo_path: str, content: str, commit_message: str):
-    """GitHub REST API로 저장소 파일 생성/업데이트."""
-    import base64
-    import requests as _req
-
-    gh_token = os.environ.get('GH_TOKEN', '').strip()
-    if not gh_token:
-        logger.info("GH_TOKEN 없음 - GitHub push 생략")
-        return False
-
-    repo_name = (
-        os.environ.get("GH_REPO")
-        or os.environ.get("GITHUB_REPOSITORY")
-        or "doukui7/UPbit"
-    )
-    url = f"https://api.github.com/repos/{repo_name}/contents/{repo_path}"
-    headers = {"Authorization": f"token {gh_token}", "Accept": "application/vnd.github.v3+json"}
-
-    # 기존 파일 SHA 조회
-    sha = None
-    remote_content = None
-    try:
-        resp = _req.get(url, headers=headers, timeout=10)
-        if resp.status_code == 200:
-            payload = resp.json() if isinstance(resp.json(), dict) else {}
-            sha = payload.get("sha")
-            if str(payload.get("encoding", "")).lower() == "base64":
-                raw = str(payload.get("content", "")).replace("\n", "")
-                if raw:
-                    try:
-                        remote_content = base64.b64decode(raw).decode("utf-8")
-                    except Exception:
-                        remote_content = None
-    except Exception:
-        pass
-
-    # 변경이 없으면 커밋/푸시 생략
-    if remote_content is not None and remote_content.strip() == str(content).strip():
-        logger.info(f"{repo_path} GitHub push 생략 (내용 동일)")
-        return True
-
-    # 파일 생성/업데이트
-    payload = {
-        "message": commit_message,
-        "content": base64.b64encode(content.encode()).decode(),
-        "committer": {"name": "auto-trade-bot", "email": "bot@auto-trade"}
-    }
-    if sha:
-        payload["sha"] = sha
-    try:
-        resp = _req.put(url, json=payload, headers=headers, timeout=15)
-        if resp.status_code in (200, 201):
-            logger.info(f"{repo_path} GitHub push 완료")
-            return True
-        else:
-            logger.warning(
-                f"{repo_path} GitHub push 실패: {resp.status_code} {resp.text[:200]}"
-            )
-            return False
-    except Exception as e:
-        logger.warning(f"{repo_path} GitHub push 에러: {e}")
-        return False
 
 
 def _make_signal_key(item: dict) -> str:
@@ -3513,17 +3435,12 @@ def run_account_sync():
     except Exception as e:
         logger.error(f"account_sync 출금 조회 실패: {e}")
 
-    # 로컬 저장 + GitHub push
+    # 로컬 저장 (push는 Runner에서 SCP 후 수행)
     try:
         content = json.dumps(cache, indent=2, ensure_ascii=False, default=str)
         with open(ACCOUNT_CACHE_FILE, 'w', encoding='utf-8') as f:
             f.write(content)
         logger.info(f"account_cache 로컬 저장 완료: {ACCOUNT_CACHE_FILE}")
-        _push_file_to_github(
-            repo_path="account_cache.json",
-            content=content,
-            commit_message="auto: 계좌 데이터 동기화",
-        )
     except Exception as e:
         logger.error(f"account_cache 저장 실패: {e}")
 

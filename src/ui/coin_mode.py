@@ -862,8 +862,6 @@ def render_coin_mode(config, save_config):
         trader = get_trader(current_ak, current_sk)
 
     # --- Background Worker Setup ---
-    from src.engine.data_manager import CoinTradingWorker
-
     _worker_cache_version = "worker-cache-v2-2026-03-02"
 
     @st.cache_resource
@@ -875,44 +873,7 @@ def render_coin_mode(config, save_config):
             pass
         return MarketDataWorker()
 
-    @st.cache_resource
-    def get_coin_trading_worker(_cache_ver: str = _worker_cache_version):
-        # Reset singleton when cache version changes so patched code is applied.
-        try:
-            CoinTradingWorker._instance = None
-        except Exception:
-            pass
-        w = CoinTradingWorker()
-        w.start()
-        return w
-
     worker = get_worker()
-    _ = get_coin_trading_worker()
-
-    # 업비트 KRW 마켓 호가 단위 (Tick Size)
-    def get_tick_size(price):
-        """가격에 따른 업비트 호가 단위 반환"""
-        if price >= 2_000_000: return 1000
-        elif price >= 1_000_000: return 1000
-        elif price >= 500_000: return 500
-        elif price >= 100_000: return 100
-        elif price >= 50_000: return 50
-        elif price >= 10_000: return 10
-        elif price >= 5_000: return 5
-        elif price >= 1_000: return 1
-        elif price >= 100: return 1
-        elif price >= 10: return 0.1
-        elif price >= 1: return 0.01
-        else: return 0.001
-
-    def align_price(price, tick_size):
-        """가격을 호가 단위에 맞게 정렬"""
-        if tick_size >= 1:
-            return int(price // tick_size * tick_size)
-        else:
-            import math
-            decimals = max(0, -int(math.floor(math.log10(tick_size))))
-            return round(price // tick_size * tick_size, decimals)
 
     # ── TTL 캐시: API 호출 최소화 ──
     def _ttl_cache(key, fn, ttl=5):
@@ -1198,256 +1159,6 @@ def render_coin_mode(config, save_config):
                     st.dataframe(pd.DataFrame(asset_summary_rows), use_container_width=True, hide_index=True)
                     st.caption("* 표시 = 포트폴리오 미등록 코인 (계좌에 보유 중)")
 
-                    # ── 포트폴리오 리밸런싱 (자산현황 내 통합) ──
-                    st.divider()
-                    st.markdown("**⚖️ 포트폴리오 리밸런싱**")
-                    krw_balance = krw_bal
-                    signal_state_rebal = _load_signal_state()
-
-                    asset_states = []
-                    for rb_idx, rb_item in enumerate(portfolio_list):
-                        rb_ticker = f"{rb_item['market']}-{rb_item['coin'].upper()}"
-                        rb_coin = rb_item['coin'].upper()
-                        rb_weight = rb_item.get('weight', 0)
-                        rb_interval_raw = rb_item.get('interval', 'day')
-                        rb_interval = _normalize_coin_interval(rb_interval_raw)
-                        rb_strategy = rb_item.get('strategy', 'SMA Strategy')
-                        try:
-                            rb_param = int(float(rb_item.get('parameter', 20) or 20))
-                        except Exception:
-                            rb_param = 20
-                        try:
-                            rb_sell_param = int(float(rb_item.get('sell_parameter', 0) or 0))
-                        except Exception:
-                            rb_sell_param = 0
-
-                        rb_coin_bal = all_balances.get(rb_coin, 0)
-                        rb_price = all_prices.get(rb_ticker, 0) or 0
-                        rb_coin_val = rb_coin_bal * rb_price
-
-                        rb_position_state = "HOLD"
-                        try:
-                            rb_df = worker.get_data(rb_ticker, rb_interval)
-                            if rb_df is not None and len(rb_df) >= rb_param:
-                                if str(rb_strategy).lower().startswith("donchian"):
-                                    rb_eng = DonchianStrategy()
-                                    rb_sp = rb_sell_param or max(5, rb_param // 2)
-                                    rb_df = rb_eng.create_features(rb_df, buy_period=rb_param, sell_period=rb_sp)
-                                    rb_position_state = str(
-                                        rb_eng.get_signal(rb_df.iloc[-2], buy_period=rb_param, sell_period=rb_sp)
-                                    ).upper()
-                                else:
-                                    rb_eng = SMAStrategy()
-                                    rb_df = rb_eng.create_features(rb_df, periods=[rb_param])
-                                    rb_position_state = str(
-                                        rb_eng.get_signal(rb_df.iloc[-2], strategy_type='SMA_CROSS', ma_period=rb_param)
-                                    ).upper()
-                        except Exception:
-                            pass
-
-                        rb_key = _make_signal_key({
-                            "market": rb_item.get("market", "KRW"),
-                            "coin": rb_item.get("coin", ""),
-                            "strategy": rb_strategy,
-                            "parameter": rb_param,
-                            "interval": rb_interval,
-                        })
-                        rb_prev_raw = signal_state_rebal.get(rb_key)
-                        rb_prev_state = str(rb_prev_raw).upper() if rb_prev_raw is not None else None
-                        if rb_prev_state not in {"BUY", "SELL", "HOLD"}:
-                            rb_prev_state = None
-                        rb_signal = _determine_signal(rb_position_state, rb_prev_state)
-                        rb_effective_state = _resolve_effective_state(
-                            rb_position_state,
-                            rb_prev_state,
-                            rb_signal,
-                        )
-                        if rb_effective_state == "BUY":
-                            rb_status = "HOLD"
-                        elif rb_effective_state == "SELL":
-                            rb_status = "CASH"
-                        else:
-                            rb_status = "UNKNOWN"
-
-                        rb_target_krw = total_real_summary * (rb_weight / 100.0)
-
-                        asset_states.append({
-                            "ticker": rb_ticker, "coin": rb_coin, "weight": rb_weight,
-                            "interval": rb_interval, "strategy": rb_strategy,
-                            "param": rb_param, "sell_param": rb_sell_param,
-                            "status": rb_status, "signal": rb_signal,
-                            "effective_state": rb_effective_state,
-                            "position_state": rb_position_state, "prev_state": rb_prev_state,
-                            "coin_bal": rb_coin_bal, "coin_val": rb_coin_val,
-                            "price": rb_price, "target_krw": rb_target_krw,
-                        })
-
-                    # ── 같은 코인 비중 합산 (비례 분배용) ──
-                    coin_weight_totals = {}
-                    for a in asset_states:
-                        key = a['ticker']
-                        coin_weight_totals[key] = coin_weight_totals.get(key, 0) + a['weight']
-
-                    # 전략별 비례 분배 목록 (같은 코인이면 보유량을 비중 비율로 나눔)
-                    rebal_items = []
-                    for a in asset_states:
-                        total_w = coin_weight_totals[a['ticker']]
-                        ratio = a['weight'] / total_w if total_w > 0 else 0
-                        iv_label = INTERVAL_REV_MAP.get(a['interval'], a['interval'])
-                        rebal_items.append({
-                            "ticker": a['ticker'],
-                            "strategy": f"{a['strategy']}{a['param']}({iv_label})",
-                            "weight": a['weight'],
-                            "signal": a['signal'],
-                            "status": a['status'],
-                            "coin_val": a['coin_val'] * ratio,
-                            "price": a['price'],
-                            "target_krw": a['target_krw'],
-                            "interval": a['interval'],
-                        })
-
-                    cash_rebal = [a for a in rebal_items if a['status'] in ('CASH', 'UNKNOWN')]
-                    buy_rebal = [a for a in rebal_items if a['signal'] == 'BUY']
-
-                    rc1, rc2, rc3 = st.columns(3)
-                    rc1.metric("보유 현금 (KRW)", f"{krw_balance:,.0f}")
-                    rc2.metric("CASH/미확인", f"{len(cash_rebal)} / {len(rebal_items)}")
-                    rc3.metric("BUY 시그널", f"{len(buy_rebal)} / {len(rebal_items)}")
-
-                    rebal_data = []
-                    for a in rebal_items:
-                        if a['status'] == 'HOLD':
-                            pos_text = "보유"
-                        elif a['status'] == 'CASH':
-                            pos_text = "현금"
-                        else:
-                            pos_text = "미확인"
-
-                        # BUY: 미보유+BUY시그널 → 매수, SELL: 보유중+SELL시그널 → 매도
-                        if a['signal'] == 'BUY' and a['status'] in ('CASH', 'UNKNOWN'):
-                            action = "매수"
-                        elif a['signal'] == 'SELL' and a['status'] == 'HOLD':
-                            action = "매도"
-                        elif a['signal'] == 'HOLD' and a['status'] == 'HOLD':
-                            action = "보유 유지"
-                        elif a['signal'] == 'HOLD' and a['status'] == 'CASH':
-                            action = "대기"
-                        elif a['signal'] == 'BUY' and a['status'] == 'HOLD':
-                            action = "보유 유지"
-                        else:  # SELL + CASH
-                            action = "대기"
-                        rebal_data.append({
-                            "종목": a['ticker'],
-                            "전략": a['strategy'],
-                            "비중": f"{a['weight']}%",
-                            "포지션": pos_text,
-                            "시그널": a['signal'],
-                            "현재가치(KRW)": f"{a['coin_val']:,.0f}",
-                            "목표(KRW)": f"{a['target_krw']:,.0f}",
-                            "액션": action,
-                        })
-                    st.dataframe(pd.DataFrame(rebal_data), use_container_width=True, hide_index=True)
-
-                    buyable = [a for a in rebal_items if a['status'] != 'HOLD' and a['signal'] == 'BUY']
-                    if not buyable:
-                        if len(cash_rebal) == 0:
-                            st.success("모든 자산이 이미 보유 중입니다.")
-                        else:
-                            st.info(f"현금 자산 {len(cash_rebal)}개가 있지만 BUY 시그널이 없습니다. 시그널 발생 시 매수 가능합니다.")
-                    else:
-                        st.warning(f"**{len(buyable)}개 전략**에 BUY 시그널이 있습니다. 리밸런싱 매수를 실행할 수 있습니다.")
-                        # 같은 코인 매수 그룹핑 (실제 주문은 코인 단위)
-                        from collections import OrderedDict
-                        buy_groups = OrderedDict()
-                        for a in buyable:
-                            if a['ticker'] not in buy_groups:
-                                buy_groups[a['ticker']] = {'weight': 0, 'strategies': [], 'price': a['price'], 'interval': a['interval']}
-                            buy_groups[a['ticker']]['weight'] += a['weight']
-                            buy_groups[a['ticker']]['strategies'].append(a['strategy'])
-
-                        total_buy_weight = sum(g['weight'] for g in buy_groups.values())
-                        available_krw = krw_balance * 0.999
-
-                        buy_plan = []
-                        for ticker, g in buy_groups.items():
-                            alloc_krw = available_krw * (g['weight'] / total_buy_weight) if total_buy_weight > 0 else 0
-                            alloc_krw = min(alloc_krw, available_krw)
-                            buy_plan.append({
-                                "종목": ticker, "비중": f"{g['weight']}%",
-                                "배분 금액(KRW)": f"{alloc_krw:,.0f}",
-                                "전략": " + ".join(g['strategies']), "현재가": f"{g['price']:,.0f}",
-                                "_ticker": ticker, "_krw": alloc_krw, "_interval": g['interval'],
-                            })
-                        plan_df = pd.DataFrame(buy_plan)
-                        st.dataframe(plan_df[["종목", "비중", "배분 금액(KRW)", "전략", "현재가"]], use_container_width=True, hide_index=True)
-                        st.caption(f"총 배분 금액: {sum(p['_krw'] for p in buy_plan):,.0f} KRW / 보유 현금: {krw_balance:,.0f} KRW")
-
-                        if st.button("🚀 리밸런싱 매수 실행", key="btn_rebalance_exec", type="primary"):
-                            rebal_results = []
-                            rebal_progress = st.progress(0)
-                            rebal_log = st.empty()
-                            for pi, plan in enumerate(buy_plan):
-                                p_ticker = plan['_ticker']
-                                p_krw = plan['_krw']
-                                p_interval = plan['_interval']
-                                if p_krw < 5000:
-                                    rebal_results.append({"종목": p_ticker, "결과": "금액 부족 (5,000원 미만)"})
-                                    continue
-                                rebal_log.text(f"매수 중: {p_ticker} ({p_krw:,.0f} KRW)...")
-                                try:
-                                    exec_res = trader.smart_buy(p_ticker, p_krw, interval=p_interval)
-                                    filled_krw = float((exec_res or {}).get('total_krw', 0) or 0)
-                                    filled_vol = float((exec_res or {}).get('filled_volume', 0) or 0)
-                                    avg_p = float((exec_res or {}).get('avg_price', 0) or 0)
-                                    logs = (exec_res or {}).get('logs', []) if isinstance(exec_res, dict) else []
-                                    err_msgs = [str(l.get("msg", "")).strip() for l in logs if isinstance(l, dict) and l.get("status") == "error"]
-
-                                    # 스마트 주문 체결이 0이면 시장가로 1회 폴백
-                                    if filled_krw < 5000 and filled_vol <= 0:
-                                        fb_res = trader.buy_market(p_ticker, p_krw * 0.999)
-                                        if fb_res and isinstance(fb_res, dict) and "error" not in fb_res:
-                                            uuid = fb_res.get("uuid", "")
-                                            if uuid:
-                                                time.sleep(1.2)
-                                                detail = trader.get_order_detail(uuid) or {}
-                                                d_vol = float(detail.get("executed_volume", 0) or 0)
-                                                d_price = float(detail.get("price", 0) or 0)
-                                                trades = detail.get("trades", []) if isinstance(detail, dict) else []
-                                                if trades and d_vol > 0:
-                                                    d_krw = float(sum(float(t.get("funds", 0) or 0) for t in trades))
-                                                elif d_vol > 0 and d_price > 0:
-                                                    d_krw = d_vol * d_price
-                                                else:
-                                                    d_krw = 0.0
-                                                filled_krw = d_krw if d_krw > 0 else filled_krw
-                                                filled_vol = d_vol if d_vol > 0 else filled_vol
-                                                avg_p = (filled_krw / filled_vol) if filled_vol > 0 else avg_p
-                                            rebal_results.append({
-                                                "종목": p_ticker,
-                                                "결과": f"체결 완료(시장가): {filled_vol:.6f} @ {avg_p:,.0f}",
-                                                "금액": f"{filled_krw:,.0f} KRW"
-                                            })
-                                        else:
-                                            msg = fb_res.get("error") if isinstance(fb_res, dict) else str(fb_res)
-                                            if not msg and err_msgs:
-                                                msg = err_msgs[-1]
-                                            rebal_results.append({"종목": p_ticker, "결과": f"주문 실패: {msg or '체결 0'}"})
-                                    else:
-                                        rebal_results.append({
-                                            "종목": p_ticker,
-                                            "결과": f"체결 완료: {filled_vol:.6f} @ {avg_p:,.0f}",
-                                            "금액": f"{filled_krw:,.0f} KRW"
-                                        })
-                                except Exception as e:
-                                    rebal_results.append({"종목": p_ticker, "결과": f"오류: {e}"})
-                                rebal_progress.progress((pi + 1) / len(buy_plan))
-                                time.sleep(0.5)
-                            rebal_progress.progress(1.0)
-                            rebal_log.empty()
-                            _clear_cache("krw_bal_t1", "balances_t1", "prices_t1")
-                            st.success("리밸런싱 완료!")
-                            st.dataframe(pd.DataFrame(rebal_results), use_container_width=True, hide_index=True)
-
                 # --- 단기 모니터링 차트 (60봉) ---
                 with st.expander("📊 단기 시그널 모니터링 (60봉)", expanded=True):
                     signal_rows = []
@@ -1650,36 +1361,6 @@ def render_coin_mode(config, save_config):
                     if signal_rows:
                         df_sig = pd.DataFrame(signal_rows)
                         st.dataframe(df_sig, use_container_width=True, hide_index=True)
-
-                # 리밸런싱 규칙 (항상 표시)
-                with st.expander("⚖️ 리밸런싱 규칙", expanded=False):
-                    st.markdown("""
-**실행 시점**: GitHub Action 실행 시마다 (자동: 매일 09:05 KST / 수동 실행 가능)
-
-**실행 순서**: 전체 시그널 분석 → 매도 먼저 실행 (현금 확보) → 현금 비례 배분 매수
-
-**매매 판단** (전일 종가 기준)
-
-| 현재 상태 | 시그널 | 실행 내용 |
-|-----------|--------|-----------|
-| 코인 미보유 | 매수 시그널 | **매수** — 현금에서 비중 비례 배분 |
-| 코인 미보유 | 매도/중립 | **대기** — 현금 보존 (비중만큼 예비) |
-| 코인 보유 중 | 매도 시그널 | **매도** — 전량 시장가 매도 |
-| 코인 보유 중 | 매수/중립 | **유지** — 계속 보유 (추가 매수 없음) |
-
-**매수 금액 계산**: 보유 중인 자산은 무시, 현금을 미보유 자산 비중끼리 비례 배분
-
-> 예) BTC 40%(보유중), ETH 30%(미보유), SOL 30%(미보유)
-> → 미보유 비중 합계 = 60%
-> → ETH 매수액 = 현금 × 30/60, SOL 매수액 = 현금 × 30/60
-
-**시그널 발생 조건**
-
-| | 매수 시그널 | 매도 시그널 |
-|---|---------|---------|
-| **SMA** | 종가 > 이동평균선 | 종가 < 이동평균선 |
-| **Donchian** | 종가 > N일 최고가 돌파 | 종가 < M일 최저가 이탈 |
-""")
 
                 # 합산 포트폴리오 자리 미리 확보 (데이터 수집 후 렌더링)
                 combined_portfolio_container = st.container()
@@ -2262,435 +1943,54 @@ def render_coin_mode(config, save_config):
         st.caption("전략 분석 없이 지정한 코인/방향/비율로 VM → 업비트 경로로 즉시 주문합니다.")
         st.divider()
 
-        # ── 거래소 스타일 직접 주문 (로컬 API 필요) ──
-        st.subheader("직접 주문 (로컬 API)")
-        if not trader:
-            st.warning("사이드바에서 API 키를 설정해주세요. (로컬 IP가 업비트에 등록되어 있어야 합니다)")
-        else:
-            # 코인 선택 (변경시만 full rerun)
-            port_tickers = [f"{r['market']}-{r['coin'].upper()}" for r in portfolio_list]
-            manual_options = list(dict.fromkeys(port_tickers + TOP_20_TICKERS))
-            mt_col1, mt_col2 = st.columns(2)
-            mt_selected = mt_col1.selectbox("코인 선택", manual_options + ["직접입력"], key="mt_ticker")
-            if mt_selected == "직접입력":
-                mt_custom = mt_col2.text_input("코인 심볼", "BTC", key="mt_custom")
-                mt_ticker = f"KRW-{mt_custom.upper()}"
+        # ── 30분봉 차트 ──
+        port_tickers = [f"{r['market']}-{r['coin'].upper()}" for r in portfolio_list]
+        manual_options = list(dict.fromkeys(port_tickers + TOP_20_TICKERS))
+        mt_ticker = st.selectbox("코인 선택", manual_options, key="mt_ticker_chart")
+        df_30m = _ttl_cache(
+            f"m30_{mt_ticker}",
+            lambda: data_cache.get_ohlcv_local_first(
+                mt_ticker,
+                interval="minute30",
+                count=48,
+                allow_api_fallback=True,
+            ),
+            ttl=30,
+        )
+        if df_30m is not None and len(df_30m) > 0:
+            last_dt = df_30m.index[-1]
+            if hasattr(last_dt, 'strftime'):
+                refresh_text = last_dt.strftime('%Y-%m-%d %H:%M')
             else:
-                mt_ticker = mt_selected
-                mt_col2.empty()
-
-            mt_coin = mt_ticker.split("-")[1] if "-" in mt_ticker else mt_ticker
-
-            # ── 코인 트레이딩 워커 시작 (백그라운드 갱신) ──
-            from src.engine.data_manager import CoinTradingWorker
-
-            @st.cache_resource
-            def _get_coin_worker(_trader):
-                w = CoinTradingWorker()
-                return w
-
-            coin_worker = _get_coin_worker(trader)
-            coin_worker.configure(trader, mt_ticker)
-            coin_worker.start()
-
-            # ═══ 트레이딩 패널 (fragment → 3초마다 자동갱신, 워커에서 읽기만) ═══
-            @st.fragment
-            def trading_panel():
-                # ── 워커에서 즉시 읽기 (API 호출 없음 → 블로킹 없음) ──
-                mt_price = coin_worker.get('price', 0)
-                krw_avail = coin_worker.get('krw_bal', 0)
-                mt_coin_bal = coin_worker.get('coin_bal', 0)
-                mt_coin_val = mt_coin_bal * mt_price
-                mt_tick = get_tick_size(mt_price) if mt_price > 0 else 1
-                mt_min_qty = round(5000 / mt_price, 8) if mt_price > 0 else 0.00000001
-
-                # 상단 정보 바
-                ic1, ic2, ic3, ic4, ic5 = st.columns(5)
-                ic1.metric("현재가", f"{mt_price:,.0f}")
-                ic2.metric(f"{mt_coin} 보유", f"{mt_coin_bal:.8f}" if mt_coin_bal < 1 else f"{mt_coin_bal:,.4f}")
-                ic3.metric("평가금액", f"{mt_coin_val:,.0f} KRW")
-                ic4.metric("보유 KRW", f"{krw_avail:,.0f}")
-                ic5.metric("호가단위", f"{mt_tick:,g}원" if mt_tick >= 1 else f"{mt_tick}원")
-
-                # ── 최근 거래 결과 알림 바 (세션 유지) ──
-                last_trade = st.session_state.get('_last_trade')
-                if last_trade:
-                    t_type = last_trade.get('type', '')
-                    t_time = last_trade.get('time', '')
-                    t_ticker = last_trade.get('ticker', '')
-                    t_amt = last_trade.get('amount', '')
-                    t_price = last_trade.get('price', '')
-                    t_qty = last_trade.get('qty', '')
-                    is_buy = '매수' in t_type
-                    color = '#D32F2F' if is_buy else '#1976D2'
-                    detail = t_amt if t_amt else f"{t_price} x {t_qty}"
-                    nc1, nc2 = st.columns([6, 1])
-                    nc1.markdown(
-                        f'<div style="padding:6px 12px;border-radius:6px;background:{color}22;border-left:4px solid {color};font-size:14px;">'
-                        f'<b style="color:{color}">{t_type}</b> {t_ticker} | {detail} | {t_time}</div>',
-                        unsafe_allow_html=True
-                    )
-                    if nc2.button("✕", key="_dismiss_trade"):
-                        del st.session_state['_last_trade']
-                        st.rerun()
-
-                st.divider()
-
-                # ═══ 레이아웃: 30분봉 차트(상단 전체폭) + 주문가격/주문 패널(하단) ═══
-                st.markdown("**30분봉 차트**")
-                df_30m = _ttl_cache(
-                    f"m30_{mt_ticker}",
-                    lambda: data_cache.get_ohlcv_local_first(
-                        mt_ticker,
-                        interval="minute30",
-                        count=48,
-                        allow_api_fallback=True,
-                    ),
-                    ttl=30,
-                )
-                if df_30m is not None and len(df_30m) > 0:
-                    fig_30m = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.8, 0.2], vertical_spacing=0.02)
-                    fig_30m.add_trace(go.Candlestick(
-                        x=df_30m.index, open=df_30m['open'], high=df_30m['high'],
-                        low=df_30m['low'], close=df_30m['close'], name='30분봉',
-                        increasing_line_color='#26a69a', decreasing_line_color='#ef5350',
-                    ), row=1, col=1)
-                    ma5 = df_30m['close'].rolling(5).mean()
-                    ma20 = df_30m['close'].rolling(20).mean()
-                    fig_30m.add_trace(go.Scatter(x=df_30m.index, y=ma5, name='MA5', line=dict(color='#FF9800', width=1)), row=1, col=1)
-                    fig_30m.add_trace(go.Scatter(x=df_30m.index, y=ma20, name='MA20', line=dict(color='#2196F3', width=1)), row=1, col=1)
-                    colors_vol = ['#26a69a' if c >= o else '#ef5350' for c, o in zip(df_30m['close'], df_30m['open'])]
-                    fig_30m.add_trace(go.Bar(
-                        x=df_30m.index, y=df_30m['volume'], marker_color=colors_vol, name='거래량', showlegend=False
-                    ), row=2, col=1)
-                    fig_30m.update_layout(
-                        height=520, margin=dict(l=0, r=0, t=10, b=30),
-                        xaxis_rangeslider_visible=False, showlegend=True,
-                        legend=dict(orientation="h", y=1.06, x=0),
-                        xaxis2=dict(showticklabels=True, tickformat='%H:%M', tickangle=-45),
-                        yaxis=dict(title="", side="right"),
-                        yaxis2=dict(title="", side="right"),
-                    )
-                    st.plotly_chart(fig_30m, use_container_width=True, key=f"chart30m_{mt_ticker}")
-                else:
-                    st.info("차트 데이터 로딩 중...")
-
-                st.divider()
-
-                # ═══ 좌: 호가창 | 우: 주문 패널 (가로 배치 — 골드와 동일 구조) ═══
-                ob_col, order_col = st.columns([2, 3])
-
-                # ── 좌: 호가창 (HTML 렌더링) ──
-                with ob_col:
-                    st.markdown("**주문가격 표**")
-                    raw_prices = []
-                    try:
-                        ob_data = coin_worker.get('orderbook')
-                        if ob_data and len(ob_data) > 0:
-                            ob = ob_data[0] if isinstance(ob_data, list) else ob_data
-                            units = ob.get('orderbook_units', [])[:10]
-
-                            if units:
-                                max_size = max(
-                                    max(u.get('ask_size', 0) for u in units),
-                                    max(u.get('bid_size', 0) for u in units)
-                                )
-
-                                # ── HTML 호가창 테이블 생성 ──
-                                html = ['<table style="width:100%;border-collapse:collapse;font-size:13px;font-family:monospace;">']
-                                html.append('<tr style="border-bottom:2px solid #ddd;font-weight:bold;color:#666"><td>구분</td><td style="text-align:right">잔량</td><td style="text-align:right">가격</td><td style="text-align:right">등락</td><td>비율</td></tr>')
-
-                                ask_prices = []
-                                bid_prices = []
-
-                                for u in reversed(units):
-                                    ask_p = u.get('ask_price', 0)
-                                    ask_s = u.get('ask_size', 0)
-                                    diff = ((ask_p / mt_price) - 1) * 100 if mt_price > 0 else 0
-                                    bar_w = int(ask_s / max_size * 100) if max_size > 0 else 0
-                                    raw_prices.append(ask_p)
-                                    ask_prices.append(ask_p)
-                                    html.append(
-                                        f'<tr style="color:#1976D2;border-bottom:1px solid #f0f0f0;height:28px">'
-                                        f'<td>매도</td>'
-                                        f'<td style="text-align:right">{ask_s:.4f}</td>'
-                                        f'<td style="text-align:right;font-weight:bold">{ask_p:,.0f}</td>'
-                                        f'<td style="text-align:right">{diff:+.2f}%</td>'
-                                        f'<td><div style="background:#1976D2;height:12px;width:{bar_w}%;opacity:0.3"></div></td>'
-                                        f'</tr>'
-                                    )
-
-                                # 중간 구분선
-                                html.append('<tr style="border-top:3px solid #333;border-bottom:3px solid #333;height:4px"><td colspan="5"></td></tr>')
-
-                                for u in units:
-                                    bid_p = u.get('bid_price', 0)
-                                    bid_s = u.get('bid_size', 0)
-                                    diff = ((bid_p / mt_price) - 1) * 100 if mt_price > 0 else 0
-                                    bar_w = int(bid_s / max_size * 100) if max_size > 0 else 0
-                                    raw_prices.append(bid_p)
-                                    bid_prices.append(bid_p)
-                                    html.append(
-                                        f'<tr style="color:#D32F2F;border-bottom:1px solid #f0f0f0;height:28px">'
-                                        f'<td>매수</td>'
-                                        f'<td style="text-align:right">{bid_s:.4f}</td>'
-                                        f'<td style="text-align:right;font-weight:bold">{bid_p:,.0f}</td>'
-                                        f'<td style="text-align:right">{diff:+.2f}%</td>'
-                                        f'<td><div style="background:#D32F2F;height:12px;width:{bar_w}%;opacity:0.3"></div></td>'
-                                        f'</tr>'
-                                    )
-
-                                html.append('</table>')
-                                st.markdown(''.join(html), unsafe_allow_html=True)
-
-                                # ── 호가 선택 → 주문가 반영 ──
-                                def _on_ob_select():
-                                    """사용자가 직접 선택했을 때만 주문가에 반영"""
-                                    sel_label = st.session_state.get('_ob_sel_label', '')
-                                    try:
-                                        price_str = sel_label.split(' ', 1)[1].replace(',', '')
-                                        chosen = int(float(price_str))
-                                        tick = get_tick_size(chosen)
-                                        if tick >= 1:
-                                            st.session_state['mt_buy_price'] = int(chosen)
-                                            st.session_state['mt_sell_price'] = int(chosen)
-                                        else:
-                                            st.session_state['mt_buy_price'] = float(chosen)
-                                            st.session_state['mt_sell_price'] = float(chosen)
-                                    except (IndexError, ValueError):
-                                        pass
-
-                                price_labels = (
-                                    [f"매도 {p:,.0f}" for p in ask_prices] +
-                                    [f"매수 {p:,.0f}" for p in bid_prices]
-                                )
-
-                                st.selectbox(
-                                    "호가 선택 → 주문가 반영",
-                                    price_labels,
-                                    index=len(ask_prices),  # 기본: 최우선 매수호가
-                                    key="_ob_sel_label",
-                                    on_change=_on_ob_select,
-                                )
-
-                                best_ask = units[0].get('ask_price', 0)
-                                best_bid = units[0].get('bid_price', 0)
-                                spread = best_ask - best_bid
-                                spread_pct = (spread / best_bid * 100) if best_bid > 0 else 0
-                                total_ask = ob.get('total_ask_size', 0)
-                                total_bid = ob.get('total_bid_size', 0)
-                                ob_ratio = total_bid / (total_ask + total_bid) * 100 if (total_ask + total_bid) > 0 else 50
-                                st.caption(f"스프레드 **{spread:,.0f}** ({spread_pct:.3f}%) | 매도 {total_ask:.2f} | 매수 {total_bid:.2f} | 매수비율 {ob_ratio:.0f}%")
-                            else:
-                                st.info("호가 데이터가 없습니다.")
-                        else:
-                            st.info("호가 데이터를 불러올 수 없습니다.")
-                    except Exception as e:
-                        st.warning(f"호가 조회 실패: {e}")
-
-                # ── 우: 주문 패널 ──
-                with order_col:
-                    st.markdown("**주문 실행**")
-                    buy_tab, sell_tab = st.tabs(["🔴 매수", "🔵 매도"])
-
-                    with buy_tab:
-                        buy_type = st.radio("주문 유형", ["시장가", "지정가"], horizontal=True, key="mt_buy_type")
-
-                        if buy_type == "시장가":
-                            buy_amount = st.number_input("매수 금액 (KRW)", min_value=5000, value=10000, step=1000, key="mt_buy_amt")
-                            qb1, qb2, qb3, qb4 = st.columns(4)
-                            if qb1.button("10%", key="mt_b10"):
-                                st.session_state['mt_buy_amt'] = int(krw_avail * 0.1)
-                                st.rerun()
-                            if qb2.button("25%", key="mt_b25"):
-                                st.session_state['mt_buy_amt'] = int(krw_avail * 0.25)
-                                st.rerun()
-                            if qb3.button("50%", key="mt_b50"):
-                                st.session_state['mt_buy_amt'] = int(krw_avail * 0.5)
-                                st.rerun()
-                            if qb4.button("100%", key="mt_b100"):
-                                st.session_state['mt_buy_amt'] = int(krw_avail * 0.999)
-                                st.rerun()
-
-                            if mt_price > 0:
-                                st.caption(f"예상 수량: ~{buy_amount / mt_price:.8f} {mt_coin}")
-
-                            if st.button("시장가 매수", type="primary", key="mt_buy_exec", use_container_width=True):
-                                if buy_amount < 5000:
-                                    st.toast("최소 주문금액: 5,000 KRW", icon="⚠️")
-                                elif buy_amount > krw_avail:
-                                    st.toast(f"잔고 부족 ({krw_avail:,.0f} KRW)", icon="⚠️")
-                                else:
-                                    with st.spinner("매수 주문 중..."):
-                                        result = trader.buy_market(mt_ticker, buy_amount)
-                                    coin_worker.invalidate('krw_bal', 'coin_bal')
-                                    if result and "error" not in result:
-                                        st.toast(f"✅ 시장가 매수 체결! {buy_amount:,.0f} KRW", icon="🟢")
-                                        st.session_state['_last_trade'] = {"type": "시장가 매수", "ticker": mt_ticker, "amount": f"{buy_amount:,.0f} KRW", "result": result, "time": time.strftime('%H:%M:%S')}
-                                    else:
-                                        st.toast(f"매수 실패: {result}", icon="🔴")
-
-                        else:  # 지정가
-                            buy_default = align_price(mt_price * 0.99, mt_tick) if mt_price > 0 else 1
-                            bc1, bc2 = st.columns(2)
-                            if mt_tick >= 1:
-                                buy_price = bc1.number_input("매수 가격", min_value=1, value=int(buy_default), step=int(mt_tick), key="mt_buy_price")
-                            else:
-                                buy_price = bc1.number_input("매수 가격", min_value=0.0001, value=float(buy_default), step=float(mt_tick), format="%.4f", key="mt_buy_price")
-                            buy_qty = bc2.number_input("매수 수량", min_value=mt_min_qty, value=max(mt_min_qty, 0.001), format="%.8f", key="mt_buy_qty")
-
-                            buy_total = buy_price * buy_qty
-                            st.caption(f"총액: **{buy_total:,.0f} KRW** | 호가: {mt_tick:,g}원 | 최소: {mt_min_qty:.8f}")
-
-                            qbc1, qbc2, qbc3, qbc4 = st.columns(4)
-                            if buy_price > 0:
-                                if qbc1.button("10%", key="mt_lb10"):
-                                    st.session_state['mt_buy_qty'] = round(krw_avail * 0.1 / buy_price, 8)
-                                    st.rerun()
-                                if qbc2.button("25%", key="mt_lb25"):
-                                    st.session_state['mt_buy_qty'] = round(krw_avail * 0.25 / buy_price, 8)
-                                    st.rerun()
-                                if qbc3.button("50%", key="mt_lb50"):
-                                    st.session_state['mt_buy_qty'] = round(krw_avail * 0.5 / buy_price, 8)
-                                    st.rerun()
-                                if qbc4.button("100%", key="mt_lb100"):
-                                    st.session_state['mt_buy_qty'] = round(krw_avail * 0.999 / buy_price, 8)
-                                    st.rerun()
-
-                            if st.button("지정가 매수", type="primary", key="mt_lbuy_exec", use_container_width=True):
-                                if buy_total < 5000:
-                                    st.toast("최소 주문금액: 5,000 KRW", icon="⚠️")
-                                elif buy_total > krw_avail:
-                                    st.toast(f"잔고 부족 ({krw_avail:,.0f} KRW)", icon="⚠️")
-                                else:
-                                    with st.spinner("지정가 매수 주문 중..."):
-                                        result = trader.buy_limit(mt_ticker, buy_price, buy_qty)
-                                    coin_worker.invalidate('krw_bal', 'coin_bal')
-                                    if result and "error" not in result:
-                                        st.toast(f"✅ 지정가 매수 등록! {buy_price:,.0f} × {buy_qty:.8f}", icon="🟢")
-                                        st.session_state['_last_trade'] = {"type": "지정가 매수", "ticker": mt_ticker, "price": f"{buy_price:,.0f}", "qty": f"{buy_qty:.8f}", "result": result, "time": time.strftime('%H:%M:%S')}
-                                    else:
-                                        st.toast(f"주문 실패: {result}", icon="🔴")
-
-                    with sell_tab:
-                        sell_type = st.radio("주문 유형", ["시장가", "지정가"], horizontal=True, key="mt_sell_type")
-
-                        if sell_type == "시장가":
-                            sell_qty = st.number_input(
-                                f"매도 수량 ({mt_coin})", min_value=0.00000001,
-                                value=mt_coin_bal if mt_coin_bal > 0 else 0.00000001,
-                                format="%.8f", key="mt_sell_qty"
-                            )
-                            qs1, qs2, qs3, qs4 = st.columns(4)
-                            if qs1.button("25%", key="mt_s25"):
-                                st.session_state['mt_sell_qty'] = round(mt_coin_bal * 0.25, 8)
-                                st.rerun()
-                            if qs2.button("50%", key="mt_s50"):
-                                st.session_state['mt_sell_qty'] = round(mt_coin_bal * 0.5, 8)
-                                st.rerun()
-                            if qs3.button("75%", key="mt_s75"):
-                                st.session_state['mt_sell_qty'] = round(mt_coin_bal * 0.75, 8)
-                                st.rerun()
-                            if qs4.button("100%", key="mt_s100"):
-                                st.session_state['mt_sell_qty'] = round(mt_coin_bal, 8)
-                                st.rerun()
-
-                            if mt_price > 0:
-                                st.caption(f"예상 금액: ~{sell_qty * mt_price:,.0f} KRW")
-
-                            if st.button("시장가 매도", type="primary", key="mt_sell_exec", use_container_width=True):
-                                if sell_qty <= 0:
-                                    st.toast("매도 수량을 입력해주세요.", icon="⚠️")
-                                elif mt_price > 0 and sell_qty * mt_price < 5000:
-                                    st.toast(f"최소 주문금액 미달 ({sell_qty * mt_price:,.0f} KRW < 5,000)", icon="⚠️")
-                                elif sell_qty > mt_coin_bal:
-                                    st.toast(f"보유량 초과 ({mt_coin_bal:.8f})", icon="⚠️")
-                                else:
-                                    with st.spinner("매도 주문 중..."):
-                                        result = trader.sell_market(mt_ticker, sell_qty)
-                                    coin_worker.invalidate('krw_bal', 'coin_bal')
-                                    if result and "error" not in result:
-                                        st.toast(f"✅ 시장가 매도 체결! {sell_qty:.8f} {mt_coin}", icon="🔴")
-                                        st.session_state['_last_trade'] = {"type": "시장가 매도", "ticker": mt_ticker, "qty": f"{sell_qty:.8f}", "result": result, "time": time.strftime('%H:%M:%S')}
-                                    else:
-                                        st.toast(f"매도 실패: {result}", icon="🔴")
-
-                        else:  # 지정가
-                            sell_default = align_price(mt_price * 1.01, mt_tick) if mt_price > 0 else 1
-                            sc1, sc2 = st.columns(2)
-                            if mt_tick >= 1:
-                                sell_price = sc1.number_input("매도 가격", min_value=1, value=int(sell_default), step=int(mt_tick), key="mt_sell_price")
-                            else:
-                                sell_price = sc1.number_input("매도 가격", min_value=0.0001, value=float(sell_default), step=float(mt_tick), format="%.4f", key="mt_sell_price")
-                            sell_default_qty = mt_coin_bal if mt_coin_bal > mt_min_qty else mt_min_qty
-                            sell_limit_qty = sc2.number_input("매도 수량", min_value=mt_min_qty, value=sell_default_qty, format="%.8f", key="mt_sell_lqty")
-
-                            sell_total = sell_price * sell_limit_qty
-                            st.caption(f"총액: **{sell_total:,.0f} KRW** | 호가: {mt_tick:,g}원 | 최소: {mt_min_qty:.8f}")
-
-                            qsc1, qsc2, qsc3, qsc4 = st.columns(4)
-                            if mt_coin_bal > 0:
-                                if qsc1.button("25%", key="mt_ls25"):
-                                    st.session_state['mt_sell_lqty'] = round(mt_coin_bal * 0.25, 8)
-                                    st.rerun()
-                                if qsc2.button("50%", key="mt_ls50"):
-                                    st.session_state['mt_sell_lqty'] = round(mt_coin_bal * 0.5, 8)
-                                    st.rerun()
-                                if qsc3.button("75%", key="mt_ls75"):
-                                    st.session_state['mt_sell_lqty'] = round(mt_coin_bal * 0.75, 8)
-                                    st.rerun()
-                                if qsc4.button("100%", key="mt_ls100"):
-                                    st.session_state['mt_sell_lqty'] = round(mt_coin_bal, 8)
-                                    st.rerun()
-
-                            if st.button("지정가 매도", type="primary", key="mt_lsell_exec", use_container_width=True):
-                                if sell_limit_qty <= 0:
-                                    st.toast("매도 수량을 입력해주세요.", icon="⚠️")
-                                elif sell_limit_qty > mt_coin_bal:
-                                    st.toast(f"보유량 초과 ({mt_coin_bal:.8f})", icon="⚠️")
-                                else:
-                                    with st.spinner("지정가 매도 주문 중..."):
-                                        result = trader.sell_limit(mt_ticker, sell_price, sell_limit_qty)
-                                    coin_worker.invalidate('krw_bal', 'coin_bal')
-                                    if result and "error" not in result:
-                                        st.toast(f"✅ 지정가 매도 등록! {sell_price:,.0f} × {sell_limit_qty:.8f}", icon="🔴")
-                                        st.session_state['_last_trade'] = {"type": "지정가 매도", "ticker": mt_ticker, "price": f"{sell_price:,.0f}", "qty": f"{sell_limit_qty:.8f}", "result": result, "time": time.strftime('%H:%M:%S')}
-                                    else:
-                                        st.toast(f"주문 실패: {result}", icon="🔴")
-
-                # ── 미체결 주문 ──
-                st.divider()
-                st.subheader("미체결 주문")
-                if st.button("미체결 주문 조회", key="mt_pending"):
-                    with st.spinner("조회 중..."):
-                        pending = trader.get_orders(state="wait")
-                    if pending and len(pending) > 0:
-                        for i, order in enumerate(pending):
-                            side_kr = "매수" if order.get('side') == 'bid' else "매도"
-                            side_color = "red" if order.get('side') == 'bid' else "blue"
-                            market = order.get('market', '')
-                            price = float(order.get('price', 0) or 0)
-                            remaining = float(order.get('remaining_volume', 0) or 0)
-                            created = order.get('created_at', '')
-                            if pd.notna(created):
-                                try:
-                                    created = pd.to_datetime(created).strftime('%m/%d %H:%M')
-                                except:
-                                    pass
-                            oc1, oc2 = st.columns([4, 1])
-                            oc1.markdown(f"**:{side_color}[{side_kr}]** {market} | {price:,.0f} × {remaining:.8f} | {created}")
-                            if oc2.button("취소", key=f"mt_cancel_{i}"):
-                                cancel_result = trader.cancel_order(order.get('uuid'))
-                                if cancel_result and "error" not in cancel_result:
-                                    st.toast("주문 취소 완료", icon="✅")
-                                    coin_worker.invalidate('krw_bal', 'coin_bal')
-                                    st.rerun()
-                                else:
-                                    st.toast(f"취소 실패: {cancel_result}", icon="🔴")
-                    else:
-                        st.info("미체결 주문이 없습니다.")
-
-            trading_panel()
+                refresh_text = str(last_dt)
+            _c_title, _c_time = st.columns([3, 1])
+            _c_title.markdown("**30분봉 차트**")
+            _c_time.caption(f"최종 봉: {refresh_text}")
+            fig_30m = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.8, 0.2], vertical_spacing=0.02)
+            fig_30m.add_trace(go.Candlestick(
+                x=df_30m.index, open=df_30m['open'], high=df_30m['high'],
+                low=df_30m['low'], close=df_30m['close'], name='30분봉',
+                increasing_line_color='#26a69a', decreasing_line_color='#ef5350',
+            ), row=1, col=1)
+            ma5 = df_30m['close'].rolling(5).mean()
+            ma20 = df_30m['close'].rolling(20).mean()
+            fig_30m.add_trace(go.Scatter(x=df_30m.index, y=ma5, name='MA5', line=dict(color='#FF9800', width=1)), row=1, col=1)
+            fig_30m.add_trace(go.Scatter(x=df_30m.index, y=ma20, name='MA20', line=dict(color='#2196F3', width=1)), row=1, col=1)
+            colors_vol = ['#26a69a' if c >= o else '#ef5350' for c, o in zip(df_30m['close'], df_30m['open'])]
+            fig_30m.add_trace(go.Bar(
+                x=df_30m.index, y=df_30m['volume'], marker_color=colors_vol, name='거래량', showlegend=False
+            ), row=2, col=1)
+            fig_30m.update_layout(
+                height=520, margin=dict(l=0, r=0, t=10, b=30),
+                xaxis_rangeslider_visible=False, showlegend=True,
+                legend=dict(orientation="h", y=1.06, x=0),
+                xaxis2=dict(showticklabels=True, tickformat='%H:%M', tickangle=-45),
+                yaxis=dict(title="", side="right"),
+                yaxis2=dict(title="", side="right"),
+            )
+            st.plotly_chart(fig_30m, use_container_width=True, key=f"chart30m_{mt_ticker}")
+        else:
+            st.info("차트 데이터 로딩 중...")
 
     # --- Tab 3: History ---
     with tab3:
@@ -2742,10 +2042,13 @@ def render_coin_mode(config, save_config):
                     state = r.get('state', '')
                     state_kr = {"done": "체결완료", "cancel": "취소", "wait": "대기"}.get(state, state)
                     price = float(r.get('price', 0) or 0)
+                    avg_price = float(r.get('avg_price', 0) or 0)
                     executed_vol = float(r.get('executed_volume', 0) or 0)
                     paid_fee = float(r.get('paid_fee', 0) or 0)
-                    if price > 0 and executed_vol > 0:
-                        total_krw = price * executed_vol
+                    # avg_price = 실제 체결 단가 (시장가 주문 시 price는 주문총액이므로 avg_price 우선)
+                    unit_price = avg_price if avg_price > 0 else price
+                    if unit_price > 0 and executed_vol > 0:
+                        total_krw = unit_price * executed_vol
                     elif 'trades' in r and r['trades']:
                         total_krw = sum(float(t.get('funds', 0)) for t in r['trades'])
                     else:
