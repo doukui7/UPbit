@@ -1,6 +1,10 @@
 name: "Coin Trade"
 
 on:
+  schedule:
+    # 자동매매(정각) 후 잔고 동기화 — 4시간마다 +10분 (UTC = KST-9)
+    # KST 01:10/05:10/09:10/13:10/17:10/21:10
+    - cron: "10 16,20,0,4,8,12 * * *"
   workflow_dispatch:
     inputs:
       run_job:
@@ -77,7 +81,7 @@ jobs:
 
   # ── 계좌 데이터 VM 경유 동기화 (잔고/체결/입출금) ──
   account_sync:
-    if: github.event.inputs.run_job == 'account_sync'
+    if: (github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'account_sync') || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
       # 1) 리포 체크아웃 (push 용)
