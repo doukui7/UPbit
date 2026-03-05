@@ -1,0 +1,41 @@
+name: "ISA Trade"
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_job:
+        description: Select job to run
+        required: true
+        type: choice
+        default: kis_isa
+        options:
+          - kis_isa
+
+permissions:
+  contents: write
+
+jobs:
+  # ── KIS ISA 위대리(WDR) 자동매매 ──
+  kis_isa:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Auto Trade (KIS ISA - WDR) via Cloud VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 15m
+          envs: KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_run_job.sh kis_isa
+        env:
+          KIS_ISA_APP_KEY: ${{ secrets.KIS_ISA_APP_KEY }}
+          KIS_ISA_APP_SECRET: ${{ secrets.KIS_ISA_APP_SECRET }}
+          KIS_ISA_ACCOUNT_NO: ${{ secrets.KIS_ISA_ACCOUNT_NO }}
+          KIS_ISA_ETF_CODE: ${{ secrets.KIS_ISA_ETF_CODE }}
+          TRADING_MODE: kis_isa
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}

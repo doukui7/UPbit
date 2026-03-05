@@ -1,0 +1,40 @@
+name: "Pension Trade"
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_job:
+        description: Select job to run
+        required: true
+        type: choice
+        default: kis_pension
+        options:
+          - kis_pension
+
+permissions:
+  contents: write
+
+jobs:
+  # ── KIS 연금저축 LAA 자동매매 ──
+  kis_pension:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Auto Trade (KIS Pension - LAA) via Cloud VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 90m
+          envs: KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_run_job.sh kis_pension
+        env:
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
+          TRADING_MODE: kis_pension
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}

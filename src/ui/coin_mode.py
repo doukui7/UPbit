@@ -48,7 +48,17 @@ def _trigger_gh_workflow(job_name: str, extra_inputs: dict | None = None) -> tup
     """GitHub Actions workflow를 트리거하고 결과 반환."""
     import subprocess
     try:
-        cmd = ["gh", "workflow", "run", "auto_trade.yml", "-f", f"run_job={job_name}"]
+        # job_name에 따라 적절한 workflow 파일 선택
+        _wf_map = {
+            "trade": "coin_trade.yml", "manual_order": "coin_trade.yml",
+            "account_sync": "coin_trade.yml",
+            "kiwoom_gold": "gold_trade.yml",
+            "kis_isa": "isa_trade.yml", "kis_pension": "pension_trade.yml",
+            "health_check": "monitoring.yml", "daily_status": "monitoring.yml",
+            "vm_once_add": "monitoring.yml", "vm_once_show": "monitoring.yml",
+        }
+        _wf = _wf_map.get(job_name, "coin_trade.yml")
+        cmd = ["gh", "workflow", "run", _wf, "-f", f"run_job={job_name}"]
         for k, v in (extra_inputs or {}).items():
             cmd.extend(["-f", f"{k}={v}"])
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -97,7 +107,7 @@ def _trigger_and_wait_gh(job_name: str, status_placeholder=None, extra_inputs: d
         time.sleep(2)
         try:
             r = subprocess.run(
-                ["gh", "run", "list", "--workflow=auto_trade.yml", "--limit", "1",
+                ["gh", "run", "list", "--workflow=coin_trade.yml", "--limit", "1",
                  "--json", "databaseId,status,conclusion"],
                 capture_output=True, text=True, timeout=15,
             )

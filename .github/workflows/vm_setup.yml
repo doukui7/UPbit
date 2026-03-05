@@ -1,0 +1,174 @@
+name: "VM Setup"
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_job:
+        description: Select job to run
+        required: true
+        type: choice
+        default: vm_cron_show
+        options:
+          - vm_cron_install
+          - vm_cron_show
+          - vm_cron_remove
+          - vm_setup_deploy_key
+          - vm_install_tools
+
+permissions:
+  contents: write
+
+jobs:
+  vm_cron_install:
+    if: github.event.inputs.run_job == 'vm_cron_install'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install VM Cron Schedule
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_cron_manager.sh install
+
+  vm_cron_show:
+    if: github.event.inputs.run_job == 'vm_cron_show'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show VM Cron Schedule
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            cd ~/upbit
+            bash scripts/vm_cron_manager.sh show
+
+  vm_cron_remove:
+    if: github.event.inputs.run_job == 'vm_cron_remove'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove VM Cron Schedule
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            cd ~/upbit
+            bash scripts/vm_cron_manager.sh remove
+
+  # ── VM Deploy Key 생성 (1회성 - GitHub SSH 인증 영구화) ──
+  vm_setup_deploy_key:
+    if: github.event.inputs.run_job == 'vm_setup_deploy_key'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Deploy Key on VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 2m
+          script: |
+            KEY_FILE="$HOME/.ssh/id_ed25519_github"
+            if [ -f "$KEY_FILE" ]; then
+              echo "=== 기존 Deploy Key 존재 ==="
+            else
+              ssh-keygen -t ed25519 -C "vm-auto-trade-deploy-key" -f "$KEY_FILE" -N ""
+              echo "=== Deploy Key 생성 완료 ==="
+            fi
+            echo ""
+            echo "=== PUBLIC KEY (아래 내용을 GitHub Deploy Keys에 등록) ==="
+            cat "${KEY_FILE}.pub"
+            echo ""
+            echo "=== SSH config 설정 ==="
+            if ! grep -q "id_ed25519_github" "$HOME/.ssh/config" 2>/dev/null; then
+              cat >> "$HOME/.ssh/config" << 'SSHCONF'
+
+            Host github.com
+              HostName github.com
+              User git
+              IdentityFile ~/.ssh/id_ed25519_github
+              IdentitiesOnly yes
+            SSHCONF
+              chmod 600 "$HOME/.ssh/config"
+              echo "SSH config 추가 완료"
+            else
+              echo "SSH config 이미 설정됨"
+            fi
+            echo ""
+            echo "=== git remote 설정 ==="
+            cd ~/upbit 2>/dev/null || true
+            CURRENT_REMOTE=$(git remote get-url origin 2>/dev/null || echo "없음")
+            echo "현재 remote: $CURRENT_REMOTE"
+            if echo "$CURRENT_REMOTE" | grep -q "https://"; then
+              git remote set-url origin git@github.com:doukui7/UPbit.git
+              echo "remote → SSH 변경 완료: git@github.com:doukui7/UPbit.git"
+            else
+              echo "이미 SSH remote 사용 중"
+            fi
+
+  # ── VM 운영 도구 설치 (PM2 + Glances) ──
+  vm_install_tools:
+    if: github.event.inputs.run_job == 'vm_install_tools'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install PM2 and Glances on VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 10m
+          script: |
+            echo "=== Node.js / PM2 설치 ==="
+            if command -v node &>/dev/null; then
+              echo "Node.js 이미 설치됨: $(node -v)"
+            else
+              echo "Node.js 설치 중..."
+              curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - 2>/dev/null
+              sudo apt-get install -y nodejs 2>/dev/null || {
+                echo "apt 설치 실패, nvm fallback..."
+                curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+                export NVM_DIR="$HOME/.nvm"
+                [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+                nvm install 20
+              }
+              echo "Node.js 설치 완료: $(node -v 2>/dev/null || echo 'nvm 재로그인 필요')"
+            fi
+
+            if command -v pm2 &>/dev/null; then
+              echo "PM2 이미 설치됨: $(pm2 -v)"
+            else
+              echo "PM2 설치 중..."
+              sudo npm install -g pm2 2>/dev/null || npm install -g pm2
+              echo "PM2 설치 완료: $(pm2 -v 2>/dev/null || echo '확인 필요')"
+            fi
+
+            echo ""
+            echo "=== Glances 설치 ==="
+            if command -v glances &>/dev/null; then
+              echo "Glances 이미 설치됨: $(glances -V 2>/dev/null | head -1)"
+            else
+              echo "Glances 설치 중..."
+              pip3 install glances[all] 2>/dev/null || pip install glances[all] 2>/dev/null || {
+                echo "pip 설치 실패, pipx fallback..."
+                pipx install "glances[all]" 2>/dev/null || sudo pip3 install glances 2>/dev/null
+              }
+              echo "Glances 설치 완료: $(glances -V 2>/dev/null | head -1 || echo '확인 필요')"
+            fi
+
+            echo ""
+            echo "=== 설치 결과 요약 ==="
+            echo "Node.js: $(node -v 2>/dev/null || echo '미설치')"
+            echo "npm: $(npm -v 2>/dev/null || echo '미설치')"
+            echo "PM2: $(pm2 -v 2>/dev/null || echo '미설치')"
+            echo "Glances: $(glances -V 2>/dev/null | head -1 || echo '미설치')"

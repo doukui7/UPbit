@@ -1,0 +1,43 @@
+name: "Gold Trade"
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_job:
+        description: Select job to run
+        required: true
+        type: choice
+        default: kiwoom_gold
+        options:
+          - kiwoom_gold
+
+permissions:
+  contents: write
+
+jobs:
+  # ── 키움 금현물 자동매매 ──
+  kiwoom_gold:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Auto Trade (Kiwoom Gold) via Cloud VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 15m
+          envs: KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_run_job.sh kiwoom_gold
+        env:
+          KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
+          KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
+          KIWOOM_ACCOUNT: ${{ secrets.KIWOOM_ACCOUNT }}
+          GOLD_PORTFOLIO: ${{ secrets.GOLD_PORTFOLIO }}
+          GOLD_BUY_PERIOD: '90'
+          GOLD_SELL_PERIOD: '55'
+          TRADING_MODE: kiwoom_gold
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}

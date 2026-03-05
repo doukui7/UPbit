@@ -325,7 +325,13 @@ upbit/
 │   └── pension.json                # 연금저축 모드 설정
 │
 └── .github/workflows/
-    └── auto_trade.yml              # GitHub Actions 워크플로우
+    ├── coin_trade.yml              # 코인 자동매매 (trade, manual_order, account_sync)
+    ├── gold_trade.yml              # 골드 자동매매 (kiwoom_gold)
+    ├── isa_trade.yml               # ISA 자동매매 (kis_isa)
+    ├── pension_trade.yml           # 연금저축 자동매매 (kis_pension)
+    ├── vm_scheduler.yml            # VM 스케줄러 관리 (start/ensure/status/stop)
+    ├── vm_setup.yml                # VM 초기설정 (cron, deploy key, tools)
+    └── monitoring.yml              # 모니터링 (health_check, daily_status, 예약주문)
 ```
 """)
 
@@ -359,7 +365,7 @@ def _render_security_guide():
 - **업비트 API 관리**: https://upbit.com/mypage/open_api_management
 - **업비트 API 문서**: https://docs.upbit.com
 - **GCP 콘솔**: https://console.cloud.google.com
-- **GitHub Actions**: 워크플로우 설정 (`.github/workflows/auto_trade.yml`)
+- **GitHub Actions**: 워크플로우 설정 (`.github/workflows/` — 기능별 7개 파일)
 """)
 
 

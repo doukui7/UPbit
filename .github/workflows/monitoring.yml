@@ -1,0 +1,166 @@
+name: "Monitoring"
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_job:
+        description: Select job to run
+        required: true
+        type: choice
+        default: daily_status
+        options:
+          - daily_status
+          - health_check
+          - vm_once_add
+          - vm_once_show
+      once_mode:
+        description: 1회성 예약 대상 모드 (vm_once_add 전용)
+        required: false
+        type: choice
+        default: kis_pension
+        options:
+          - kis_pension
+          - upbit
+          - health_check
+          - daily_status
+          - kiwoom_gold
+          - kis_isa
+      once_run_at_kst:
+        description: 1회성 실행시각 KST (YYYY-MM-DD HH:MM[:SS], 비우면 내일 15:20)
+        required: false
+        default: ""
+      once_note:
+        description: 1회성 예약 메모 (선택)
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  health_check:
+    if: github.event.inputs.run_job == 'health_check'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Daily Health Check via Cloud VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 15m
+          capture_stdout: true
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN,HEALTHCHECK_UPBIT_RECOVERY
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_run_job.sh health_check
+        env:
+          # 업비트
+          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
+          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
+          PORTFOLIO: ${{ secrets.PORTFOLIO }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          # 키움 금현물
+          KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
+          KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
+          KIWOOM_ACCOUNT: ${{ secrets.KIWOOM_ACCOUNT }}
+          GOLD_PORTFOLIO: ${{ secrets.GOLD_PORTFOLIO }}
+          GOLD_BUY_PERIOD: '90'
+          GOLD_SELL_PERIOD: '55'
+          # KIS ISA
+          KIS_ISA_APP_KEY: ${{ secrets.KIS_ISA_APP_KEY }}
+          KIS_ISA_APP_SECRET: ${{ secrets.KIS_ISA_APP_SECRET }}
+          KIS_ISA_ACCOUNT_NO: ${{ secrets.KIS_ISA_ACCOUNT_NO }}
+          KIS_ISA_ETF_CODE: ${{ secrets.KIS_ISA_ETF_CODE }}
+          # KIS 연금저축
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
+          TRADING_MODE: health_check
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
+          HEALTHCHECK_UPBIT_RECOVERY: '1'
+
+  # ── 일일 자산 현황 리포트 (VM SSH 경유) ──
+  daily_status:
+    if: github.event.inputs.run_job == 'daily_status'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Daily Status Report via Cloud VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 15m
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_run_job.sh daily_status
+        env:
+          # Upbit
+          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
+          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
+          PORTFOLIO: ${{ secrets.PORTFOLIO }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          # Kiwoom Gold
+          KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
+          KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
+          KIWOOM_ACCOUNT: ${{ secrets.KIWOOM_ACCOUNT }}
+          # KIS ISA
+          KIS_ISA_APP_KEY: ${{ secrets.KIS_ISA_APP_KEY }}
+          KIS_ISA_APP_SECRET: ${{ secrets.KIS_ISA_APP_SECRET }}
+          KIS_ISA_ACCOUNT_NO: ${{ secrets.KIS_ISA_ACCOUNT_NO }}
+          KIS_ISA_ETF_CODE: ${{ secrets.KIS_ISA_ETF_CODE }}
+          # KIS Pension
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
+          TRADING_MODE: daily_status
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
+
+  # ── 1회성 예약주문 등록 ──
+  vm_once_add:
+    if: github.event.inputs.run_job == 'vm_once_add'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add One-off Schedule on VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          envs: ONCE_MODE,ONCE_RUN_AT_KST,ONCE_NOTE
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_scheduler_manager.sh ensure
+            if [ -z "${ONCE_RUN_AT_KST}" ]; then
+              ONCE_RUN_AT_KST="$(TZ=Asia/Seoul date -d 'tomorrow 15:20' '+%Y-%m-%d %H:%M')"
+            fi
+            echo "[info] 예약주문 등록: mode=${ONCE_MODE} run_at_kst=${ONCE_RUN_AT_KST} file=logs/vm_reserved_orders.json"
+            bash scripts/vm_oneoff_manager.sh add "${ONCE_MODE}" "${ONCE_RUN_AT_KST}" "${ONCE_NOTE}"
+        env:
+          ONCE_MODE: ${{ github.event.inputs.once_mode }}
+          ONCE_RUN_AT_KST: ${{ github.event.inputs.once_run_at_kst }}
+          ONCE_NOTE: ${{ github.event.inputs.once_note }}
+
+  vm_once_show:
+    if: github.event.inputs.run_job == 'vm_once_show'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show One-off Schedule on VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            cd ~/upbit
+            bash scripts/vm_oneoff_manager.sh show
+            bash scripts/vm_scheduler_manager.sh status

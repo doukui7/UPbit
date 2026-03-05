@@ -1,0 +1,104 @@
+name: "Coin Trade"
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_job:
+        description: Select job to run
+        required: true
+        type: choice
+        default: trade
+        options:
+          - trade
+          - manual_order
+          - account_sync
+      manual_order_params:
+        description: '수동주문 JSON (예: {"coin":"BTC","side":"buy","pct":50})'
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  # ── 업비트 BTC 자동매매 (VM SSH 경유 - 고정 IP) ──
+  trade:
+    if: github.event.inputs.run_job == 'trade'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Auto Trade via Cloud VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 15m
+          capture_stdout: true
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_run_job.sh upbit
+        env:
+          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
+          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
+          PORTFOLIO: ${{ secrets.PORTFOLIO }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          TRADING_MODE: upbit
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
+
+  # ── 업비트 수동주문 (전략 분석 없이 즉시 매수/매도) ──
+  manual_order:
+    if: github.event.inputs.run_job == 'manual_order'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Manual Order via Cloud VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          capture_stdout: true
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN,MANUAL_ORDER
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_run_job.sh manual_order
+        env:
+          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
+          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          TRADING_MODE: manual_order
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
+          MANUAL_ORDER: ${{ github.event.inputs.manual_order_params }}
+
+  # ── 계좌 데이터 VM 경유 동기화 (잔고/체결/입출금) ──
+  account_sync:
+    if: github.event.inputs.run_job == 'account_sync'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync Account Data via Cloud VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          capture_stdout: true
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            bash scripts/vm_run_job.sh account_sync
+            echo "=== account_sync log tail ==="
+            tail -30 ~/upbit/logs/account_sync.log 2>/dev/null || echo "(no log)"
+        env:
+          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
+          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          TRADING_MODE: account_sync
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}

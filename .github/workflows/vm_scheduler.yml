@@ -1,0 +1,182 @@
+name: "VM Scheduler"
+
+on:
+  schedule:
+    # VM 스케줄러 생존 감시 (5분 주기)
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      run_job:
+        description: Select job to run
+        required: true
+        type: choice
+        default: vm_scheduler_ensure
+        options:
+          - vm_scheduler_start
+          - vm_scheduler_ensure
+          - vm_scheduler_status
+          - vm_scheduler_stop
+
+permissions:
+  contents: write
+
+jobs:
+  vm_scheduler_start:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_scheduler_start'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start Python Scheduler on VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN,HEALTHCHECK_UPBIT_RECOVERY
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            {
+              printf "UPBIT_ACCESS_KEY=%q\n" "${UPBIT_ACCESS_KEY}"
+              printf "UPBIT_SECRET_KEY=%q\n" "${UPBIT_SECRET_KEY}"
+              printf "PORTFOLIO=%q\n" "${PORTFOLIO}"
+              printf "KIWOOM_APP_KEY=%q\n" "${KIWOOM_APP_KEY}"
+              printf "KIWOOM_SECRET_KEY=%q\n" "${KIWOOM_SECRET_KEY}"
+              printf "KIWOOM_ACCOUNT=%q\n" "${KIWOOM_ACCOUNT}"
+              printf "GOLD_PORTFOLIO=%q\n" "${GOLD_PORTFOLIO}"
+              printf "GOLD_BUY_PERIOD=%q\n" "${GOLD_BUY_PERIOD}"
+              printf "GOLD_SELL_PERIOD=%q\n" "${GOLD_SELL_PERIOD}"
+              printf "KIS_ISA_APP_KEY=%q\n" "${KIS_ISA_APP_KEY}"
+              printf "KIS_ISA_APP_SECRET=%q\n" "${KIS_ISA_APP_SECRET}"
+              printf "KIS_ISA_ACCOUNT_NO=%q\n" "${KIS_ISA_ACCOUNT_NO}"
+              printf "KIS_ISA_ETF_CODE=%q\n" "${KIS_ISA_ETF_CODE}"
+              printf "KIS_APP_KEY=%q\n" "${KIS_APP_KEY}"
+              printf "KIS_APP_SECRET=%q\n" "${KIS_APP_SECRET}"
+              printf "KIS_PENSION_ACCOUNT_NO=%q\n" "${KIS_PENSION_ACCOUNT_NO}"
+              printf "TELEGRAM_BOT_TOKEN=%q\n" "${TELEGRAM_BOT_TOKEN}"
+              printf "TELEGRAM_CHAT_ID=%q\n" "${TELEGRAM_CHAT_ID}"
+              printf "GH_TOKEN=%q\n" "${GH_TOKEN}"
+              printf "HEALTHCHECK_UPBIT_RECOVERY=%q\n" "${HEALTHCHECK_UPBIT_RECOVERY}"
+            } > .vm_runtime_env
+            chmod 600 .vm_runtime_env
+            bash scripts/vm_scheduler_manager.sh start
+        env:
+          # 업비트
+          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
+          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
+          PORTFOLIO: ${{ secrets.PORTFOLIO }}
+          # 키움 금현물
+          KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
+          KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
+          KIWOOM_ACCOUNT: ${{ secrets.KIWOOM_ACCOUNT }}
+          GOLD_PORTFOLIO: ${{ secrets.GOLD_PORTFOLIO }}
+          GOLD_BUY_PERIOD: '90'
+          GOLD_SELL_PERIOD: '55'
+          # KIS ISA
+          KIS_ISA_APP_KEY: ${{ secrets.KIS_ISA_APP_KEY }}
+          KIS_ISA_APP_SECRET: ${{ secrets.KIS_ISA_APP_SECRET }}
+          KIS_ISA_ACCOUNT_NO: ${{ secrets.KIS_ISA_ACCOUNT_NO }}
+          KIS_ISA_ETF_CODE: ${{ secrets.KIS_ISA_ETF_CODE }}
+          # KIS 연금저축
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          HEALTHCHECK_UPBIT_RECOVERY: '1'
+
+  vm_scheduler_ensure:
+    if: (github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_scheduler_ensure') || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure Python Scheduler on VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN,HEALTHCHECK_UPBIT_RECOVERY
+          script: |
+            cd ~/upbit
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            {
+              printf "UPBIT_ACCESS_KEY=%q\n" "${UPBIT_ACCESS_KEY}"
+              printf "UPBIT_SECRET_KEY=%q\n" "${UPBIT_SECRET_KEY}"
+              printf "PORTFOLIO=%q\n" "${PORTFOLIO}"
+              printf "KIWOOM_APP_KEY=%q\n" "${KIWOOM_APP_KEY}"
+              printf "KIWOOM_SECRET_KEY=%q\n" "${KIWOOM_SECRET_KEY}"
+              printf "KIWOOM_ACCOUNT=%q\n" "${KIWOOM_ACCOUNT}"
+              printf "GOLD_PORTFOLIO=%q\n" "${GOLD_PORTFOLIO}"
+              printf "GOLD_BUY_PERIOD=%q\n" "${GOLD_BUY_PERIOD}"
+              printf "GOLD_SELL_PERIOD=%q\n" "${GOLD_SELL_PERIOD}"
+              printf "KIS_ISA_APP_KEY=%q\n" "${KIS_ISA_APP_KEY}"
+              printf "KIS_ISA_APP_SECRET=%q\n" "${KIS_ISA_APP_SECRET}"
+              printf "KIS_ISA_ACCOUNT_NO=%q\n" "${KIS_ISA_ACCOUNT_NO}"
+              printf "KIS_ISA_ETF_CODE=%q\n" "${KIS_ISA_ETF_CODE}"
+              printf "KIS_APP_KEY=%q\n" "${KIS_APP_KEY}"
+              printf "KIS_APP_SECRET=%q\n" "${KIS_APP_SECRET}"
+              printf "KIS_PENSION_ACCOUNT_NO=%q\n" "${KIS_PENSION_ACCOUNT_NO}"
+              printf "TELEGRAM_BOT_TOKEN=%q\n" "${TELEGRAM_BOT_TOKEN}"
+              printf "TELEGRAM_CHAT_ID=%q\n" "${TELEGRAM_CHAT_ID}"
+              printf "GH_TOKEN=%q\n" "${GH_TOKEN}"
+              printf "HEALTHCHECK_UPBIT_RECOVERY=%q\n" "${HEALTHCHECK_UPBIT_RECOVERY}"
+            } > .vm_runtime_env
+            chmod 600 .vm_runtime_env
+            bash scripts/vm_scheduler_manager.sh ensure
+        env:
+          # 업비트
+          UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
+          UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
+          PORTFOLIO: ${{ secrets.PORTFOLIO }}
+          # 키움 금현물
+          KIWOOM_APP_KEY: ${{ secrets.KIWOOM_APP_KEY }}
+          KIWOOM_SECRET_KEY: ${{ secrets.KIWOOM_SECRET_KEY }}
+          KIWOOM_ACCOUNT: ${{ secrets.KIWOOM_ACCOUNT }}
+          GOLD_PORTFOLIO: ${{ secrets.GOLD_PORTFOLIO }}
+          GOLD_BUY_PERIOD: '90'
+          GOLD_SELL_PERIOD: '55'
+          # KIS ISA
+          KIS_ISA_APP_KEY: ${{ secrets.KIS_ISA_APP_KEY }}
+          KIS_ISA_APP_SECRET: ${{ secrets.KIS_ISA_APP_SECRET }}
+          KIS_ISA_ACCOUNT_NO: ${{ secrets.KIS_ISA_ACCOUNT_NO }}
+          KIS_ISA_ETF_CODE: ${{ secrets.KIS_ISA_ETF_CODE }}
+          # KIS 연금저축
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+          KIS_PENSION_ACCOUNT_NO: ${{ secrets.KIS_PENSION_ACCOUNT_NO }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          HEALTHCHECK_UPBIT_RECOVERY: '1'
+
+  vm_scheduler_status:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_scheduler_status'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show Python Scheduler Status on VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            cd ~/upbit
+            bash scripts/vm_scheduler_manager.sh status
+
+  vm_scheduler_stop:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_scheduler_stop'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop Python Scheduler on VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 5m
+          script: |
+            cd ~/upbit
+            bash scripts/vm_scheduler_manager.sh stop
