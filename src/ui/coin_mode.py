@@ -930,6 +930,78 @@ def render_coin_mode(config, save_config):
         "KRW-XLM", "KRW-STX", "KRW-HBAR", "KRW-EOS", "KRW-SAND"
     ]
 
+    # ═══════════════════════════════════════════════════════════════
+    # 실시간 가격 & 자산 — 대시보드 최상단 (탭 위)
+    # ═══════════════════════════════════════════════════════════════
+    _top_prices = {}
+    _top_balances = {}
+    _top_krw = 0.0
+    _top_total_asset = 0.0
+    _top_from_cache = False
+    _top_cache_time = ""
+
+    if trader and portfolio_list:
+        _top_unique_coins = list(dict.fromkeys(item['coin'].upper() for item in portfolio_list))
+        _top_unique_tickers = list(dict.fromkeys(f"{item['market']}-{item['coin'].upper()}" for item in portfolio_list))
+
+        # BTC 가격은 항상 표시
+        if "KRW-BTC" not in _top_unique_tickers:
+            _top_unique_tickers.append("KRW-BTC")
+
+        def _fetch_top_prices():
+            _force = bool(st.session_state.pop("coin_force_price_refresh_once", False))
+            return data_cache.get_current_prices_local_first(
+                _top_unique_tickers, ttl_sec=0.0 if _force else 5.0, allow_api_fallback=True,
+            )
+        _top_prices = _ttl_cache("prices_t1", _fetch_top_prices, ttl=5) or {}
+
+        def _fetch_top_balances():
+            if hasattr(trader, 'get_all_balances'):
+                raw = trader.get_all_balances()
+                if raw and isinstance(raw, dict) and len(raw) > 0:
+                    return raw
+            return None
+        _top_live_bal = _ttl_cache("balances_t1", _fetch_top_balances, ttl=10)
+
+        if _top_live_bal and isinstance(_top_live_bal, dict) and len(_top_live_bal) > 0:
+            _top_krw = float(_top_live_bal.get('KRW', 0) or 0)
+            _top_balances = {c: float(_top_live_bal.get(c, 0) or 0) for c in _top_unique_coins}
+        else:
+            _cached = _load_balance_cache()
+            if _cached and _cached.get("balances"):
+                _bal = _cached["balances"]
+                _top_krw = float(_bal.get('KRW', 0) or 0)
+                _top_balances = {c: float(_bal.get(c, 0) or 0) for c in _top_unique_coins}
+                _top_from_cache = True
+                _top_cache_time = _cached.get("updated_at", "")
+
+        _top_coin_val = sum(
+            _top_balances.get(c, 0) * (_top_prices.get(f"KRW-{c}", 0) or 0)
+            for c in _top_unique_coins
+        )
+        _top_total_asset = _top_krw + _top_coin_val
+        _top_pnl = _top_total_asset - initial_cap
+        _top_pnl_pct = (_top_pnl / initial_cap * 100) if initial_cap > 0 else 0
+
+        # BTC 가격
+        _btc_price = _top_prices.get("KRW-BTC", 0) or 0
+
+        # 상단 요약 패널
+        _tc1, _tc2, _tc3, _tc4, _tc5 = st.columns(5)
+        _tc1.metric("BTC", f"{_btc_price:,.0f}원")
+        for _pi in portfolio_list:
+            _ptk = f"{_pi['market']}-{_pi['coin'].upper()}"
+            _pp = _top_prices.get(_ptk, 0) or 0
+            if _ptk != "KRW-BTC":
+                _tc2.metric(_pi['coin'].upper(), f"{_pp:,.0f}원")
+                break
+        _tc3.metric("총 자산", f"{_top_total_asset:,.0f}원")
+        _pnl_delta = f"{_top_pnl:+,.0f}원 ({_top_pnl_pct:+.2f}%)"
+        _tc4.metric("손익 (P&L)", _pnl_delta)
+        _tc5.metric("현금 (KRW)", f"{_top_krw:,.0f}원")
+        if _top_from_cache and _top_cache_time:
+            st.caption(f"잔고: VM 캐시 기준 ({_top_cache_time})")
+
     # --- Tabs ---
     tab1, tab5, tab3, tab4, tab6 = st.tabs(["🚀 실시간 포트폴리오", "🛒 수동 주문", "📜 거래 내역", "📊 백테스트", "⏰ 트리거"])
 
