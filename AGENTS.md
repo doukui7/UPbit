@@ -36,6 +36,22 @@
 - **수동 주문**: Streamlit UI → GitHub Actions (workflow_dispatch) → VM SSH → Upbit API
 - **계좌 조회**: Streamlit UI → GitHub Actions → VM SSH → Upbit API → account_cache.json push
 
+## GitHub Actions ↔ VM 연동 참고사항 (2026-03-05 검증 완료)
+
+### 동작하지 않는 방법 (실패 기록)
+1. **`github.token` (ghs_) VM 전달**: Actions runner 전용 토큰이라 외부 VM에서 GitHub API 호출 불가 (Bad credentials)
+2. **OAuth PAT (gho_) 등록**: 동작하지만 ~8시간 후 만료, 영구 솔루션 아님
+3. **VM에서 SSH git fetch**: GitHub SSH 호스트키 변경으로 `Host key verification failed` 발생
+4. **`ssh-keyscan` 후 SSH fetch**: VM 환경에 따라 known_hosts 갱신 불완전
+5. **pyupbit 커스텀 JWT 해시 (`unquote()` 사용)**: pyupbit은 `urlencode().replace("%5B%5D=","[]=")` 방식
+6. **`requests.get(params=...)` 로 Upbit API 호출**: pyupbit은 `data=` 파라미터 사용
+
+### 동작하는 방법 (현재 적용됨)
+1. **VM git fetch → HTTPS remote**: `git remote set-url origin https://github.com/doukui7/UPbit.git` 사용
+2. **GitHub push → Runner에서 push**: VM에서 SCP로 파일 다운로드 → runner에서 git push (github.token 자동 적용)
+3. **Upbit API 인증 → pyupbit 네이티브**: `self.upbit._request_headers(params)` + `requests.get(data=params)` 사용
+4. **GH_TOKEN → 전면 제거**: 모든 workflow에서 VM으로 GH_TOKEN 전달하지 않음
+
 ## 로깅 규칙
 - 모든 주문 시도와 결과를 trade_log.json에 기록
 - 로그 항목: 시각, 모드(auto/manual), 코인, 방향, 금액/수량, 결과(성공/실패/스킵), 사유
