@@ -940,100 +940,91 @@ def render_coin_mode(config, save_config):
     _top_from_cache = False
     _top_cache_time = ""
 
+    # 1) 잔고 조회: API → 실패 시 캐시 (trader 유무 무관하게 캐시는 표시)
+    _top_live_bal = None
     if trader:
-        # 1) 잔고 조회: 업비트 계좌 전체 (포트폴리오 무관)
-        def _fetch_top_balances():
-            if hasattr(trader, 'get_all_balances'):
-                raw = trader.get_all_balances()
-                if raw and isinstance(raw, dict) and len(raw) > 0:
-                    return raw
-            return None
-        _top_live_bal = _ttl_cache("balances_t1", _fetch_top_balances, ttl=10)
+        try:
+            def _fetch_top_balances():
+                if hasattr(trader, 'get_all_balances'):
+                    raw = trader.get_all_balances()
+                    if raw and isinstance(raw, dict) and len(raw) > 0:
+                        return raw
+                return None
+            _top_live_bal = _ttl_cache("balances_t1", _fetch_top_balances, ttl=10)
+        except Exception:
+            pass
 
-        if _top_live_bal and isinstance(_top_live_bal, dict) and len(_top_live_bal) > 0:
-            _top_krw = float(_top_live_bal.get('KRW', 0) or 0)
-            _top_balances = {c: float(v) for c, v in _top_live_bal.items() if c != 'KRW' and float(v or 0) > 0}
-        else:
-            _cached = _load_balance_cache()
-            if _cached and _cached.get("balances"):
-                _bal = _cached["balances"]
-                _top_krw = float(_bal.get('KRW', 0) or 0)
-                _top_balances = {c: float(v) for c, v in _bal.items() if c != 'KRW' and float(v or 0) > 0}
-                _top_from_cache = True
-                _top_cache_time = _cached.get("updated_at", "")
+    if _top_live_bal and isinstance(_top_live_bal, dict) and len(_top_live_bal) > 0:
+        _top_krw = float(_top_live_bal.get('KRW', 0) or 0)
+        for _bc, _bv in _top_live_bal.items():
+            _bc = str(_bc).upper()
+            if _bc != 'KRW':
+                try:
+                    _fv = float(_bv or 0)
+                    if _fv > 0:
+                        _top_balances[_bc] = _fv
+                except (ValueError, TypeError):
+                    pass
+    else:
+        _cached = _load_balance_cache()
+        if _cached and _cached.get("balances"):
+            _bal = _cached["balances"]
+            _top_krw = float(_bal.get('KRW', 0) or 0)
+            for _bc, _bv in _bal.items():
+                _bc = str(_bc).upper()
+                if _bc != 'KRW':
+                    try:
+                        _fv = float(_bv or 0)
+                        if _fv > 0:
+                            _top_balances[_bc] = _fv
+                    except (ValueError, TypeError):
+                        pass
+            _top_from_cache = True
+            _top_cache_time = _cached.get("updated_at", "")
 
-        # 2) 가격 조회: 잔고에 있는 모든 코인 + 포트폴리오 코인 + BTC
-        _all_held_coins = set(_top_balances.keys())
-        if portfolio_list:
-            _all_held_coins.update(item['coin'].upper() for item in portfolio_list)
-        _all_held_coins.add("BTC")
-        _top_unique_tickers = [f"KRW-{c}" for c in sorted(_all_held_coins)]
+    # 2) 가격 조회: Public API (IP 차단 영향 없음)
+    _all_held_coins = set(_top_balances.keys())
+    if portfolio_list:
+        _all_held_coins.update(item['coin'].upper() for item in portfolio_list)
+    _all_held_coins.add("BTC")
+    _top_unique_tickers = [f"KRW-{c}" for c in sorted(_all_held_coins)]
 
+    try:
         def _fetch_top_prices():
             _force = bool(st.session_state.pop("coin_force_price_refresh_once", False))
             return data_cache.get_current_prices_local_first(
                 _top_unique_tickers, ttl_sec=0.0 if _force else 5.0, allow_api_fallback=True,
             )
         _top_prices = _ttl_cache("prices_t1", _fetch_top_prices, ttl=5) or {}
+    except Exception:
+        pass
 
-        # 3) 총자산 계산: 실제 보유 코인 전체
-        _top_coin_val = sum(
-            bal * (_top_prices.get(f"KRW-{c}", 0) or 0)
-            for c, bal in _top_balances.items()
-        )
-        _top_total_asset = _top_krw + _top_coin_val
-        _top_pnl = _top_total_asset - initial_cap
-        _top_pnl_pct = (_top_pnl / initial_cap * 100) if initial_cap > 0 else 0
+    # 3) 총자산 계산
+    _top_coin_val = sum(
+        bal * (_top_prices.get(f"KRW-{c}", 0) or 0)
+        for c, bal in _top_balances.items()
+    )
+    _top_total_asset = _top_krw + _top_coin_val
+    _top_pnl = _top_total_asset - initial_cap
+    _top_pnl_pct = (_top_pnl / initial_cap * 100) if initial_cap > 0 else 0
+    _btc_price = _top_prices.get("KRW-BTC", 0) or 0
 
-        # BTC 가격
-        _btc_price = _top_prices.get("KRW-BTC", 0) or 0
+    # 가격 조회 시각
+    _price_fetch_time = datetime.now().strftime("%H:%M:%S")
+    _price_ts = st.session_state.get("__t_prices_t1")
+    if _price_ts:
+        _price_fetch_time = datetime.fromtimestamp(_price_ts).strftime("%H:%M:%S")
 
-        # 가격 조회 시각
-        _price_fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        _price_ts = st.session_state.get("__t_prices_t1")
-        if _price_ts:
-            _price_fetch_time = datetime.fromtimestamp(_price_ts).strftime("%Y-%m-%d %H:%M:%S")
-
-        # 보유 코인 목록 (금액 순 정렬)
-        _held_coins_sorted = sorted(
-            [(c, bal, bal * (_top_prices.get(f"KRW-{c}", 0) or 0))
-             for c, bal in _top_balances.items()],
-            key=lambda x: -x[2],
-        )
-
-        # 상단 요약 패널
-        _n_cols = min(2 + len(_held_coins_sorted), 6)
-        _top_cols = st.columns(_n_cols)
-        _col_idx = 0
-        # BTC 가격 (항상 표시)
-        _top_cols[_col_idx].metric("BTC", f"{_btc_price:,.0f}원")
-        _col_idx += 1
-        # 보유 코인 가격 (BTC 제외, 최대 3개)
-        _shown = 0
-        for _hc, _hbal, _hval in _held_coins_sorted:
-            if _hc == "BTC" or _shown >= 3:
-                continue
-            if _col_idx >= _n_cols:
-                break
-            _hp = _top_prices.get(f"KRW-{_hc}", 0) or 0
-            _top_cols[_col_idx].metric(
-                _hc,
-                f"{_hp:,.0f}원",
-                f"{_hbal:.4f}" if _hbal < 10 else f"{_hbal:,.2f}",
-            )
-            _col_idx += 1
-            _shown += 1
-
-        # 자산 요약 (나머지 칸)
-        _asset_cols = st.columns(3)
-        _asset_cols[0].metric("총 자산", f"{_top_total_asset:,.0f}원")
-        _pnl_delta = f"{_top_pnl:+,.0f}원 ({_top_pnl_pct:+.2f}%)"
-        _asset_cols[1].metric("손익 (P&L)", _pnl_delta)
-        _asset_cols[2].metric("현금 (KRW)", f"{_top_krw:,.0f}원")
-        _cache_note = f"기준 시각: {_price_fetch_time}"
-        if _top_from_cache and _top_cache_time:
-            _cache_note += f" | 잔고: VM 캐시 ({_top_cache_time})"
-        st.caption(_cache_note)
+    # ── 상단 요약 패널 (항상 표시) ──
+    _tc1, _tc2, _tc3, _tc4 = st.columns(4)
+    _tc1.metric("BTC", f"{_btc_price:,.0f}원")
+    _tc2.metric("총 자산", f"{_top_total_asset:,.0f}원")
+    _tc3.metric("손익 (P&L)", f"{_top_pnl:+,.0f}원 ({_top_pnl_pct:+.2f}%)")
+    _tc4.metric("현금 (KRW)", f"{_top_krw:,.0f}원")
+    _cache_note = f"가격: {_price_fetch_time}"
+    if _top_from_cache:
+        _cache_note += f" | 잔고: VM캐시 {_top_cache_time}"
+    st.caption(_cache_note)
 
     # --- Tabs ---
     tab1, tab5, tab3, tab4, tab6 = st.tabs(["🚀 실시간 포트폴리오", "🛒 수동 주문", "📜 거래 내역", "📊 백테스트", "⏰ 트리거"])
@@ -2820,68 +2811,69 @@ def render_coin_mode(config, save_config):
                     rows = [r for r in rows if api_curr.upper() in r.get("화폐/코인", "").upper()]
                 return rows
 
-            # ── 조회 버튼 하나 ──
-            _acct_cache = _load_account_cache()
-            _cache_time = _acct_cache.get("updated_at", "")
-            if _cache_time:
-                st.caption(f"마지막 동기화: {_cache_time}")
+            # ── 조회 ──
+            _hist_btn_col1, _hist_btn_col2 = st.columns([1, 3])
+            with _hist_btn_col1:
+                _do_query = st.button("조회", key="hist_query", type="primary")
+            with _hist_btn_col2:
+                _acct_cache = _load_account_cache()
+                _cache_time = _acct_cache.get("updated_at", "")
+                if _cache_time:
+                    st.caption(f"마지막 동기화: {_cache_time}")
 
-            if st.button("조회", key="hist_query", type="primary"):
-                # 1) 로컬 API 시도
+            # 조회 버튼 클릭 시 API 직접 호출
+            if _do_query and trader:
+                api_curr = None if h_curr == "전체" else h_curr
+                query_types = []
+                if h_type == "전체":
+                    query_types = [("deposit", "입금"), ("withdraw", "출금"), ("order", "체결")]
+                elif "입금" in h_type:
+                    query_types = [("deposit", "입금")]
+                elif "출금" in h_type:
+                    query_types = [("withdraw", "출금")]
+                elif "체결" in h_type:
+                    query_types = [("order", "체결")]
+
                 all_rows = []
                 ip_blocked = False
-                if trader:
-                    api_curr = None if h_curr == "전체" else h_curr
-                    query_types = []
-                    if h_type == "전체":
-                        query_types = [("deposit", "입금"), ("withdraw", "출금"), ("order", "체결")]
-                    elif "입금" in h_type:
-                        query_types = [("deposit", "입금")]
-                    elif "출금" in h_type:
-                        query_types = [("withdraw", "출금")]
-                    elif "체결" in h_type:
-                        query_types = [("order", "체결")]
-
-                    with st.spinner("API 조회 중..."):
-                        for api_type, label in query_types:
-                            try:
-                                data, err = trader.get_history(api_type, api_curr)
-                                if err and ("authorization_ip" in err or "verified IP" in err):
-                                    ip_blocked = True
-                                    break
-                                if data:
-                                    if api_type in ("deposit", "withdraw"):
-                                        all_rows.extend(_parse_deposit_withdraw(data, label))
-                                    else:
-                                        all_rows.extend(_parse_orders(data))
-                            except Exception:
+                with st.spinner("API 조회 중..."):
+                    for api_type, label in query_types:
+                        try:
+                            data, err = trader.get_history(api_type, api_curr)
+                            if err and ("authorization_ip" in err or "verified IP" in err or "401" in str(err)):
                                 ip_blocked = True
                                 break
+                            if data:
+                                if api_type in ("deposit", "withdraw"):
+                                    all_rows.extend(_parse_deposit_withdraw(data, label))
+                                else:
+                                    all_rows.extend(_parse_orders(data))
+                        except Exception as _he:
+                            st.warning(f"API 오류: {_he}")
+                            ip_blocked = True
+                            break
 
                 if all_rows and not ip_blocked:
-                    # 로컬 API 성공
-                    _display_history_df(all_rows)
-                else:
-                    # 2) IP 차단 또는 API 키 없음 → VM 경유 자동 동기화
-                    if ip_blocked:
-                        st.info("로컬 IP 차단 감지 → VM 경유 조회를 자동 실행합니다.")
-
-                    # 캐시가 있으면 먼저 캐시 표시 후 백그라운드 동기화
+                    st.session_state["_hist_rows"] = all_rows
+                    st.session_state["_hist_source"] = "API 실시간"
+                elif ip_blocked:
+                    st.warning("로컬 IP 차단 → 캐시 데이터를 표시합니다. VM 동기화가 필요합니다.")
                     if _acct_cache.get("orders") or _acct_cache.get("deposits"):
-                        st.info(f"캐시 데이터 표시 중 (동기화: {_cache_time})")
-                        _display_history_df(_get_rows_from_cache(_acct_cache, h_type, h_curr))
+                        st.session_state["_hist_rows"] = _get_rows_from_cache(_acct_cache, h_type, h_curr)
+                        st.session_state["_hist_source"] = f"캐시 ({_cache_time})"
+                else:
+                    st.info("조회 결과가 없습니다.")
 
-                    # VM 동기화 자동 실행
-                    _status = st.empty()
-                    ok, result_msg = _trigger_and_wait_gh("account_sync", _status)
-                    if ok:
-                        _status.success(f"VM 동기화 완료 ({result_msg})")
-                        # 새로운 캐시 데이터로 표시
-                        fresh = _load_account_cache()
-                        if fresh.get("updated_at"):
-                            _display_history_df(_get_rows_from_cache(fresh, h_type, h_curr))
-                    else:
-                        _status.warning(f"VM 동기화: {result_msg}")
+            # 세션에 저장된 결과 즉시 표시
+            if st.session_state.get("_hist_rows"):
+                _src = st.session_state.get("_hist_source", "")
+                if _src:
+                    st.caption(f"데이터 출처: {_src}")
+                _display_history_df(st.session_state["_hist_rows"])
+            elif _acct_cache.get("orders") or _acct_cache.get("deposits"):
+                # 버튼 안 눌러도 캐시가 있으면 바로 표시
+                st.caption(f"캐시 데이터 ({_cache_time})")
+                _display_history_df(_get_rows_from_cache(_acct_cache, h_type, h_curr))
 
             st.caption("Upbit API 제한: 최근 100건까지 조회 가능")
 
