@@ -29,6 +29,7 @@ jobs:
           envs: KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             cd ~/upbit
+            ssh-keyscan -t ed25519 github.com 2>/dev/null >> ~/.ssh/known_hosts
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
             bash scripts/vm_run_job.sh kis_pension
         env:

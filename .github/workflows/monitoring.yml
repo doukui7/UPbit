@@ -53,6 +53,7 @@ jobs:
           envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN,HEALTHCHECK_UPBIT_RECOVERY
           script: |
             cd ~/upbit
+            ssh-keyscan -t ed25519 github.com 2>/dev/null >> ~/.ssh/known_hosts
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
             bash scripts/vm_run_job.sh health_check
         env:
@@ -97,6 +98,7 @@ jobs:
           envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN
           script: |
             cd ~/upbit
+            ssh-keyscan -t ed25519 github.com 2>/dev/null >> ~/.ssh/known_hosts
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
             bash scripts/vm_run_job.sh daily_status
         env:
@@ -137,6 +139,7 @@ jobs:
           envs: ONCE_MODE,ONCE_RUN_AT_KST,ONCE_NOTE
           script: |
             cd ~/upbit
+            ssh-keyscan -t ed25519 github.com 2>/dev/null >> ~/.ssh/known_hosts
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
             bash scripts/vm_scheduler_manager.sh ensure
             if [ -z "${ONCE_RUN_AT_KST}" ]; then
