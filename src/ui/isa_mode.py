@@ -11,6 +11,7 @@ import itertools
 import sqlite3
 import zlib
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from pathlib import Path
 from src.utils.db_manager import DBManager
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -743,10 +744,394 @@ def render_kis_isa_mode(config, save_config):
                         equity_df=eq_df
                     )
 
-    with tab_i2: st.info("수동 주문 기능 준비 중")
-    with tab_i3: st.info("주문 방식 가이드 준비 중")
-    with tab_i4: st.info("수수료/세금 정보 준비 중")
-    with tab_i5: st.info("미국 백테스트 상세 뷰 준비 중")
+    # ══════════════════════════════════════════════════════════════
+    # Tab 2: 수동 주문
+    # ══════════════════════════════════════════════════════════════
+    with tab_i2:
+        st.header("수동 주문")
+
+        bal = st.session_state.get(isa_bal_key)
+        if not bal:
+            st.warning("잔고를 먼저 조회해 주세요. (실시간 모니터링 탭)")
+        else:
+            _bal_sum = _compute_kis_balance_summary(bal)
+            buyable_cash = _bal_sum["buyable_cash"]
+            holdings = _bal_sum["holdings"]
+
+            # 매매 대상 ETF 선택
+            _isa_all_etfs = list(ISA_WDR_TRADE_ETF_CODES)
+            _isa_order_options = {_fmt_etf_code_name(c): c for c in _isa_all_etfs if c}
+            if not _isa_order_options:
+                _isa_order_options = {_fmt_etf_code_name("418660"): "418660"}
+
+            _isa_sel_label = st.selectbox("매매 ETF 선택", list(_isa_order_options.keys()), key="isa_manual_etf_label")
+            _isa_sel_etf = _isa_order_options[_isa_sel_label]
+
+            _isa_holding = next((h for h in holdings if str(h.get("code", "")) == str(_isa_sel_etf)), None)
+            _isa_qty = int(_isa_holding.get("qty", 0)) if _isa_holding else 0
+
+            # 상단 정보 바
+            _isa_cur = _get_isa_current_price(str(_isa_sel_etf))
+            _isa_eval = _isa_cur * _isa_qty if _isa_cur > 0 else 0
+
+            ic1, ic2, ic3, ic4 = st.columns(4)
+            ic1.metric("현재가", f"{_isa_cur:,.0f}원" if _isa_cur > 0 else "-")
+            ic2.metric(f"{_fmt_etf_code_name(_isa_sel_etf)} 보유", f"{_isa_qty}주")
+            ic3.metric("평가금액", f"{_isa_eval:,.0f}원")
+            ic4.metric("매수 가능금액", f"{buyable_cash:,.0f}원")
+
+            # ═══ 일봉 차트 ═══
+            _isa_m_chart = _get_isa_daily_chart(str(_isa_sel_etf), count=260)
+            if _isa_m_chart is not None and len(_isa_m_chart) > 0:
+                _isa_m_chart = _isa_m_chart.copy().sort_index()
+                st.markdown(f"**{_fmt_etf_code_name(_isa_sel_etf)} 일봉 차트**")
+                _fig_m = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.8, 0.2], vertical_spacing=0.02)
+                _fig_m.add_trace(go.Candlestick(
+                    x=_isa_m_chart.index, open=_isa_m_chart['open'], high=_isa_m_chart['high'],
+                    low=_isa_m_chart['low'], close=_isa_m_chart['close'], name='일봉',
+                    increasing_line_color='#26a69a', decreasing_line_color='#ef5350',
+                ), row=1, col=1)
+                for _p, _clr in [(5, "#FF9800"), (20, "#2196F3"), (60, "#00897B"), (120, "#8D6E63"), (200, "#455A64")]:
+                    _sma = _isa_m_chart["close"].rolling(_p).mean()
+                    _fig_m.add_trace(go.Scatter(x=_isa_m_chart.index, y=_sma, name=f"SMA{_p}", line=dict(color=_clr, width=1.2 if _p < 200 else 1.5)), row=1, col=1)
+                if 'volume' in _isa_m_chart.columns:
+                    _vol_colors = ['#26a69a' if c >= o else '#ef5350' for c, o in zip(_isa_m_chart['close'], _isa_m_chart['open'])]
+                    _fig_m.add_trace(go.Bar(x=_isa_m_chart.index, y=_isa_m_chart['volume'], marker_color=_vol_colors, name='거래량', showlegend=False), row=2, col=1)
+                _fig_m.update_layout(
+                    height=450, margin=dict(l=0, r=0, t=10, b=30),
+                    xaxis_rangeslider_visible=False, showlegend=True,
+                    legend=dict(orientation="h", y=1.06, x=0),
+                    xaxis2=dict(showticklabels=True, tickformat='%m/%d', tickangle=-45),
+                    yaxis=dict(title="", side="right"),
+                    yaxis2=dict(title="", side="right"),
+                )
+                st.plotly_chart(_fig_m, use_container_width=True, key=f"isa_manual_chart_{_isa_sel_etf}")
+            else:
+                st.info("차트 데이터 로딩 중...")
+
+            st.divider()
+
+            ob_col, order_col = st.columns([2, 3])
+
+            # ── 좌: 호가창 ──
+            with ob_col:
+                _isa_ob = None
+                try:
+                    _isa_ob = trader.get_orderbook(str(_isa_sel_etf))
+                except Exception:
+                    _isa_ob = None
+                if _isa_ob and _isa_ob.get("asks") and _isa_ob.get("bids"):
+                    asks = _isa_ob["asks"]
+                    bids = _isa_ob["bids"]
+                    all_qtys = [a["qty"] for a in asks] + [b["qty"] for b in bids]
+                    max_qty = max(all_qtys) if all_qtys else 1
+                    html = ['<table style="width:100%;border-collapse:collapse;font-size:13px;font-family:monospace;">']
+                    html.append(
+                        '<tr style="border-bottom:2px solid #ddd;font-weight:bold;color:#666">'
+                        '<td>구분</td><td style="text-align:right">잔량</td>'
+                        '<td style="text-align:right">가격(원)</td>'
+                        '<td style="text-align:right">등락</td><td>비율</td></tr>'
+                    )
+                    for a in reversed(asks):
+                        ap, aq = a["price"], a["qty"]
+                        diff = ((ap / _isa_cur) - 1) * 100 if _isa_cur > 0 else 0
+                        bar_w = int(aq / max_qty * 100) if max_qty > 0 else 0
+                        html.append(
+                            f'<tr style="color:#1976D2;border-bottom:1px solid #f0f0f0;height:28px">'
+                            f'<td>매도</td>'
+                            f'<td style="text-align:right">{aq:,}</td>'
+                            f'<td style="text-align:right;font-weight:bold">{ap:,.0f}</td>'
+                            f'<td style="text-align:right">{diff:+.2f}%</td>'
+                            f'<td><div style="background:#1976D233;height:14px;width:{bar_w}%"></div></td></tr>'
+                        )
+                    html.append(
+                        f'<tr style="background:#FFF3E0;border:2px solid #FF9800;height:32px;font-weight:bold">'
+                        f'<td colspan="2" style="color:#E65100">현재가</td>'
+                        f'<td style="text-align:right;color:#E65100;font-size:15px">{_isa_cur:,.0f}</td>'
+                        f'<td colspan="2"></td></tr>'
+                    )
+                    for b in bids:
+                        bp, bq = b["price"], b["qty"]
+                        diff = ((bp / _isa_cur) - 1) * 100 if _isa_cur > 0 else 0
+                        bar_w = int(bq / max_qty * 100) if max_qty > 0 else 0
+                        html.append(
+                            f'<tr style="color:#D32F2F;border-bottom:1px solid #f0f0f0;height:28px">'
+                            f'<td>매수</td>'
+                            f'<td style="text-align:right">{bq:,}</td>'
+                            f'<td style="text-align:right;font-weight:bold">{bp:,.0f}</td>'
+                            f'<td style="text-align:right">{diff:+.2f}%</td>'
+                            f'<td><div style="background:#D32F2F33;height:14px;width:{bar_w}%"></div></td></tr>'
+                        )
+                    html.append("</table>")
+                    st.markdown("".join(html), unsafe_allow_html=True)
+                    if asks and bids:
+                        spread = asks[0]["price"] - bids[0]["price"]
+                        spread_pct = (spread / _isa_cur * 100) if _isa_cur > 0 else 0
+                        total_ask_q = sum(a["qty"] for a in asks)
+                        total_bid_q = sum(b["qty"] for b in bids)
+                        st.caption(
+                            f"스프레드: {spread:,.0f}원 ({spread_pct:.3f}%) | "
+                            f"매도잔량: {total_ask_q:,} | 매수잔량: {total_bid_q:,}"
+                        )
+                else:
+                    st.info("호가 데이터를 불러오는 중...")
+
+            # ── 우: 주문 패널 ──
+            with order_col:
+                buy_tab, sell_tab = st.tabs(["🔴 매수", "🔵 매도"])
+
+                with buy_tab:
+                    isa_buy_method = st.radio("주문 방식", ["시장가", "지정가", "동시호가 (장마감)", "시간외 종가"], key="isa_buy_method", horizontal=True)
+
+                    isa_buy_price = 0
+                    if isa_buy_method == "지정가":
+                        isa_buy_price = st.number_input("매수 지정가 (원)", min_value=0, value=int(_isa_cur) if _isa_cur > 0 else 0, step=50, key="isa_buy_price")
+                    else:
+                        isa_buy_price = _isa_cur
+
+                    isa_buy_qty = st.number_input("매수 수량 (주)", min_value=0, value=0, step=1, key="isa_buy_qty")
+
+                    _isa_buy_unit = isa_buy_price if isa_buy_price > 0 else _isa_cur
+                    _isa_buy_total = int(isa_buy_qty * _isa_buy_unit) if isa_buy_qty > 0 and _isa_buy_unit > 0 else 0
+                    st.markdown(
+                        f"<div style='background:#fff3f3;border:1px solid #ffcdd2;border-radius:8px;padding:10px 14px;margin:8px 0'>"
+                        f"<b>단가:</b> {_isa_buy_unit:,.0f}원 &nbsp;|&nbsp; "
+                        f"<b>수량:</b> {isa_buy_qty:,}주 &nbsp;|&nbsp; "
+                        f"<b>총 금액:</b> <span style='color:#D32F2F;font-weight:bold'>{_isa_buy_total:,}원</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    if st.button("매수 실행", key="isa_exec_buy", type="primary", disabled=IS_CLOUD):
+                        if _isa_buy_total <= 0:
+                            st.error("매수 금액을 입력해 주세요.")
+                        elif _isa_buy_total > buyable_cash:
+                            st.error(f"매수 가능금액 부족 (필요: {_isa_buy_total:,}원 / 가능: {buyable_cash:,.0f}원)")
+                        else:
+                            with st.spinner("매수 주문 실행 중..."):
+                                if isa_buy_method == "동시호가 (장마감)":
+                                    result = trader.execute_closing_auction_buy(str(_isa_sel_etf), isa_buy_qty) if isa_buy_qty > 0 else None
+                                elif isa_buy_method == "지정가" and isa_buy_price > 0:
+                                    result = trader.send_order("BUY", str(_isa_sel_etf), isa_buy_qty, price=isa_buy_price, ord_dvsn="00") if isa_buy_qty > 0 else None
+                                elif isa_buy_method == "시간외 종가":
+                                    result = trader.send_order("BUY", str(_isa_sel_etf), isa_buy_qty, price=0, ord_dvsn="06") if isa_buy_qty > 0 else None
+                                else:
+                                    result = trader.send_order("BUY", str(_isa_sel_etf), isa_buy_qty, ord_dvsn="01") if isa_buy_qty > 0 else None
+                                if result and (isinstance(result, dict) and result.get("success")):
+                                    st.success(f"매수 완료: {result}")
+                                    st.session_state[isa_bal_key] = trader.get_balance()
+                                else:
+                                    st.error(f"매수 실패: {result}")
+
+                with sell_tab:
+                    isa_sell_method = st.radio("주문 방식", ["시장가", "지정가", "동시호가 (장마감)", "시간외 종가"], key="isa_sell_method", horizontal=True)
+
+                    isa_sell_price = 0
+                    if isa_sell_method == "지정가":
+                        isa_sell_price = st.number_input("매도 지정가 (원)", min_value=0, value=int(_isa_cur) if _isa_cur > 0 else 0, step=50, key="isa_sell_price")
+                    else:
+                        isa_sell_price = _isa_cur
+
+                    isa_sell_qty = st.number_input("매도 수량 (주)", min_value=0, max_value=max(_isa_qty, 1), value=_isa_qty, step=1, key="isa_sell_qty")
+                    isa_sell_all = st.checkbox("전량 매도", value=True, key="isa_sell_all")
+
+                    _isa_sell_unit = isa_sell_price if isa_sell_price > 0 else _isa_cur
+                    _isa_sell_qty_final = _isa_qty if isa_sell_all else isa_sell_qty
+                    _isa_sell_total = int(_isa_sell_qty_final * _isa_sell_unit) if _isa_sell_qty_final > 0 and _isa_sell_unit > 0 else 0
+                    st.markdown(
+                        f"<div style='background:#f3f8ff;border:1px solid #bbdefb;border-radius:8px;padding:10px 14px;margin:8px 0'>"
+                        f"<b>단가:</b> {_isa_sell_unit:,.0f}원 &nbsp;|&nbsp; "
+                        f"<b>수량:</b> {_isa_sell_qty_final:,}주 &nbsp;|&nbsp; "
+                        f"<b>총 금액:</b> <span style='color:#1976D2;font-weight:bold'>{_isa_sell_total:,}원</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    if st.button("매도 실행", key="isa_exec_sell", type="primary", disabled=IS_CLOUD):
+                        _sq = _isa_qty if isa_sell_all else isa_sell_qty
+                        if _sq <= 0:
+                            st.error("매도할 수량이 없습니다.")
+                        else:
+                            with st.spinner("매도 주문 실행 중..."):
+                                if isa_sell_method == "동시호가 (장마감)":
+                                    result = trader.smart_sell_all_closing(str(_isa_sel_etf)) if isa_sell_all else trader.smart_sell_qty_closing(str(_isa_sel_etf), _sq)
+                                elif isa_sell_method == "지정가" and isa_sell_price > 0:
+                                    result = trader.send_order("SELL", str(_isa_sel_etf), _sq, price=isa_sell_price, ord_dvsn="00")
+                                elif isa_sell_method == "시간외 종가":
+                                    result = trader.send_order("SELL", str(_isa_sel_etf), _sq, price=0, ord_dvsn="06")
+                                else:
+                                    result = trader.smart_sell_all(str(_isa_sel_etf)) if isa_sell_all else trader.smart_sell_qty(str(_isa_sel_etf), _sq)
+                                if result and (isinstance(result, dict) and result.get("success")):
+                                    st.success(f"매도 완료: {result}")
+                                    st.session_state[isa_bal_key] = trader.get_balance()
+                                else:
+                                    st.error(f"매도 실패: {result}")
+
+    # ══════════════════════════════════════════════════════════════
+    # Tab 3: 주문방식
+    # ══════════════════════════════════════════════════════════════
+    with tab_i3:
+        st.header("KIS 국내 ETF 주문방식 안내")
+        st.dataframe(pd.DataFrame([
+            {"구분": "시장가", "API": 'ord_dvsn="01"', "설명": "즉시 체결 (최우선 호가)"},
+            {"구분": "지정가", "API": 'ord_dvsn="00"', "설명": "원하는 가격에 주문"},
+            {"구분": "동시호가 매수", "API": '상한가(+30%) 지정가', "설명": "15:20~15:30 동시호가 참여 → 60초 대기 → 미체결 시 시간외 재주문"},
+            {"구분": "동시호가 매도", "API": '하한가(-30%) 지정가', "설명": "15:20~15:30 동시호가 참여 → 60초 대기 → 미체결 시 시간외 재주문"},
+            {"구분": "시간외 종가", "API": 'ord_dvsn="06"', "설명": "15:40~16:00 당일 종가로 체결"},
+        ]), use_container_width=True, hide_index=True)
+
+        st.subheader("호가단위")
+        st.dataframe(pd.DataFrame([
+            {"가격대": "~5,000원", "호가단위": "5원"},
+            {"가격대": "5,000~10,000원", "호가단위": "10원"},
+            {"가격대": "10,000~50,000원", "호가단위": "50원"},
+            {"가격대": "50,000원~", "호가단위": "100원"},
+        ]), use_container_width=True, hide_index=True)
+
+        st.subheader("ISA 자동매매 흐름 (GitHub Actions)")
+        st.markdown("""
+0. 로컬 PC에서 직접 주문하지 않고, GitHub Actions에서만 주문 실행
+1. 매주 금요일 KST 15:10 실행 (`TRADING_MODE=kis_isa`)
+2. WDR 전략 시그널 분석 (260주 로그선형회귀 → 고평가/저평가/중립 판정)
+3. 시그널 전환 시 리밸런싱 실행
+4. 매도 → `smart_sell_all_closing()` (동시호가+시간외)
+5. 매수 → `smart_buy_krw_closing()` (동시호가+시간외)
+""")
+
+    # ══════════════════════════════════════════════════════════════
+    # Tab 4: 수수료/세금
+    # ══════════════════════════════════════════════════════════════
+    with tab_i4:
+        st.header("ISA 수수료 및 세금 안내")
+
+        st.subheader("1. 매매 수수료")
+        st.dataframe(pd.DataFrame([
+            {"증권사": "한국투자증권", "매매 수수료": "0.0140396%", "비고": "나무 온라인 (현재 사용)"},
+            {"증권사": "키움증권", "매매 수수료": "0.015%", "비고": "영웅문 온라인"},
+            {"증권사": "미래에셋", "매매 수수료": "0.014%", "비고": "m.Stock 온라인"},
+        ]), use_container_width=True, hide_index=True)
+
+        st.subheader("2. 매매 대상 ETF 보수")
+        _isa_fee_data = []
+        for _fc in ISA_WDR_TRADE_ETF_CODES:
+            _isa_fee_data.append({"ETF": _etf_name_kr(str(_fc)), "코드": str(_fc), "총보수": "0.25%", "비고": "레버리지 2배 ETF"})
+        st.dataframe(pd.DataFrame(_isa_fee_data), use_container_width=True, hide_index=True)
+
+        st.subheader("3. ISA 세제혜택")
+        st.markdown("""
+| 항목 | 내용 |
+|------|------|
+| 비과세 한도 | 일반형 200만원 / 서민형 400만원 |
+| 초과분 | 9.9% 분리과세 (일반 15.4% 대비 유리) |
+| 의무 가입기간 | 3년 이상 |
+| 납입 한도 | 연 2,000만원 (최대 1억원) |
+| 가입 자격 | 만 19세 이상 거주자 (근로소득 있으면 15세 이상) |
+| 금융소득 2천만원 초과 시 | ISA 가입 불가 |
+        """)
+        st.caption("ISA 계좌 내 매매차익·배당에 대해 비과세/분리과세 혜택이 적용됩니다. 일반 계좌 대비 세후 수익이 유리합니다.")
+
+    # ══════════════════════════════════════════════════════════════
+    # Tab 5: 미국 위대리 백테스트
+    # ══════════════════════════════════════════════════════════════
+    with tab_i5:
+        st.header("미국 위대리(WDR) 백테스트")
+        st.caption("미국 QQQ/TQQQ 원본 데이터로 WDR 전략을 검증합니다.")
+
+        _us_c1, _us_c2, _us_c3 = st.columns(3)
+        with _us_c1:
+            _us_sig_ticker = st.selectbox("시그널 ETF", ["QQQ"], index=0, key="isa_us_sig_ticker")
+        with _us_c2:
+            _us_trade_ticker = st.selectbox("매매 ETF", ["TQQQ", "QQQ"], index=0, key="isa_us_trade_ticker")
+        with _us_c3:
+            _us_seed = st.number_input("초기자본 ($)", min_value=1000, value=10000, step=1000, key="isa_us_seed")
+
+        _us_sc1, _us_sc2, _us_sc3, _us_sc4 = st.columns(4)
+        with _us_sc1:
+            _us_eval_mode = st.selectbox("평가 시스템", [3, 5], index=1, format_func=lambda x: f"{x}단계", key="isa_us_eval_mode")
+        with _us_sc2:
+            _us_ov = st.number_input("고평가 (%)", 0.0, 30.0, float(wdr_ov), 0.5, key="isa_us_ov")
+        with _us_sc3:
+            _us_un = st.number_input("저평가 (%)", -30.0, 0.0, float(wdr_un), 0.5, key="isa_us_un")
+        with _us_sc4:
+            _us_fee = st.number_input("수수료 (%)", 0.0, 1.0, 0.01, 0.005, key="isa_us_fee")
+
+        _us_start_default = "2010-02-12" if _us_trade_ticker == "TQQQ" else "1999-03-10"
+        _us_start = st.date_input("시작일", value=pd.to_datetime(_us_start_default).date(), key="isa_us_start")
+
+        if st.button("미국 백테스트 실행", key="isa_us_bt_run", type="primary"):
+            with st.spinner("미국 데이터 로드 + 백테스트 실행 중..."):
+                _us_sig_df = _dc.fetch_and_cache_yf(str(_us_sig_ticker), start="1999-03-10")
+                _us_trade_df = _dc.fetch_and_cache_yf(str(_us_trade_ticker), start=str(_us_start_default))
+
+                if _us_sig_df is None or _us_trade_df is None or len(_us_sig_df) < 260:
+                    st.error("미국 데이터를 가져올 수 없습니다. yfinance 설치 및 네트워크를 확인해 주세요.")
+                else:
+                    # 컬럼 정규화
+                    for _df_us in [_us_sig_df, _us_trade_df]:
+                        if "Close" in _df_us.columns and "close" not in _df_us.columns:
+                            _df_us.rename(columns={"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"}, inplace=True)
+
+                    _us_strat = WDRStrategy(
+                        settings={"overvalue_threshold": float(_us_ov), "undervalue_threshold": float(_us_un)},
+                        evaluation_mode=int(_us_eval_mode),
+                    )
+                    _us_bt = _us_strat.run_backtest(
+                        signal_daily_df=_us_sig_df,
+                        trade_daily_df=_us_trade_df,
+                        initial_balance=float(_us_seed),
+                        start_date=str(_us_start),
+                        fee_rate=float(_us_fee) / 100.0,
+                    )
+                    st.session_state["isa_us_bt_result"] = _us_bt
+
+        _us_bt_res = st.session_state.get("isa_us_bt_result")
+        if isinstance(_us_bt_res, dict) and "equity_df" in _us_bt_res:
+            _us_eq = _us_bt_res["equity_df"]
+            _us_metrics = _us_bt_res.get("metrics", {})
+
+            # 지표 요약
+            um1, um2, um3, um4 = st.columns(4)
+            um1.metric("총 수익률", f"{_us_metrics.get('total_return', 0):+.1f}%")
+            um2.metric("CAGR", f"{_us_metrics.get('cagr', 0):.1f}%")
+            um3.metric("MDD", f"{_us_metrics.get('mdd', 0):.1f}%", delta_color="inverse")
+            um4.metric("Calmar", f"{_us_metrics.get('calmar', 0):.2f}")
+
+            # 자산 곡선
+            _us_eq_ret = (_us_eq["equity"] / float(st.session_state.get("isa_us_seed", 10000)) - 1) * 100
+            fig_us = go.Figure()
+            fig_us.add_trace(go.Scatter(x=_us_eq.index, y=_us_eq_ret.values, name="전략 수익률 (%)", line=dict(color="gold", width=2)))
+
+            # 벤치마크 (Buy & Hold)
+            _us_bm = _us_bt_res.get("benchmark_df")
+            if _us_bm is not None and len(_us_bm) > 0:
+                if isinstance(_us_bm, pd.DataFrame):
+                    _bm_col = "close" if "close" in _us_bm.columns else _us_bm.columns[0]
+                    _bm_ret = (_us_bm[_bm_col] / float(_us_bm[_bm_col].iloc[0]) - 1) * 100
+                elif isinstance(_us_bm, pd.Series):
+                    _bm_ret = (_us_bm / float(_us_bm.iloc[0]) - 1) * 100
+                else:
+                    _bm_ret = None
+                if _bm_ret is not None:
+                    fig_us.add_trace(go.Scatter(x=_bm_ret.index, y=_bm_ret.values, name="벤치마크 (%)", line=dict(color="gray", dash="dot", width=1.5)))
+
+            fig_us.update_layout(
+                height=400, margin=dict(l=0, r=0, t=30, b=0),
+                hovermode="x unified",
+                legend=dict(orientation="h", y=1.08),
+            )
+            fig_us = _apply_return_hover_format(fig_us, apply_all=True)
+            st.plotly_chart(fig_us, use_container_width=True)
+
+            _render_performance_analysis(
+                equity_series=_us_eq["equity"],
+                benchmark_series=_us_bt_res.get("benchmark_df"),
+                strategy_metrics=_us_metrics,
+                strategy_label="WDR 전략",
+                benchmark_label=f"{st.session_state.get('isa_us_trade_ticker', 'TQQQ')} Buy&Hold",
+                show_drawdown=True,
+                show_weight=True,
+                equity_df=_us_eq,
+            )
     with tab_i6:
         render_isa_opt_tab(isa_ctx)
 

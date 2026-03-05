@@ -61,6 +61,34 @@ echo "[$(date '+%F %T')] start mode=${MODE}" >> "${LOG_FILE}"
 # python script loads .env via python-dotenv internally.
 if TRADING_MODE="${MODE}" python scripts/github_action_trade.py >> "${LOG_FILE}" 2>&1; then
   echo "[$(date '+%F %T')] done mode=${MODE}" >> "${LOG_FILE}"
+
+  # 상태 파일 업데이트 — 스케줄러 외부 실행(수동/GitHub Actions)도 헬스체크에서 인식
+  STATE_FILE="${LOG_DIR}/vm_scheduler_state.json"
+  if command -v python >/dev/null 2>&1; then
+    python -c "
+import json, os, time
+from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo('Asia/Seoul'))
+except Exception:
+    now = datetime.now()
+mk = now.strftime('%Y%m%d%H%M')
+path = '${STATE_FILE}'
+state = {}
+if os.path.exists(path):
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            state = json.load(f)
+    except Exception:
+        pass
+state['${MODE}'] = mk
+state['__heartbeat_epoch'] = f'{time.time():.3f}'
+state['__heartbeat_kst'] = now.strftime('%Y-%m-%d %H:%M:%S')
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(state, f, ensure_ascii=False, indent=2)
+" 2>/dev/null || true
+  fi
 else
   code=$?
   echo "[$(date '+%F %T')] fail mode=${MODE} code=${code}" >> "${LOG_FILE}"

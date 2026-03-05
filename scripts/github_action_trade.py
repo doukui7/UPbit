@@ -2675,41 +2675,69 @@ def _parse_minute_key_kst(raw: str) -> datetime | None:
 
 
 def _check_upbit_schedule_status(now_kst: datetime | None = None) -> tuple[bool, str]:
-    """VM 스케줄러 상태파일 기준 업비트 정시 실행 누락 여부 점검."""
+    """VM 스케줄러 상태파일 + 로그 파일 기준 업비트 정시 실행 누락 여부 점검."""
     kst = timezone(timedelta(hours=9))
     now = now_kst or datetime.now(kst)
     expected = _latest_upbit_slot_kst(now)
     expected_key = expected.strftime("%Y%m%d%H%M")
     expected_label = expected.strftime("%m-%d %H:%M")
     state_path = os.path.join(PROJECT_ROOT, "logs", "vm_scheduler_state.json")
+    log_path = os.path.join(PROJECT_ROOT, "logs", "upbit.log")
+
+    # 1차: 상태 파일 확인
+    state_ok = False
+    state_msg = ""
 
     if not os.path.exists(state_path):
-        return True, f"SKIP - 누락 점검 정보 없음 (상태파일 미존재: {expected_label} 기준)"
+        state_msg = f"상태파일 미존재"
+    else:
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            if not isinstance(state, dict):
+                state_msg = "상태파일 형식 오류"
+            else:
+                last_key = str(state.get("upbit", "")).strip()
+                if not last_key:
+                    state_msg = f"실행 기록 없음"
+                else:
+                    last_dt = _parse_minute_key_kst(last_key)
+                    if last_dt is None:
+                        state_msg = f"기록 형식 오류 ({last_key})"
+                    elif last_dt < expected:
+                        last_label = last_dt.strftime("%m-%d %H:%M")
+                        state_msg = f"마지막 {last_label}"
+                    else:
+                        last_label = last_dt.strftime("%m-%d %H:%M")
+                        state_ok = True
+                        if last_key != expected_key:
+                            state_msg = f"최근 실행 {last_label} (기준 {expected_label})"
+                        else:
+                            state_msg = f"정시 실행 확인 ({last_label})"
+        except Exception as e:
+            state_msg = f"상태파일 읽기 오류: {e}"
 
-    try:
-        with open(state_path, "r", encoding="utf-8") as f:
-            state = json.load(f)
-    except Exception as e:
-        return False, f"FAIL - 누락 점검 실패 (상태파일 읽기 오류: {e})"
+    if state_ok:
+        return True, f"PASS - {state_msg}"
 
-    if not isinstance(state, dict):
-        return False, "FAIL - 누락 점검 실패 (상태파일 형식 오류)"
+    # 2차: 로그 파일 mtime으로 보조 확인 (상태파일 누락 시 보완)
+    log_ok = False
+    log_msg = ""
+    if os.path.exists(log_path):
+        try:
+            mtime = os.path.getmtime(log_path)
+            log_dt = datetime.fromtimestamp(mtime, tz=kst)
+            # 로그 파일이 예상 실행 시각 이후에 갱신되었으면 실행된 것으로 간주
+            if log_dt >= expected:
+                log_ok = True
+                log_msg = f"로그 갱신 {log_dt.strftime('%m-%d %H:%M')}"
+        except Exception:
+            pass
 
-    last_key = str(state.get("upbit", "")).strip()
-    if not last_key:
-        return False, f"FAIL - 최근 정시 실행 기록 없음 (예상 {expected_label})"
+    if log_ok:
+        return True, f"PASS - {log_msg} (상태파일: {state_msg})"
 
-    last_dt = _parse_minute_key_kst(last_key)
-    if last_dt is None:
-        return False, f"FAIL - 실행기록 형식 오류 ({last_key})"
-
-    last_label = last_dt.strftime("%m-%d %H:%M")
-    if last_dt < expected:
-        return False, f"FAIL - 정시 누락 감지 (예상 {expected_label}, 마지막 {last_label})"
-
-    if last_key != expected_key:
-        return True, f"PASS - 최근 실행 {last_label} (예상 기준 {expected_label})"
-    return True, f"PASS - 최근 정시 실행 확인 ({last_label})"
+    return False, f"FAIL - 정시 누락 감지 (예상 {expected_label}, {state_msg})"
 
 
 def _check_upbit() -> dict:

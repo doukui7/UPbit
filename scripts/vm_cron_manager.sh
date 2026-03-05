@@ -93,12 +93,9 @@ CRON_TZ=Asia/Seoul
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-0 1,5,9,13,17,21 * * * cd ${REPO_DIR} && bash scripts/vm_run_job.sh upbit
-5 1,5,9,13,17,21 * * * cd ${REPO_DIR} && bash scripts/vm_run_job.sh health_check
-0 9 * * 1-5 cd ${REPO_DIR} && bash scripts/vm_run_job.sh daily_status
-5 15 * * 1-5 cd ${REPO_DIR} && bash scripts/vm_run_job.sh kiwoom_gold
-10 15 * * 5 cd ${REPO_DIR} && bash scripts/vm_run_job.sh kis_isa
-10 15 25-31 * 1-5 cd ${REPO_DIR} && bash scripts/vm_run_job.sh kis_pension
+# 스케줄러 watchdog — Python 스케줄러가 유일한 스케줄 실행 주체.
+# cron은 5분마다 스케줄러 프로세스 생존 확인 및 자동 재시작만 담당.
+*/5 * * * * cd ${REPO_DIR} && bash scripts/vm_scheduler_manager.sh ensure >> logs/vm_cron_watchdog.log 2>&1
 ${BLOCK_END}
 EOF
 }

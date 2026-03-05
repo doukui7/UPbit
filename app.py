@@ -12,6 +12,7 @@ from src.ui.coin_mode import render_coin_mode
 from src.ui.gold_mode import render_gold_mode
 from src.ui.isa_mode import render_kis_isa_mode
 from src.ui.pension_mode import render_kis_pension_mode
+from src.ui.project_logic import render_project_logic
 
 # Load environment variables
 load_dotenv(override=True)
@@ -30,6 +31,7 @@ def main():
         "골드": "GOLD",
         "ISA": "ISA",
         "연금저축": "PENSION",
+        "프로젝트 로직": "PROJECT",
     }
     _mode_keys = list(_mode_map.keys())
     _mode_reverse = {v: k for k, v in _mode_map.items()}
@@ -91,6 +93,8 @@ def main():
         render_kis_isa_mode(config, save_config)
     elif trading_mode == "PENSION":
         render_kis_pension_mode(config, save_config)
+    elif trading_mode == "PROJECT":
+        render_project_logic()
     else:
         render_coin_mode(config, save_config)
 

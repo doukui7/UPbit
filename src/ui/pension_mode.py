@@ -1,9 +1,13 @@
+import json
+import os
+import random
 import streamlit as st
 import pandas as pd
 import numpy as np
 import time
 import logging
 import plotly.graph_objects as go
+from datetime import datetime, timedelta
 
 import src.engine.data_cache as data_cache
 from src.constants import IS_CLOUD
@@ -23,6 +27,72 @@ from src.ui.components.performance import (
     _apply_dd_hover_format,
 )
 from src.ui.components.triggers import render_strategy_trigger_tab
+
+
+# ─── 예약 주문 데이터 관리 ───
+_PEN_ORDERS_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "config", "pension_orders.json",
+)
+
+
+def _load_pen_orders() -> list[dict]:
+    """예약 주문 내역 로드 (영구 보존)."""
+    try:
+        if os.path.exists(_PEN_ORDERS_FILE):
+            with open(_PEN_ORDERS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return [x for x in data if isinstance(x, dict)]
+    except Exception:
+        pass
+    return []
+
+
+def _save_pen_orders(orders: list[dict]):
+    """예약 주문 내역 저장."""
+    os.makedirs(os.path.dirname(_PEN_ORDERS_FILE), exist_ok=True)
+    with open(_PEN_ORDERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(orders, f, ensure_ascii=False, indent=2)
+
+
+def _add_pen_order(etf_code: str, side: str, qty: int, method: str,
+                   price: int, scheduled_kst: str, note: str) -> dict:
+    """예약 주문 추가."""
+    orders = _load_pen_orders()
+    now_kst = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    order = {
+        "id": f"pen-{datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(1000,9999)}",
+        "etf_code": str(etf_code),
+        "etf_name": _etf_name_kr(str(etf_code)),
+        "side": side,
+        "qty": qty,
+        "method": method,
+        "price": price,
+        "scheduled_kst": scheduled_kst,
+        "status": "대기",
+        "created_at": now_kst,
+        "executed_at": "",
+        "result": "",
+        "note": note,
+    }
+    orders.append(order)
+    _save_pen_orders(orders)
+    return order
+
+
+def _update_pen_order_status(order_id: str, status: str, result: str = ""):
+    """예약 주문 상태 업데이트 (삭제하지 않고 상태만 변경)."""
+    orders = _load_pen_orders()
+    for o in orders:
+        if o.get("id") == order_id:
+            o["status"] = status
+            if result:
+                o["result"] = result
+            if status in ("완료", "실패", "취소"):
+                o["executed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            break
+    _save_pen_orders(orders)
 
 
 def _sidebar_etf_code_input(title: str, code_value: str, key: str, disabled: bool = False) -> str:
@@ -2932,6 +3002,154 @@ def render_kis_pension_mode(config, save_config):
                                     st.session_state[pen_bal_key] = trader.get_balance()
                                 else:
                                     st.error(f"매도 실패: {result}")
+
+            # ═══════════════════════════════════════════════════
+            # 예약 주문 관리
+            # ═══════════════════════════════════════════════════
+            st.divider()
+            st.subheader("예약 주문 관리")
+            st.caption("주문을 예약하고 이력을 영구 보관합니다. 실행된 주문도 삭제되지 않습니다.")
+
+            with st.expander("새 예약 주문 등록", expanded=False):
+                rc1, rc2, rc3 = st.columns(3)
+                with rc1:
+                    rsv_etf_label = st.selectbox("ETF 종목", list(etf_options.keys()), key="pen_rsv_etf")
+                    rsv_etf_code = etf_options[rsv_etf_label]
+                with rc2:
+                    rsv_side = st.selectbox("매매 방향", ["매수", "매도"], key="pen_rsv_side")
+                with rc3:
+                    rsv_method = st.selectbox("주문 방식", ["시장가", "지정가", "동시호가 (장마감)", "시간외 종가"], key="pen_rsv_method")
+
+                rc4, rc5, rc6 = st.columns(3)
+                with rc4:
+                    rsv_qty = st.number_input("주문 수량 (주)", min_value=1, value=1, step=1, key="pen_rsv_qty")
+                with rc5:
+                    rsv_price = st.number_input(
+                        "지정가 (원, 시장가=0)",
+                        min_value=0,
+                        value=int(_pen_cur) if rsv_method == "지정가" and _pen_cur > 0 else 0,
+                        step=50,
+                        key="pen_rsv_price",
+                    )
+                with rc6:
+                    rsv_date = st.date_input("실행 예정일", key="pen_rsv_date")
+                    rsv_time = st.time_input("실행 예정 시각", value=pd.Timestamp("15:10").time(), key="pen_rsv_time")
+
+                rsv_note = st.text_input("메모 (선택)", key="pen_rsv_note", placeholder="예: 채권 리밸런싱")
+
+                _rsv_unit = rsv_price if rsv_price > 0 else (_pen_cur if _pen_cur > 0 else 0)
+                _rsv_total = int(rsv_qty * _rsv_unit) if _rsv_unit > 0 else 0
+                st.markdown(
+                    f"<div style='background:#fffde7;border:1px solid #fff9c4;border-radius:8px;padding:10px 14px;margin:8px 0'>"
+                    f"<b>종목:</b> {_fmt_etf_code_name(rsv_etf_code)} &nbsp;|&nbsp; "
+                    f"<b>방향:</b> {rsv_side} &nbsp;|&nbsp; "
+                    f"<b>수량:</b> {rsv_qty}주 &nbsp;|&nbsp; "
+                    f"<b>예상 금액:</b> <span style='font-weight:bold'>{_rsv_total:,}원</span> &nbsp;|&nbsp; "
+                    f"<b>방식:</b> {rsv_method}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+                if st.button("예약 등록", key="pen_rsv_add", type="primary"):
+                    sched_str = f"{rsv_date.strftime('%Y-%m-%d')} {rsv_time.strftime('%H:%M')}"
+                    new_order = _add_pen_order(
+                        etf_code=rsv_etf_code,
+                        side=rsv_side,
+                        qty=rsv_qty,
+                        method=rsv_method,
+                        price=rsv_price,
+                        scheduled_kst=sched_str,
+                        note=rsv_note,
+                    )
+                    st.success(f"예약 등록 완료: {new_order['id']} — {_fmt_etf_code_name(rsv_etf_code)} {rsv_side} {rsv_qty}주 @ {sched_str}")
+                    st.rerun()
+
+            # ── 예약 주문 내역 표시 ──
+            pen_orders = _load_pen_orders()
+            if pen_orders:
+                # 대기 → 완료 → 실패 → 취소 순 정렬, 최신 먼저
+                _status_priority = {"대기": 0, "완료": 1, "실패": 2, "취소": 3}
+                pen_orders_sorted = sorted(
+                    pen_orders,
+                    key=lambda o: (_status_priority.get(o.get("status", ""), 9), -(o.get("created_at", "") or "").__hash__()),
+                )
+
+                pending_orders = [o for o in pen_orders_sorted if o.get("status") == "대기"]
+                done_orders = [o for o in pen_orders_sorted if o.get("status") != "대기"]
+
+                if pending_orders:
+                    st.markdown(f"**대기 중 ({len(pending_orders)}건)**")
+                    for o in pending_orders:
+                        oid = o.get("id", "")
+                        label = f"{o.get('side','')} {_fmt_etf_code_name(o.get('etf_code',''))} {o.get('qty',0)}주 | {o.get('method','')} | 예정: {o.get('scheduled_kst','')}"
+                        if o.get("note"):
+                            label += f" | {o['note']}"
+
+                        ec1, ec2, ec3 = st.columns([5, 1, 1])
+                        with ec1:
+                            st.markdown(f"🟡 {label}")
+                        with ec2:
+                            if st.button("즉시 실행", key=f"pen_rsv_exec_{oid}", type="primary"):
+                                with st.spinner(f"{o.get('side','')} 주문 실행 중..."):
+                                    _exec_code = str(o.get("etf_code", ""))
+                                    _exec_qty = int(o.get("qty", 0))
+                                    _exec_method = str(o.get("method", ""))
+                                    _exec_price = int(o.get("price", 0))
+                                    _exec_side = str(o.get("side", ""))
+
+                                    if _exec_side == "매수":
+                                        if _exec_method == "동시호가 (장마감)":
+                                            result = trader.execute_closing_auction_buy(_exec_code, _exec_qty)
+                                        elif _exec_method == "지정가" and _exec_price > 0:
+                                            result = trader.send_order("BUY", _exec_code, _exec_qty, price=_exec_price, ord_dvsn="00")
+                                        elif _exec_method == "시간외 종가":
+                                            result = trader.send_order("BUY", _exec_code, _exec_qty, price=0, ord_dvsn="06")
+                                        else:
+                                            result = trader.send_order("BUY", _exec_code, _exec_qty, ord_dvsn="01")
+                                    else:
+                                        if _exec_method == "동시호가 (장마감)":
+                                            result = trader.smart_sell_qty_closing(_exec_code, _exec_qty)
+                                        elif _exec_method == "지정가" and _exec_price > 0:
+                                            result = trader.send_order("SELL", _exec_code, _exec_qty, price=_exec_price, ord_dvsn="00")
+                                        elif _exec_method == "시간외 종가":
+                                            result = trader.send_order("SELL", _exec_code, _exec_qty, price=0, ord_dvsn="06")
+                                        else:
+                                            result = trader.smart_sell_qty(_exec_code, _exec_qty)
+
+                                    if result and isinstance(result, dict) and result.get("success"):
+                                        _update_pen_order_status(oid, "완료", str(result))
+                                        st.success(f"주문 완료: {result}")
+                                        st.session_state[pen_bal_key] = trader.get_balance()
+                                    else:
+                                        _update_pen_order_status(oid, "실패", str(result))
+                                        st.error(f"주문 실패: {result}")
+                                st.rerun()
+                        with ec3:
+                            if st.button("취소", key=f"pen_rsv_cancel_{oid}"):
+                                _update_pen_order_status(oid, "취소")
+                                st.rerun()
+
+                # ── 전체 이력 테이블 ──
+                with st.expander(f"주문 이력 ({len(pen_orders)}건)", expanded=bool(done_orders)):
+                    _rows = []
+                    for o in reversed(pen_orders):
+                        _status_icon = {"대기": "🟡", "완료": "🟢", "실패": "🔴", "취소": "⚪"}.get(o.get("status", ""), "❓")
+                        _rows.append({
+                            "상태": f"{_status_icon} {o.get('status', '')}",
+                            "방향": o.get("side", ""),
+                            "종목": _fmt_etf_code_name(o.get("etf_code", "")),
+                            "수량": o.get("qty", 0),
+                            "방식": o.get("method", ""),
+                            "지정가": f"{o.get('price', 0):,}" if o.get("price", 0) > 0 else "-",
+                            "예정일시": o.get("scheduled_kst", ""),
+                            "등록일시": o.get("created_at", ""),
+                            "실행일시": o.get("executed_at", "") or "-",
+                            "결과": (o.get("result", "") or "-")[:60],
+                            "메모": o.get("note", ""),
+                        })
+                    st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("등록된 예약 주문이 없습니다.")
 
     # ══════════════════════════════════════════════════════════════
     # Tab 4: 거래내역
