@@ -99,7 +99,7 @@ jobs:
             git reset --hard origin/master 2>&1 || echo "WARN: git reset failed"
             git log --oneline -1
             echo "=== run ==="
-            echo "GH_TOKEN length: ${#GH_TOKEN}"
+            echo "GH_TOKEN length: ${#GH_TOKEN} prefix: ${GH_TOKEN:0:4}"
             bash scripts/vm_run_job.sh account_sync
             echo "=== account_sync log tail ==="
             tail -30 ~/upbit/logs/account_sync.log 2>/dev/null || echo "(no log)"

@@ -136,7 +136,7 @@ def _push_file_to_github(repo_path: str, content: str, commit_message: str):
     import base64
     import requests as _req
 
-    gh_token = os.environ.get('GH_TOKEN', '')
+    gh_token = os.environ.get('GH_TOKEN', '').strip()
     if not gh_token:
         logger.info("GH_TOKEN 없음 - GitHub push 생략")
         return False
