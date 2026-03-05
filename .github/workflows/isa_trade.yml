@@ -29,7 +29,7 @@ jobs:
           envs: KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             cd ~/upbit
-            ssh-keyscan -t ed25519 github.com 2>/dev/null >> ~/.ssh/known_hosts
+            git remote set-url origin https://github.com/doukui7/UPbit.git 2>/dev/null || true
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
             bash scripts/vm_run_job.sh kis_isa
         env:

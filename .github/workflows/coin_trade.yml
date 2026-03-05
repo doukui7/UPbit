@@ -34,17 +34,16 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 15m
           capture_stdout: true
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             cd ~/upbit
-            ssh-keyscan -t ed25519 github.com 2>/dev/null >> ~/.ssh/known_hosts
+            git remote set-url origin https://github.com/doukui7/UPbit.git 2>/dev/null || true
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
             bash scripts/vm_run_job.sh upbit
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
           PORTFOLIO: ${{ secrets.PORTFOLIO }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
           TRADING_MODE: upbit
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
@@ -62,16 +61,15 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 5m
           capture_stdout: true
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN,MANUAL_ORDER
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,MANUAL_ORDER
           script: |
             cd ~/upbit
-            ssh-keyscan -t ed25519 github.com 2>/dev/null >> ~/.ssh/known_hosts
+            git remote set-url origin https://github.com/doukui7/UPbit.git 2>/dev/null || true
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
             bash scripts/vm_run_job.sh manual_order
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
           TRADING_MODE: manual_order
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
@@ -82,31 +80,58 @@ jobs:
     if: github.event.inputs.run_job == 'account_sync'
     runs-on: ubuntu-latest
     steps:
-      - name: Sync Account Data via Cloud VM
+      # 1) 리포 체크아웃 (push 용)
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      # 2) VM에서 account_sync 실행 (GH_TOKEN 불필요)
+      - name: Run Account Sync on VM
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 5m
-          capture_stdout: true
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             cd ~/upbit
-            echo "=== git sync ==="
             git remote set-url origin https://github.com/doukui7/UPbit.git 2>/dev/null || true
-            git fetch origin 2>&1 || echo "WARN: git fetch failed"
-            git reset --hard origin/master 2>&1 || echo "WARN: git reset failed"
-            git log --oneline -1
-            echo "=== run ==="
-            echo "GH_TOKEN length: ${#GH_TOKEN} prefix: ${GH_TOKEN:0:4}"
+            git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
             bash scripts/vm_run_job.sh account_sync
-            echo "=== account_sync log tail ==="
-            tail -30 ~/upbit/logs/account_sync.log 2>/dev/null || echo "(no log)"
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
-          GH_TOKEN: ${{ github.token }}
           TRADING_MODE: account_sync
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
+
+      # 3) VM에서 캐시 파일 다운로드 → Runner에서 push
+      - name: Download cache from VM and push
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_USER: ${{ secrets.VM_USER }}
+        run: |
+          # SSH 키 설정
+          mkdir -p ~/.ssh
+          echo "${VM_SSH_KEY}" > ~/.ssh/vm_key
+          chmod 600 ~/.ssh/vm_key
+          ssh-keyscan -H "${VM_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # VM에서 캐시 파일 다운로드
+          scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/account_cache.json" ./account_cache.json || echo "WARN: account_cache.json not found"
+          scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/balance_cache.json" ./balance_cache.json || echo "WARN: balance_cache.json not found"
+          rm -f ~/.ssh/vm_key
+
+          # 변경사항 있으면 commit & push
+          git config user.name "auto-trade-bot"
+          git config user.email "bot@auto-trade"
+          git add account_cache.json balance_cache.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "auto: 계좌 데이터 동기화"
+            git push
+          fi

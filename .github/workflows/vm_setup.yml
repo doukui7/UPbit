@@ -32,7 +32,7 @@ jobs:
           command_timeout: 15m
           script: |
             cd ~/upbit
-            ssh-keyscan -t ed25519 github.com 2>/dev/null >> ~/.ssh/known_hosts
+            git remote set-url origin https://github.com/doukui7/UPbit.git 2>/dev/null || true
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
             bash scripts/vm_cron_manager.sh install
 
