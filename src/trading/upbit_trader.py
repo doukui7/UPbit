@@ -89,17 +89,28 @@ class UpbitTrader:
                 return [], err
 
             elif kind == 'order':
-                # pyupbit 방식: /v1/orders + state 파라미터 + data= 전송
-                params = {"state": "done", "limit": 100, "order_by": "desc"}
-                if currency and currency != "KRW":
-                    params["market"] = f"KRW-{currency}"
-                headers = self.upbit._request_headers(params)
-                res = requests.get(f"{server_url}/v1/orders", headers=headers, data=params)
-                if res.status_code == 200:
-                    return res.json(), None
-                err = f"Order API {res.status_code}: {res.text}"
-                logger.error(err)
-                return [], err
+                # 페이지네이션: 최대 5페이지(500건)까지 조회
+                all_orders = []
+                for page in range(1, 6):
+                    params = {"state": "done", "limit": 100, "page": page, "order_by": "desc"}
+                    if currency and currency != "KRW":
+                        params["market"] = f"KRW-{currency}"
+                    headers = self.upbit._request_headers(params)
+                    res = requests.get(f"{server_url}/v1/orders", headers=headers, data=params)
+                    if res.status_code != 200:
+                        if not all_orders:
+                            err = f"Order API {res.status_code}: {res.text}"
+                            logger.error(err)
+                            return [], err
+                        break
+                    batch = res.json()
+                    if not batch:
+                        break
+                    all_orders.extend(batch)
+                    if len(batch) < 100:
+                        break
+                logger.info(f"주문 조회: {len(all_orders)}건 ({page}페이지)")
+                return all_orders, None
 
             else:
                 return [], f"Unknown kind: {kind}"

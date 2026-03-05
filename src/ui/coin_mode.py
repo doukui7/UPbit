@@ -2855,7 +2855,6 @@ def render_coin_mode(config, save_config):
                     st.session_state["_hist_rows"] = all_rows
                     st.session_state["_hist_source"] = "API 실시간"
                 elif ip_blocked:
-                    st.warning("로컬 IP 차단 → 캐시 데이터를 표시합니다. VM 동기화가 필요합니다.")
                     if _acct_cache.get("orders") or _acct_cache.get("deposits"):
                         st.session_state["_hist_rows"] = _get_rows_from_cache(_acct_cache, h_type, h_curr)
                         st.session_state["_hist_source"] = f"캐시 ({_cache_time})"
