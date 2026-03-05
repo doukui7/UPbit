@@ -62,7 +62,7 @@ class UpbitTrader:
         import jwt
         import uuid as _uuid
         import hashlib
-        from urllib.parse import urlencode
+        from urllib.parse import urlencode, unquote
         import requests
 
         server_url = "https://api.upbit.com"
@@ -73,7 +73,8 @@ class UpbitTrader:
                 'nonce': str(_uuid.uuid4()),
             }
             if query_params:
-                query_string = urlencode(query_params, doseq=True)
+                # Upbit API는 unquote된 쿼리 문자열로 해시 검증 (pyupbit 동일 방식)
+                query_string = unquote(urlencode(query_params, doseq=True))
                 m = hashlib.sha512()
                 m.update(query_string.encode())
                 payload['query_hash'] = m.hexdigest()
@@ -105,15 +106,22 @@ class UpbitTrader:
                 return [], err
 
             elif kind == 'order':
-                # 체결 완료 주문 조회 - states[] 배열 형식 사용 (Upbit API 필수)
-                params = {"states[]": ["done", "cancel"], "limit": 100, "order_by": "desc"}
+                # 1) /v1/orders/closed — closed 전용 엔드포인트 (states 파라미터 불필요)
+                params_closed = {"limit": 100, "order_by": "desc"}
                 if currency and currency != "KRW":
-                    params["market"] = f"KRW-{currency}"
-                res = requests.get(f"{server_url}/v1/orders/closed", params=params, headers=_auth_header(params))
+                    params_closed["market"] = f"KRW-{currency}"
+                res = requests.get(f"{server_url}/v1/orders/closed",
+                                   params=params_closed,
+                                   headers=_auth_header(params_closed))
                 if res.status_code == 200:
                     return res.json(), None
-                # fallback: /v1/orders 엔드포인트
-                res2 = requests.get(f"{server_url}/v1/orders", params=params, headers=_auth_header(params))
+                # 2) fallback: /v1/orders — states[] 배열 필요
+                params_legacy = {"states[]": ["done", "cancel"], "limit": 100, "order_by": "desc"}
+                if currency and currency != "KRW":
+                    params_legacy["market"] = f"KRW-{currency}"
+                res2 = requests.get(f"{server_url}/v1/orders",
+                                    params=params_legacy,
+                                    headers=_auth_header(params_legacy))
                 if res2.status_code == 200:
                     return res2.json(), None
                 err = f"Order API {res.status_code}: {res.text} / fallback {res2.status_code}: {res2.text}"
