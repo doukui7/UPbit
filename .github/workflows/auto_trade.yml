@@ -30,6 +30,7 @@ on:
           - vm_cron_install
           - vm_cron_show
           - vm_cron_remove
+          - vm_setup_deploy_key
       once_mode:
         description: 1회성 예약 대상 모드 (vm_once_add 전용)
         required: false
@@ -548,3 +549,53 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
 
+  # ── VM Deploy Key 생성 (1회성 - GitHub SSH 인증 영구화) ──
+  vm_setup_deploy_key:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_setup_deploy_key'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Deploy Key on VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          command_timeout: 2m
+          script: |
+            KEY_FILE="$HOME/.ssh/id_ed25519_github"
+            if [ -f "$KEY_FILE" ]; then
+              echo "=== 기존 Deploy Key 존재 ==="
+            else
+              ssh-keygen -t ed25519 -C "vm-auto-trade-deploy-key" -f "$KEY_FILE" -N ""
+              echo "=== Deploy Key 생성 완료 ==="
+            fi
+            echo ""
+            echo "=== PUBLIC KEY (아래 내용을 GitHub Deploy Keys에 등록) ==="
+            cat "${KEY_FILE}.pub"
+            echo ""
+            echo "=== SSH config 설정 ==="
+            if ! grep -q "id_ed25519_github" "$HOME/.ssh/config" 2>/dev/null; then
+              cat >> "$HOME/.ssh/config" << 'SSHCONF'
+
+            Host github.com
+              HostName github.com
+              User git
+              IdentityFile ~/.ssh/id_ed25519_github
+              IdentitiesOnly yes
+            SSHCONF
+              chmod 600 "$HOME/.ssh/config"
+              echo "SSH config 추가 완료"
+            else
+              echo "SSH config 이미 설정됨"
+            fi
+            echo ""
+            echo "=== git remote 설정 ==="
+            cd ~/upbit 2>/dev/null || true
+            CURRENT_REMOTE=$(git remote get-url origin 2>/dev/null || echo "없음")
+            echo "현재 remote: $CURRENT_REMOTE"
+            if echo "$CURRENT_REMOTE" | grep -q "https://"; then
+              git remote set-url origin git@github.com:doukui7/UPbit.git
+              echo "remote → SSH 변경 완료: git@github.com:doukui7/UPbit.git"
+            else
+              echo "이미 SSH remote 사용 중"
+            fi
