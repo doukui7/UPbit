@@ -89,27 +89,27 @@ class UpbitTrader:
                 return [], err
 
             elif kind == 'order':
-                # 페이지네이션: 최대 5페이지(500건)까지 조회
+                # done + cancel(부분체결) 모두 조회
                 all_orders = []
-                for page in range(1, 6):
-                    params = {"state": "done", "limit": 100, "page": page, "order_by": "desc"}
-                    if currency and currency != "KRW":
-                        params["market"] = f"KRW-{currency}"
-                    headers = self.upbit._request_headers(params)
-                    res = requests.get(f"{server_url}/v1/orders", headers=headers, data=params)
-                    if res.status_code != 200:
-                        if not all_orders:
-                            err = f"Order API {res.status_code}: {res.text}"
-                            logger.error(err)
-                            return [], err
-                        break
-                    batch = res.json()
-                    if not batch:
-                        break
-                    all_orders.extend(batch)
-                    if len(batch) < 100:
-                        break
-                logger.info(f"주문 조회: {len(all_orders)}건 ({page}페이지)")
+                for state in ("done", "cancel"):
+                    for page in range(1, 6):
+                        params = {"state": state, "limit": 100, "page": page, "order_by": "desc"}
+                        if currency and currency != "KRW":
+                            params["market"] = f"KRW-{currency}"
+                        headers = self.upbit._request_headers(params)
+                        res = requests.get(f"{server_url}/v1/orders", headers=headers, data=params)
+                        if res.status_code != 200:
+                            break
+                        batch = res.json()
+                        if not batch:
+                            break
+                        # cancel 주문은 체결된 것만 포함
+                        if state == "cancel":
+                            batch = [o for o in batch if float(o.get("executed_volume", 0)) > 0]
+                        all_orders.extend(batch)
+                        if len(batch) < 100:
+                            break
+                logger.info(f"주문 조회: {len(all_orders)}건 (done+cancel)")
                 return all_orders, None
 
             else:
