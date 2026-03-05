@@ -1947,15 +1947,11 @@ def render_coin_mode(config, save_config):
         port_tickers = [f"{r['market']}-{r['coin'].upper()}" for r in portfolio_list]
         manual_options = list(dict.fromkeys(port_tickers + TOP_20_TICKERS))
         mt_ticker = st.selectbox("코인 선택", manual_options, key="mt_ticker_chart")
+        import pyupbit as _pyupbit
         df_30m = _ttl_cache(
             f"m30_{mt_ticker}",
-            lambda: data_cache.get_ohlcv_local_first(
-                mt_ticker,
-                interval="minute30",
-                count=48,
-                allow_api_fallback=True,
-            ),
-            ttl=30,
+            lambda: _pyupbit.get_ohlcv(mt_ticker, interval="minute30", count=48),
+            ttl=10,
         )
         if df_30m is not None and len(df_30m) > 0:
             last_dt = df_30m.index[-1]
