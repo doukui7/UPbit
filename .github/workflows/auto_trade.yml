@@ -133,6 +133,8 @@ jobs:
             cd ~/upbit
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
             bash scripts/vm_run_job.sh account_sync
+            echo "=== account_sync log tail ==="
+            tail -30 ~/upbit/logs/account_sync.log 2>/dev/null || echo "(no log)"
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
