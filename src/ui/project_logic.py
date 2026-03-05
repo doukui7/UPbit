@@ -647,6 +647,109 @@ gatherUsageStats = false
 > `headless = false`로 설정하여 streamlit이 준비 완료 후 브라우저를 여는 것을 권장.
 """)
 
+    st.markdown("---")
+    st.markdown("""
+#### 실시간 가격 & 자산 패널 (10초 자동 갱신)
+
+코인 대시보드 최상단(탭 위)에 BTC 가격, 총 자산, 손익, 현금을 10초마다 자동 갱신하여 표시합니다.
+
+**핵심 구조**: `@st.fragment(run_every=10)` — 페이지 전체 리렌더 없이 해당 영역만 독립 갱신
+
+**데이터 흐름**:
+1. **가격**: Public API (`data_cache.get_current_prices_local_first`) — IP 차단 무관, 항상 최신
+2. **잔고**: Private API (`trader.get_all_balances()`) → 실패 시 `balance_cache.json` 캐시 fallback
+3. **계산**: 총 자산 = 현금(KRW) + Σ(코인 보유량 × 현재가)
+
+**파일**: `src/ui/coin_mode.py` (탭 정의 직전)
+
+```python
+# closure로 외부 변수 캡처
+_frag_trader = trader
+_frag_portfolio = portfolio_list
+_frag_initial_cap = initial_cap
+
+@st.fragment(run_every=10)
+def _render_live_ticker():
+    _prices = {}
+    _balances = {}
+    _krw = 0.0
+    _from_cache = False
+    _cache_time = ""
+
+    # 1) 잔고: API 직접 → 실패 시 캐시
+    _live_bal = None
+    if _frag_trader:
+        try:
+            raw = _frag_trader.get_all_balances()
+            if raw and isinstance(raw, dict) and len(raw) > 0:
+                _live_bal = raw
+        except Exception:
+            pass
+
+    if _live_bal and isinstance(_live_bal, dict):
+        _krw = float(_live_bal.get('KRW', 0) or 0)
+        for _c, _v in _live_bal.items():
+            if str(_c).upper() != 'KRW':
+                _fv = float(_v or 0)
+                if _fv > 0:
+                    _balances[str(_c).upper()] = _fv
+    else:
+        # balance_cache.json fallback
+        _cached = _load_balance_cache()
+        if _cached and _cached.get("balances"):
+            _bal = _cached["balances"]
+            _krw = float(_bal.get('KRW', 0) or 0)
+            for _c, _v in _bal.items():
+                if str(_c).upper() != 'KRW':
+                    _fv = float(_v or 0)
+                    if _fv > 0:
+                        _balances[str(_c).upper()] = _fv
+            _from_cache = True
+            _cache_time = _cached.get("updated_at", "")
+
+    # 2) 가격: Public API (IP 차단 무관)
+    _coins = set(_balances.keys())
+    if _frag_portfolio:
+        _coins.update(item['coin'].upper() for item in _frag_portfolio)
+    _coins.add("BTC")
+    _tickers = [f"KRW-{c}" for c in sorted(_coins)]
+    try:
+        _prices = data_cache.get_current_prices_local_first(
+            _tickers, ttl_sec=3.0, allow_api_fallback=True,
+        ) or {}
+    except Exception:
+        pass
+
+    # 3) 표시
+    _total = _krw + sum(
+        bal * (_prices.get(f"KRW-{c}", 0) or 0)
+        for c, bal in _balances.items()
+    )
+    _pnl = _total - _frag_initial_cap
+    _pnl_pct = (_pnl / _frag_initial_cap * 100) if _frag_initial_cap > 0 else 0
+    _btc = _prices.get("KRW-BTC", 0) or 0
+    _now = datetime.now().strftime("%H:%M:%S")
+
+    _c1, _c2, _c3, _c4 = st.columns(4)
+    _c1.metric("BTC", f"{_btc:,.0f}원")
+    _c2.metric("총 자산", f"{_total:,.0f}원")
+    _c3.metric("손익 (P&L)", f"{_pnl:+,.0f}원 ({_pnl_pct:+.2f}%)")
+    _c4.metric("현금 (KRW)", f"{_krw:,.0f}원")
+    _note = f"가격: {_now}"
+    if _from_cache:
+        _note += f" | 잔고: VM캐시 {_cache_time}"
+    st.caption(_note)
+
+_render_live_ticker()
+```
+
+**주요 포인트**:
+- `@st.fragment(run_every=10)`: 10초마다 이 함수만 재실행 (전체 페이지 리렌더 X)
+- closure 캡처: fragment 내부에서 `trader`, `portfolio_list` 등 외부 변수 접근을 위해 `_frag_*` 변수에 미리 할당
+- 가격은 Public API라 IP 차단 영향 없이 항상 갱신됨
+- 잔고가 캐시인 경우 캐시 날짜를 명시하여 혼동 방지
+""")
+
 
 def _render_audit_log():
     """점검 결과 기록 — 기능별 체크리스트."""
