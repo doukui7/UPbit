@@ -614,6 +614,39 @@ bash scripts/vm_oneoff_manager.sh add <mode> <kst>
 ```
 """)
 
+    st.markdown("---")
+    st.markdown("""
+#### 로컬 실행 (Windows)
+
+**실행 파일**: `run.bat`
+```bat
+@echo off
+start http://localhost:8501
+streamlit run app.py --server.address localhost --server.port 8501 --server.headless true
+pause
+```
+
+**Streamlit 설정**: `.streamlit/config.toml`
+```toml
+[server]
+headless = false        # false = 실행 시 브라우저 자동 열림
+runOnSave = false
+
+[theme]
+primaryColor = "#FF6B35"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F2F6"
+textColor = "#262730"
+
+[browser]
+gatherUsageStats = false
+```
+
+> `headless = true`이면 브라우저가 자동으로 열리지 않음.
+> `run.bat`의 `start http://...` 명령은 streamlit보다 먼저 실행되어 빈 페이지가 뜰 수 있으므로,
+> `headless = false`로 설정하여 streamlit이 준비 완료 후 브라우저를 여는 것을 권장.
+""")
+
 
 def _render_audit_log():
     """점검 결과 기록 — 기능별 체크리스트."""
