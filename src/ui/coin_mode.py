@@ -44,14 +44,14 @@ def _load_account_cache():
     return {}
 
 
-def _trigger_gh_workflow(job_name: str) -> tuple[bool, str]:
+def _trigger_gh_workflow(job_name: str, extra_inputs: dict | None = None) -> tuple[bool, str]:
     """GitHub Actions workflow를 트리거하고 결과 반환."""
     import subprocess
     try:
-        result = subprocess.run(
-            ["gh", "workflow", "run", "auto_trade.yml", "-f", f"run_job={job_name}"],
-            capture_output=True, text=True, timeout=30,
-        )
+        cmd = ["gh", "workflow", "run", "auto_trade.yml", "-f", f"run_job={job_name}"]
+        for k, v in (extra_inputs or {}).items():
+            cmd.extend(["-f", f"{k}={v}"])
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
             return True, f"{job_name} 실행 요청 완료"
         return False, f"실행 실패: {result.stderr.strip()}"
@@ -72,7 +72,7 @@ def _sync_account_cache_from_github():
         )
         subprocess.run(
             ["git", "checkout", "origin/master", "--",
-             "account_cache.json", "balance_cache.json", "signal_state.json"],
+             "account_cache.json", "balance_cache.json", "signal_state.json", "trade_log.json"],
             cwd=project_root, capture_output=True, timeout=15,
         )
         return True
@@ -80,14 +80,14 @@ def _sync_account_cache_from_github():
         return False
 
 
-def _trigger_and_wait_gh(job_name: str, status_placeholder=None) -> tuple[bool, str]:
+def _trigger_and_wait_gh(job_name: str, status_placeholder=None, extra_inputs: dict | None = None) -> tuple[bool, str]:
     """workflow 트리거 → 완료 대기 → 캐시 pull. 한 번에 처리."""
     import subprocess
 
     # 1) 트리거
     if status_placeholder:
         status_placeholder.text("워크플로우 트리거 중...")
-    ok, msg = _trigger_gh_workflow(job_name)
+    ok, msg = _trigger_gh_workflow(job_name, extra_inputs=extra_inputs)
     if not ok:
         return False, msg
 
@@ -2086,7 +2086,8 @@ def render_coin_mode(config, save_config):
     with tab5:
         st.header("수동 주문")
 
-        # ── VM 경유 전략 기반 즉시 매매 ──
+        # ── VM 경유 즉시 매수/매도 ──
+        st.subheader("VM 경유 즉시 주문")
         _acct = _load_account_cache()
         if _acct.get("updated_at"):
             bals = _acct.get("balances", {})
@@ -2100,14 +2101,31 @@ def render_coin_mode(config, save_config):
             if bal_parts:
                 st.caption(f"잔고 ({_acct['updated_at']}): " + " | ".join(bal_parts))
 
-        if st.button("전략 기반 즉시 매매 (VM 경유)", key="btn_manual_trade", type="primary", use_container_width=True):
+        mo_col1, mo_col2, mo_col3 = st.columns(3)
+        mo_coin = mo_col1.selectbox("코인", ["BTC", "ETH", "XRP", "SOL", "DOGE"], key="mo_coin")
+        mo_side = mo_col2.selectbox("방향", ["매수 (BUY)", "매도 (SELL)"], key="mo_side")
+        mo_pct = mo_col3.slider("비율 (%)", 10, 100, 50, 10, key="mo_pct")
+
+        _side_val = "buy" if "BUY" in mo_side else "sell"
+        _side_label = "매수" if _side_val == "buy" else "매도"
+        _order_json = json.dumps({"coin": mo_coin, "side": _side_val, "pct": mo_pct})
+
+        if st.button(
+            f"{mo_coin} {mo_pct}% {_side_label} 실행 (VM 경유)",
+            key="btn_manual_order",
+            type="primary",
+            use_container_width=True,
+        ):
             _status = st.empty()
-            ok, result_msg = _trigger_and_wait_gh("manual_trade", _status)
+            ok, result_msg = _trigger_and_wait_gh(
+                "manual_order", _status,
+                extra_inputs={"manual_order_params": _order_json},
+            )
             if ok:
-                _status.success(f"매매 완료 ({result_msg})")
+                _status.success(f"주문 완료 ({result_msg})")
             else:
-                _status.error(f"매매 실패: {result_msg}")
-        st.caption("포트폴리오 전략(SMA/Donchian) 시그널에 따라 VM → 업비트 경로로 즉시 매매합니다.")
+                _status.error(f"주문 실패: {result_msg}")
+        st.caption("전략 분석 없이 지정한 코인/방향/비율로 VM → 업비트 경로로 즉시 주문합니다.")
         st.divider()
 
         # ── 거래소 스타일 직접 주문 (로컬 API 필요) ──

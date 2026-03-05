@@ -15,7 +15,7 @@ on:
           - daily_status
           - health_check
           - trade
-          - manual_trade
+          - manual_order
           - account_sync
           - kiwoom_gold
           - kis_isa
@@ -44,6 +44,10 @@ on:
           - kis_isa
       once_run_at_kst:
         description: 1회성 실행시각 KST (YYYY-MM-DD HH:MM[:SS], 비우면 내일 15:20)
+        required: false
+        default: ""
+      manual_order_params:
+        description: '수동주문 JSON (예: {"coin":"BTC","side":"buy","pct":50})'
         required: false
         default: ""
       once_note:
@@ -82,33 +86,32 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
 
-  # ── 업비트 BTC 수동주문 (FORCE_TRADE - 스케줄 무시 즉시 실행) ──
-  manual_trade:
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'manual_trade'
+  # ── 업비트 수동주문 (전략 분석 없이 즉시 매수/매도) ──
+  manual_order:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'manual_order'
     runs-on: ubuntu-latest
     steps:
-      - name: Run Manual Trade via Cloud VM (FORCE)
+      - name: Run Manual Order via Cloud VM
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
-          command_timeout: 15m
+          command_timeout: 5m
           capture_stdout: true
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN,FORCE_TRADE
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,GH_TOKEN,MANUAL_ORDER
           script: |
             cd ~/upbit
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
-            bash scripts/vm_run_job.sh upbit
+            bash scripts/vm_run_job.sh manual_order
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
           UPBIT_SECRET_KEY: ${{ secrets.UPBIT_SECRET_KEY }}
-          PORTFOLIO: ${{ secrets.PORTFOLIO }}
           GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
-          TRADING_MODE: upbit
+          TRADING_MODE: manual_order
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
-          FORCE_TRADE: '1'
+          MANUAL_ORDER: ${{ github.event.inputs.manual_order_params }}
 
   # ── 계좌 데이터 VM 경유 동기화 (잔고/체결/입출금) ──
   account_sync:

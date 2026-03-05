@@ -42,6 +42,36 @@ SIGNAL_STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BALANCE_CACHE_FILE = os.path.join(_PROJECT_ROOT, "balance_cache.json")
 ACCOUNT_CACHE_FILE = os.path.join(_PROJECT_ROOT, "account_cache.json")
+TRADE_LOG_FILE = os.path.join(_PROJECT_ROOT, "trade_log.json")
+_TRADE_LOG_MAX_ENTRIES = 200
+
+
+def _append_trade_log(entry: dict):
+    """주문 시도/결과를 trade_log.json에 기록하고 GitHub push."""
+    kst = timezone(timedelta(hours=9))
+    entry.setdefault("time", datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S KST"))
+    logs = []
+    try:
+        if os.path.exists(TRADE_LOG_FILE):
+            with open(TRADE_LOG_FILE, "r", encoding="utf-8") as f:
+                logs = json.load(f)
+            if not isinstance(logs, list):
+                logs = []
+    except Exception:
+        logs = []
+    logs.insert(0, entry)
+    logs = logs[:_TRADE_LOG_MAX_ENTRIES]
+    content = json.dumps(logs, indent=2, ensure_ascii=False, default=str)
+    try:
+        with open(TRADE_LOG_FILE, "w", encoding="utf-8") as f:
+            f.write(content)
+        _push_file_to_github(
+            repo_path="trade_log.json",
+            content=content,
+            commit_message="auto: 주문 로그 업데이트",
+        )
+    except Exception as e:
+        logger.warning(f"trade_log 저장 실패: {e}")
 
 
 def _load_signal_state() -> dict:
@@ -1322,6 +1352,11 @@ def run_auto_trade():
                 result["_strategy_label"] = a.get("strategy_label", "")
                 result["_condition_summary"] = a.get("condition_summary", "")
                 exec_results.setdefault(a['ticker'], []).append(result)
+                _append_trade_log({
+                    "mode": "auto", "ticker": a['ticker'], "side": "SELL",
+                    "qty": f"{sell_qty:.8g}", "strategy": a.get('strategy_label', ''),
+                    "result": "success", "detail": str(result)[:200],
+                })
                 # 전량 매도 시 동일 코인 후속 매도 방지
                 if all_sell_for_coin:
                     sold_coins.add(a['coin_sym'])
@@ -1330,6 +1365,11 @@ def run_auto_trade():
                 decision_notes.setdefault(a['ticker'], []).append(
                     f"SELL 주문오류({a.get('strategy_label', '')}): {e}"
                 )
+                _append_trade_log({
+                    "mode": "auto", "ticker": a['ticker'], "side": "SELL",
+                    "qty": f"{sell_qty:.8g}", "strategy": a.get('strategy_label', ''),
+                    "result": "error", "detail": str(e)[:200],
+                })
 
         elif a['signal'] == 'SELL' and not a['is_holding']:
             note = f"SELL 스킵({a.get('strategy_label', '')}): 보유수량/평가금액 부족"
@@ -1374,12 +1414,22 @@ def run_auto_trade():
                 result["_strategy_label"] = a.get("strategy_label", "")
                 result["_condition_summary"] = a.get("condition_summary", "")
                 exec_results.setdefault(a['ticker'], []).append(result)
+                _append_trade_log({
+                    "mode": "auto", "ticker": a['ticker'], "side": "BUY",
+                    "amount": f"{buy_budget:,.0f}", "strategy": a.get('strategy_label', ''),
+                    "result": "success", "detail": str(result)[:200],
+                })
                 krw_balance -= buy_budget  # 사용한 현금 차감
             except Exception as e:
                 logger.error(f"[{a['ticker']}] Buy Error: {e}")
                 decision_notes.setdefault(a['ticker'], []).append(
                     f"BUY 주문오류({a.get('strategy_label', '')}): {e}"
                 )
+                _append_trade_log({
+                    "mode": "auto", "ticker": a['ticker'], "side": "BUY",
+                    "amount": f"{buy_budget:,.0f}", "strategy": a.get('strategy_label', ''),
+                    "result": "error", "detail": str(e)[:200],
+                })
         else:
             note = (
                 f"BUY 스킵({a.get('strategy_label', '')}): "
@@ -3481,6 +3531,126 @@ def run_account_sync():
     )
 
 
+def run_manual_order():
+    """
+    수동 주문 실행 (전략 분석 없이 즉시 매수/매도).
+
+    환경변수:
+      MANUAL_ORDER: JSON 문자열 {"coin":"BTC","side":"buy","pct":50}
+        - coin: 코인 심볼 (BTC, ETH, ...)
+        - side: buy / sell
+        - pct: 가용 현금(매수) 또는 보유량(매도)의 비율(%)
+    """
+    load_dotenv()
+
+    # 주문 파라미터 파싱
+    raw = os.getenv("MANUAL_ORDER", "").strip()
+    if not raw:
+        logger.error("manual_order: MANUAL_ORDER 환경변수 미설정")
+        return
+    try:
+        params = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.error(f"manual_order: JSON 파싱 실패 - {e}")
+        return
+
+    coin = str(params.get("coin", "")).strip().upper()
+    side = str(params.get("side", "")).strip().lower()
+    pct = _safe_float(params.get("pct", 0), default=0.0)
+
+    if not coin or side not in ("buy", "sell") or pct <= 0:
+        logger.error(f"manual_order: 잘못된 파라미터 - coin={coin}, side={side}, pct={pct}")
+        return
+
+    ticker = f"KRW-{coin}"
+    logger.info(f"=== Manual Order: {side.upper()} {coin} {pct}% ===")
+
+    ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY")
+    SECRET_KEY = os.getenv("UPBIT_SECRET_KEY")
+    if not ACCESS_KEY or not SECRET_KEY:
+        logger.error("manual_order: UPBIT API 키 미설정")
+        _send_telegram("<b>수동 주문 실패</b>\nUPBIT API 키 미설정")
+        return
+
+    trader = UpbitTrader(ACCESS_KEY, SECRET_KEY)
+
+    # 현재가 조회
+    current_price = _safe_float(trader.get_current_price(ticker), default=0.0)
+    if current_price <= 0:
+        logger.error(f"manual_order: 현재가 조회 실패 ({ticker})")
+        _send_telegram(f"<b>수동 주문 실패</b>\n{ticker} 현재가 조회 불가")
+        return
+
+    result = None
+    detail = ""
+
+    if side == "buy":
+        krw = _safe_float(trader.get_balance("KRW"), default=0.0)
+        buy_amount = krw * (pct / 100) * 0.999  # 수수료 여유
+        if buy_amount < MIN_ORDER_KRW:
+            msg = f"KRW 부족: {krw:,.0f}원 × {pct}% = {buy_amount:,.0f}원 < {MIN_ORDER_KRW:,.0f}원"
+            logger.error(f"manual_order: {msg}")
+            _send_telegram(f"<b>수동 매수 실패</b>\n{ticker} {msg}")
+            return
+        logger.info(f"[{ticker}] 매수: {buy_amount:,.0f}원 ({pct}% of {krw:,.0f}원)")
+        try:
+            result = trader.adaptive_buy(ticker, buy_amount, interval="day")
+            detail = f"매수 {buy_amount:,.0f}원"
+        except Exception as e:
+            logger.error(f"manual_order BUY error: {e}")
+            _send_telegram(f"<b>수동 매수 오류</b>\n{ticker}: {e}")
+            _append_trade_log({"mode": "manual", "ticker": ticker, "side": "BUY", "pct": pct, "result": "error", "detail": str(e)[:200]})
+            return
+
+    elif side == "sell":
+        coin_balance = _safe_float(trader.get_balance(coin), default=0.0)
+        sell_qty = coin_balance * (pct / 100)
+        sell_value = sell_qty * current_price
+        if sell_value < MIN_ORDER_KRW:
+            msg = f"보유 부족: {coin} {coin_balance:.8g} × {pct}% = {sell_value:,.0f}원 < {MIN_ORDER_KRW:,.0f}원"
+            logger.error(f"manual_order: {msg}")
+            _send_telegram(f"<b>수동 매도 실패</b>\n{ticker} {msg}")
+            return
+        logger.info(f"[{ticker}] 매도: {sell_qty:.8g} {coin} ({pct}% of {coin_balance:.8g})")
+        try:
+            result = trader.smart_sell(ticker, sell_qty, interval="day")
+            detail = f"매도 {sell_qty:.8g} {coin} (≈{sell_value:,.0f}원)"
+        except Exception as e:
+            logger.error(f"manual_order SELL error: {e}")
+            _send_telegram(f"<b>수동 매도 오류</b>\n{ticker}: {e}")
+            _append_trade_log({"mode": "manual", "ticker": ticker, "side": "SELL", "pct": pct, "result": "error", "detail": str(e)[:200]})
+            return
+
+    logger.info(f"[{ticker}] Manual Order Result: {result}")
+    _append_trade_log({
+        "mode": "manual", "ticker": ticker, "side": side.upper(),
+        "pct": pct, "detail": f"{detail} | {str(result)[:150]}",
+        "result": "success",
+    })
+
+    # 잔고 갱신 + 캐시 push
+    time.sleep(1)
+    updated_bal = trader.get_all_balances() or {}
+    prices = {}
+    for sym in updated_bal:
+        if sym != "KRW":
+            p = _safe_float(trader.get_current_price(f"KRW-{sym}"), default=0.0)
+            if p > 0:
+                prices[f"KRW-{sym}"] = p
+    _save_balance_cache(updated_bal, prices)
+
+    # 텔레그램 알림
+    krw_after = _safe_float(updated_bal.get("KRW", 0))
+    coin_after = _safe_float(updated_bal.get(coin, 0))
+    coin_value_after = coin_after * current_price
+    _send_telegram(
+        f"<b>수동 주문 완료</b>\n"
+        f"{ticker} {side.upper()} | {detail}\n"
+        f"현재가: {current_price:,.0f}원\n"
+        f"잔고: KRW {krw_after:,.0f}원 / {coin} {coin_after:.8g} (≈{coin_value_after:,.0f}원)"
+    )
+
+
 def run_telegram_test_ping():
     """
     텔레그램 알림 경로 점검용: 매 정각 실행 가능한 경량 핑 메시지 전송.
@@ -3827,6 +3997,8 @@ if __name__ == "__main__":
             run_daily_status_report()
         elif mode == "account_sync":
             run_account_sync()
+        elif mode == "manual_order":
+            run_manual_order()
         elif mode == "telegram_test_ping":
             run_telegram_test_ping()
         else:
