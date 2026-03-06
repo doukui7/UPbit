@@ -2280,27 +2280,26 @@ def render_coin_mode(config, save_config):
                 st.warning(f"설정 저장됨 (Git 푸시 실패: {_ge})")
             st.rerun()
 
-        # ── 다음 VM 실행 예약정보 ──
+        # ── 24시간 VM 실행 스케줄 ──
         st.divider()
-        st.markdown("**다음 VM 실행 예약**")
+        st.markdown("**24시간 실행 스케줄**")
         try:
             from datetime import timezone as _tz
             _kst = _tz(timedelta(hours=9))
             _now_kst = datetime.now(_kst)
-            # cron: KST 01:00/05:00/09:00/13:00/17:00/21:00
             _sched_hours = [1, 5, 9, 13, 17, 21]
-            _next_dt = None
-            for _h in _sched_hours:
-                _cand = _now_kst.replace(hour=_h, minute=0, second=0, microsecond=0)
-                if _cand > _now_kst:
-                    _next_dt = _cand
-                    break
-            if _next_dt is None:
-                _next_dt = (_now_kst + timedelta(days=1)).replace(hour=1, minute=10, second=0, microsecond=0)
-            _remain = _next_dt - _now_kst
-            _remain_str = f"{int(_remain.total_seconds() // 3600)}시간 {int((_remain.total_seconds() % 3600) // 60)}분"
 
-            st.info(f"다음 실행: **{_next_dt.strftime('%Y-%m-%d %H:%M KST')}** ({_remain_str} 후)")
+            # 향후 24시간 내 실행 시각 목록 생성
+            _slots = []
+            for _day_off in range(2):  # 오늘 + 내일
+                for _h in _sched_hours:
+                    _cand = (_now_kst + timedelta(days=_day_off)).replace(
+                        hour=_h, minute=0, second=0, microsecond=0
+                    )
+                    if _now_kst < _cand <= _now_kst + timedelta(hours=24):
+                        _slots.append(_cand)
+            if not _slots:
+                _slots.append((_now_kst + timedelta(days=1)).replace(hour=1, minute=0, second=0, microsecond=0))
 
             # signal_state 로드
             _sig_file = os.path.join(_COIN_PROJECT_ROOT, "signal_state.json")
@@ -2315,9 +2314,10 @@ def render_coin_mode(config, save_config):
             _krw_bal = float(_bals.get("KRW", 0))
             _bc_time = _bc.get("updated_at", "N/A")
 
-            # 포트폴리오 가치 추정
+            # 포트폴리오 정보 사전 계산
+            _port_info = []
             _total_coin_v = 0
-            _strat_rows = []
+            _seen_coins = set()
             for _pi in portfolio_list:
                 _tk = f"{_pi.get('market','KRW')}-{_pi['coin'].upper()}"
                 _sym = _pi['coin'].upper()
@@ -2325,58 +2325,101 @@ def render_coin_mode(config, save_config):
                 _param = _pi.get('parameter', 20)
                 _iv = _pi.get('interval', 'day')
                 _wt = float(_pi.get('weight', 0))
-                # signal key
                 _iv_norm = _iv
                 for _alias, _real in [("4h", "minute240"), ("1h", "minute60"), ("1d", "day")]:
                     if _iv.lower() == _alias:
                         _iv_norm = _real
                 _skey = f"{_tk}_{_strat_name}_{_param}_{_iv_norm}"
                 _maint = _sig_state.get(_skey, "?")
-
-                # 잔고
                 _coin_b = float(_bals.get(_sym, 0))
                 _prices = _bc.get("prices", {})
                 _coin_p = float(_prices.get(_tk, 0))
                 _coin_v = _coin_b * _coin_p
-                _total_coin_v += _coin_v
-
-                # 다음 실행 시 interval 매칭 여부
-                _next_h = _next_dt.hour
-                if _iv_norm == "day":
-                    _will_run = (_next_h == 9)
-                    _next_run_for = "09:10 KST" if not _will_run else "이번 실행"
-                else:
-                    _will_run = True
-                    _next_run_for = "이번 실행"
-
-                # 보충 매수/매도 예상
-                _action = "대기"
-                if _tu_on and _will_run:
-                    if _maint == "BUY":
-                        _action = f"보충매수 {_tu_buy:,}원" if _coin_v < (_krw_bal + _total_coin_v) * (_wt / 100) else "목표 충족"
-                    elif _maint == "SELL":
-                        _action = f"보충매도 {_tu_sell:,}원" if _coin_v >= 5000 else "잔량 없음"
-                elif not _will_run:
-                    _action = f"스킵(주기 미도래, 다음 {_next_run_for})"
-
-                _strat_rows.append({
-                    "전략": f"{_strat_name}({_param}, {_iv})",
-                    "유지상태": _maint,
-                    "실행여부": "실행" if _will_run else "스킵",
-                    "예상동작": _action,
+                # 같은 코인 중복 합산 방지
+                if _sym not in _seen_coins:
+                    _total_coin_v += _coin_v
+                    _seen_coins.add(_sym)
+                _port_info.append({
+                    "label": f"{_strat_name}({_param}, {_iv})",
+                    "iv_norm": _iv_norm, "weight": _wt,
+                    "maint": _maint, "coin_v": _coin_v,
+                    "coin_sym": _sym,
                 })
+            _total_pv = _krw_bal + _total_coin_v
 
-            if _strat_rows:
-                _sdf = pd.DataFrame(_strat_rows)
+            # 다음 실행 강조
+            _next_dt = _slots[0]
+            _remain = _next_dt - _now_kst
+            _hh = int(_remain.total_seconds() // 3600)
+            _mm = int((_remain.total_seconds() % 3600) // 60)
+            st.info(f"다음 실행: **{_next_dt.strftime('%Y-%m-%d %H:%M KST')}** ({_hh}시간 {_mm}분 후)")
+
+            # 24시간 타임라인 테이블 생성
+            _rows = []
+            for _slot in _slots:
+                _sh = _slot.hour
+                _is_next = (_slot == _next_dt)
+                _time_label = _slot.strftime("%m-%d %H:%M")
+                if _is_next:
+                    _time_label = f"▶ {_time_label}"
+
+                for _p in _port_info:
+                    # interval 매칭
+                    if _p["iv_norm"] == "day":
+                        _will_run = (_sh == 9)
+                    else:
+                        _will_run = True
+
+                    # 전략 분석 동작
+                    _actions = []
+                    if _will_run:
+                        if _p["maint"] == "BUY":
+                            _actions.append("전략분석(BUY유지)")
+                        elif _p["maint"] == "SELL":
+                            _actions.append("전략분석(SELL유지)")
+                        elif _p["maint"] == "?":
+                            _actions.append("전략분석(최초)")
+                        else:
+                            _actions.append(f"전략분석({_p['maint']})")
+
+                    # 보충 매수/매도 (분석 실행 전략 + interval 스킵 전략 모두)
+                    if _tu_on:
+                        _target_v = _total_pv * (_p["weight"] / 100) if _total_pv > 0 else 0
+                        if _p["maint"] == "BUY":
+                            _need = _target_v - _p["coin_v"]
+                            if _need >= 5000:
+                                _buy_amt = min(_tu_buy, _need)
+                                _actions.append(f"보충매수 ~{_buy_amt:,.0f}원")
+                            else:
+                                _actions.append("보충매수 불필요(목표충족)")
+                        elif _p["maint"] == "SELL" and _p["coin_v"] >= 5000:
+                            _sell_amt = min(_tu_sell, _p["coin_v"])
+                            _actions.append(f"보충매도 ~{_sell_amt:,.0f}원")
+
+                    if not _will_run and not _actions:
+                        _actions.append("스킵(주기 미도래)")
+                    elif not _actions:
+                        _actions.append("대기")
+
+                    _rows.append({
+                        "실행시각": _time_label,
+                        "전략": _p["label"],
+                        "유지상태": _p["maint"],
+                        "실행": "O" if _will_run else "X",
+                        "예상 동작": " + ".join(_actions),
+                    })
+
+            if _rows:
+                _sdf = pd.DataFrame(_rows)
                 st.dataframe(_sdf, use_container_width=True, hide_index=True)
 
-            _total_pv = _krw_bal + _total_coin_v
             st.caption(
                 f"잔고 KRW {_krw_bal:,.0f}원 | 코인 {_total_coin_v:,.0f}원 | "
                 f"총 {_total_pv:,.0f}원 (캐시: {_bc_time})"
             )
+            st.caption("※ 예상 동작은 현재 시그널 상태 기준이며, 실제 전략 분석 결과에 따라 변경될 수 있습니다.")
         except Exception as _ve_err:
-            st.warning(f"예약정보 로드 실패: {_ve_err}")
+            st.warning(f"스케줄 로드 실패: {_ve_err}")
 
     # --- Tab 3: History ---
     with tab3:
