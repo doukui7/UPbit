@@ -130,6 +130,17 @@ def _execute_pending_pen_orders(trader) -> list[str]:
                     res = trader.execute_closing_auction_buy(code, qty)
                 else:
                     res = trader.execute_closing_auction_sell(code, qty)
+                # 동시호가 실패 시 시간외 종가로 자동 재주문
+                if not (isinstance(res, dict) and res.get("success", False)):
+                    ord_side = "BUY" if "매수" in side else "SELL"
+                    res2 = trader.send_order(ord_side, code, qty, price=0, ord_dvsn="06")
+                    success2 = isinstance(res2, dict) and res2.get("success", False)
+                    res = {
+                        "success": success2,
+                        "method": "동시호가실패→시간외종가",
+                        "closing_result": str(res)[:100],
+                        "after_hours_result": str(res2)[:100],
+                    }
             elif "시간외" in method:
                 ord_side = "BUY" if "매수" in side else "SELL"
                 res = trader.send_order(ord_side, code, qty, price=0, ord_dvsn="06")
