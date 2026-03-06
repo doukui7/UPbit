@@ -1021,6 +1021,12 @@ def render_coin_mode(config, save_config):
         _note = f"가격: {_now}"
         if _from_cache:
             _note += f" | 잔고: VM캐시 {_cache_time}"
+        # 워커 상태도 같은 줄에 표시
+        try:
+            _w_msg, _w_time = worker.get_status()
+            _note += f" | 워커: {_w_msg} ({_w_time})"
+        except Exception:
+            pass
         st.caption(_note)
 
     _render_live_ticker()
@@ -1040,18 +1046,11 @@ def render_coin_mode(config, save_config):
             worker.update_config(portfolio_list)
             worker.start_worker()
 
-            w_msg, w_time = worker.get_status()
-
             # Control Bar
-            col_ctrl1, col_ctrl2 = st.columns([1,3])
-            with col_ctrl1:
-                if st.button("🔄 새로고침"):
-                    _clear_cache("krw_bal_t1", "prices_t1", "balances_t1")
-                    # 다음 1회 가격 조회는 TTL 우회로 최신 API 값을 강제 반영
-                    st.session_state["coin_force_price_refresh_once"] = True
-                    st.rerun()
-            with col_ctrl2:
-                st.info(f"워커 상태: **{w_msg}**")
+            if st.button("🔄 새로고침"):
+                _clear_cache("krw_bal_t1", "prices_t1", "balances_t1")
+                st.session_state["coin_force_price_refresh_once"] = True
+                st.rerun()
 
             if not portfolio_list:
                 st.warning("사이드바에서 포트폴리오에 코인을 추가해주세요.")
@@ -1076,8 +1075,6 @@ def render_coin_mode(config, save_config):
                 all_prices = _ttl_cache("prices_t1", _fetch_all_prices, ttl=5)
 
                 # 잔고 조회: API 우선, 실패 시 캐시 파일 사용
-                _balance_from_cache = False
-                _balance_cache_time = ""
 
                 def _fetch_all_balances():
                     """모든 코인 잔고를 1회 API 호출로 가져옴"""
@@ -1099,19 +1096,13 @@ def render_coin_mode(config, save_config):
                         _bal = _cached["balances"]
                         krw_bal = float(_bal.get('KRW', 0) or 0)
                         all_balances = {c: float(_bal.get(c, 0) or 0) for c in unique_coins}
-                        _balance_from_cache = True
-                        _balance_cache_time = _cached.get("updated_at", "")
+                        pass  # 캐시에서 로드 성공
                     else:
                         krw_bal = 0
                         all_balances = {c: 0 for c in unique_coins}
 
                 # --- Total Summary Container ---
                 st.subheader("🏁 포트폴리오 요약")
-                if _balance_from_cache:
-                    st.caption(f"초기자본: {initial_cap:,.0f} KRW | 자산수: {count} | 자산당: {per_coin_cap:,.0f} KRW")
-                    st.info(f"잔고: VM 캐시 기준 ({_balance_cache_time})" if _balance_cache_time else "잔고: VM 캐시 기준")
-                else:
-                    st.caption(f"초기자본: {initial_cap:,.0f} KRW | 자산수: {count} | 자산당: {per_coin_cap:,.0f} KRW")
 
                 sum_col1, sum_col2, sum_col3, sum_col4 = st.columns(4)
 
