@@ -2328,7 +2328,7 @@ def render_coin_mode(config, save_config):
             # 잔고 캐시 로드
             _bc = _load_balance_cache() or {}
             _bals = _bc.get("balances", {})
-            _krw_bal = float(_bals.get("KRW", 0))
+            _krw_bal = float(str(_bals.get("KRW", 0)).replace(",", ""))
             _bc_time = _bc.get("updated_at", "N/A")
 
             # 코인별 weight 합산 (비례 분할용)
@@ -2354,9 +2354,9 @@ def render_coin_mode(config, save_config):
                         _iv_norm = _real
                 _skey = f"{_tk}_{_strat_name}_{_param}_{_iv_norm}"
                 _maint = _sig_state.get(_skey, "?")
-                _coin_b = float(_bals.get(_sym, 0))
+                _coin_b = float(str(_bals.get(_sym, 0)).replace(",", ""))
                 _prices = _bc.get("prices", {})
-                _coin_p = float(_prices.get(_tk, 0))
+                _coin_p = float(str(_prices.get(_tk, 0)).replace(",", ""))
                 _coin_v = _coin_b * _coin_p
                 # 같은 코인 중복 합산 방지
                 if _sym not in _seen_coins:
