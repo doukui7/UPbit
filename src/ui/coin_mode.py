@@ -950,8 +950,15 @@ def render_coin_mode(config, save_config):
         _sync_col1, _sync_col2 = st.columns([1, 5])
         with _sync_col1:
             if st.button("잔고 동기화", key="top_bal_sync", help="VM 경유로 최신 잔고를 가져옵니다"):
-                with st.spinner("GitHub에서 잔고 가져오는 중..."):
+                _sync_status = _sync_col2.empty()
+                _sync_status.info("VM에서 최신 잔고 조회 중...")
+                _ok, _msg = _trigger_and_wait_gh("account_sync", _sync_status)
+                if _ok:
+                    _sync_status.success(f"잔고 동기화 완료 ({_msg})")
+                else:
+                    # GH Actions 실패 시 기존 캐시라도 pull
                     _sync_account_cache_from_github()
+                    _sync_status.warning(f"동기화: {_msg} — 기존 캐시 로드")
                 st.rerun(scope="fragment")
 
         # 1) 잔고: GitHub에서 pull한 캐시 사용 (로컬 API는 IP 차단으로 불가)

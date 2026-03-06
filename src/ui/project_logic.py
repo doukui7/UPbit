@@ -51,11 +51,11 @@ def _default_progress() -> list:
         {"phase": "4. 대시보드", "task": "실시간 잔고/시세 표시", "status": "완료", "note": "10초 갱신 (balance_cache.json)"},
         {"phase": "4. 대시보드", "task": "전략 트리거 및 주문 로그 탭", "status": "완료", "note": "triggers.py — 규칙 + 로그 표시"},
         {"phase": "4. 대시보드", "task": "프로젝트 로직 탭", "status": "완료", "note": "시스템 문서 + 진행 내역"},
-        {"phase": "5. 운영 관리", "task": "스케줄링 단일 로직 통합", "status": "완료", "note": "Python 스케줄러 = 유일 실행주체, cron = watchdog 전용"},
+        {"phase": "5. 운영 관리", "task": "스케줄링 단일 로직 (Python 스케줄러)", "status": "완료", "note": "vm_scheduler.py 상주 + cron watchdog + GH Actions 감시"},
         {"phase": "5. 운영 관리", "task": "헬스체크 오탐 방지", "status": "완료", "note": "상태파일 + 로그 mtime 이중 확인"},
         {"phase": "5. 운영 관리", "task": "VS Code Remote-SSH 개발 환경", "status": "완료", "note": "로컬 → VM 원격 개발"},
         {"phase": "6. ISA/연금저축", "task": "위대리(WDR) ISA 전략", "status": "완료", "note": "매주 금요일 15:10 KST"},
-        {"phase": "6. ISA/연금저축", "task": "LAA/DM/VAA/CDM 연금 전략", "status": "완료", "note": "매월 25~31일 리밸런싱"},
+        {"phase": "6. ISA/연금저축", "task": "연금저축 예약주문 실행", "status": "완료", "note": "pension_orders.json → 매월 25~31일 GH Actions 스케줄"},
     ]
 
 
@@ -581,8 +581,10 @@ def _render_security_guide():
 | `VM_HOST` | VM 접속 주소 | O |
 | `VM_USER` | VM 사용자명 | O |
 | `VM_SSH_KEY` | VM SSH 비밀키 | O |
-| `GH_TOKEN` | GitHub PAT (push용) | O |
-| `KIS_*` | KIS 증권 API 키 (ISA/연금) | 선택 |
+| `PORTFOLIO` | 코인 포트폴리오 JSON | O |
+| `KIS_APP_KEY` | KIS 증권 API 앱 키 | ISA/연금 |
+| `KIS_APP_SECRET` | KIS 증권 API 시크릿 | ISA/연금 |
+| `KIS_PENSION_ACCOUNT_NO` | KIS 연금저축 계좌번호 | 연금 |
 
 #### 주요 사이트 바로가기
 - **업비트 API 관리**: https://upbit.com/mypage/open_api_management
@@ -1071,10 +1073,11 @@ def _render_audit_log():
 - ✅ 거래 내역 테이블 — 거래일시/유형/화폐/구분/금액/체결금액/수수료/상태
 - ✅ 매수/매도 색상 스타일링
 
-**서브탭: 🧪 가상 로그 (페이퍼)**
-- ✅ 금액 입력 — 가상 입출금
-- ✅ 입출금 버튼
-- ✅ 누적 가상 조정액 표시
+**서브탭: 📋 VM 매매 로그**
+- ✅ trade_log.json GitHub 동기화 버튼
+- ✅ 모드 필터 — 전체/auto/manual/signal
+- ✅ 매매 로그 테이블 — 시간/모드/코인/구분/전략/금액·수량/결과
+- ✅ BUY/SELL 색상 구분
 
 **서브탭: 📊 슬리피지 분석**
 - ✅ 코인/시간봉 selectbox
@@ -1295,22 +1298,49 @@ def _render_audit_log():
 
         st.markdown("#### 탭2. 수동 주문")
         st.markdown("""
-- ⬜ 수동 주문 기능 — **준비중** (placeholder)
+- ✅ 매매 ETF selectbox
+- ✅ 주문 코드 대체 경고/설명
+- ✅ 현재가 / 보유수량 / 평가금액 / 매수 가능금액 메트릭
+- ✅ ETF 일봉 차트 — Candlestick + SMA(5/20/60/120/200) + 거래량
+- ✅ 호가창 HTML — 매도호가/매수호가/현재가
+- ✅ 호가 통계 — 스프레드/잔량
+
+**매수 탭:**
+- ✅ 주문 방식 라디오 — 시장가/지정가/동시호가/시간외 종가
+- ✅ 매수 지정가/수량 입력
+- ✅ 주문 계획 표시 (단가/수량/총금액)
+- ✅ 매수 실행 버튼
+
+**매도 탭:**
+- ✅ 주문 방식 라디오 — 시장가/지정가/동시호가/시간외 종가
+- ✅ 매도 지정가/수량 입력
+- ✅ 전량 매도 체크박스
+- ✅ 주문 계획 표시
+- ✅ 매도 실행 버튼
 """)
 
         st.markdown("#### 탭3. 주문방식")
         st.markdown("""
-- ⬜ 주문 방식 가이드 — **준비중** (placeholder)
+- ✅ KIS 국내 ETF 주문방식 설명 테이블 — 시장가/지정가/동시호가/시간외 종가
+- ✅ 호가단위 테이블 — 가격대별 최소 단위
+- ✅ ISA 자동매매 흐름 설명 — 매주 금요일 15:10 KST
 """)
 
         st.markdown("#### 탭4. 수수료/세금")
         st.markdown("""
-- ⬜ 수수료/세금 정보 — **준비중** (placeholder)
+- ✅ 증권사별 매매 수수료 비교 테이블
+- ✅ ETF 보수 테이블
+- ✅ ISA 세제혜택 — 비과세 한도 / 분리과세 / 손익통산
 """)
 
         st.markdown("#### 탭5. 미국 위대리 백테스트")
         st.markdown("""
-- ⬜ 미국 백테스트 상세 뷰 — **준비중** (placeholder)
+- ✅ QQQ/TQQQ 미국 데이터 백테스트
+- ✅ 시작일/종료일 설정
+- ✅ 초기 자본/수수료 입력
+- ✅ 백테스트 실행 버튼
+- ✅ 총수익률/CAGR/MDD/샤프 메트릭
+- ✅ 자산 곡선 + 성과 분석 차트
 """)
 
         st.markdown("#### 탭6. 위대리 최적화")
@@ -1531,7 +1561,9 @@ def _render_audit_log():
         st.markdown("""
 - ✅ 주문방식 설명 테이블 — 시장가/지정가/동시호가/시간외 종가
 - ✅ 호가단위 테이블 — 가격대별 최소 단위
-- ✅ 자동매매 흐름 설명 — 매월 25~31일 평일 KST 15:20
+- ✅ 자동매매 흐름 설명 — 예약주문 기반 (pension_orders.json)
+- ✅ 매월 25~31일 평일 KST 15:20 GH Actions 스케줄
+- ✅ 동시호가 실패 시 시간외 종가 자동 재주문
 """)
 
         st.markdown("#### 탭7. 수수료/세금")
@@ -1544,7 +1576,17 @@ def _render_audit_log():
 
         st.markdown("#### 탭8. 트리거")
         st.markdown("""
-- ✅ 연금저축 전략 트리거 — 매월 25~31일 평일 15:10 KST
+- ✅ 연금저축 전략 트리거 — 매월 25~31일 평일 15:20 KST
+""")
+
+        st.markdown("#### 예약 주문 관리")
+        st.markdown("""
+- ✅ 예약 주문 추가 (ETF코드/수량/주문방식/예정시간)
+- ✅ 예약 주문 목록 표시 (대기/완료/실패/취소)
+- ✅ 대기 주문 자동 실행 (페이지 로드 시 분당 1회)
+- ✅ 동시호가 실패 → 시간외 종가 자동 재주문
+- ✅ GH Actions 스케줄 실행 (pension_trade.yml)
+- ✅ 실행 결과 pension_orders.json → GitHub push 동기화
 """)
 
     # ══════════════════════════════════════════
@@ -1568,6 +1610,8 @@ def _render_audit_log():
 - ✅ 듀얼모멘텀 전략 — SPY/EFA 상대모멘텀 + BIL 절대모멘텀
 - ✅ VAA 전략 — 13612W 모멘텀, 공격/방어 전환
 - ✅ CDM 전략 — 4모듈 듀얼모멘텀
+- ✅ 연금저축 예약주문 실행 — pension_orders.json 대기 주문 처리
+- ✅ 동시호가 실패 → 시간외 종가 자동 재주문 (ord_dvsn="06")
 """)
 
     # ══════════════════════════════════════════
@@ -1606,12 +1650,14 @@ def _render_audit_log():
          "상태": "완료", "조치": "Python 스케줄러를 유일한 실행 주체로 통합, cron은 watchdog 전용"},
         {"우선순위": "🟢 해결", "이슈": "헬스체크 오탐 (상태파일 미갱신)",
          "상태": "완료", "조치": "vm_run_job.sh에 상태파일 기록 추가 + 로그 mtime 보조 확인"},
-        {"우선순위": "🔴 높음", "이슈": "Deploy Key GitHub 등록 미완료",
+        {"우선순위": "🟢 해결", "이슈": "signal_state.json git reset 덮어쓰기",
+         "상태": "완료", "조치": "모든 SSH 스크립트에 백업/복원 패턴 적용 (2026-03-06)"},
+        {"우선순위": "🟢 해결", "이슈": "account_sync에서 signal_state 미동기화",
+         "상태": "완료", "조치": "SCP + git add에 signal_state.json + trade_log.json 포함"},
+        {"우선순위": "🟢 해결", "이슈": "연금저축 GH Actions 스케줄 누락",
+         "상태": "완료", "조치": "pension_trade.yml에 cron 스케줄 + SCP push 스텝 추가"},
+        {"우선순위": "🟡 중간", "이슈": "Deploy Key GitHub 등록 미완료",
          "상태": "대기", "조치": "공개키를 GitHub Deploy Keys에 등록 (Allow write access)"},
-        {"우선순위": "🟡 중간", "이슈": "signal_state.json 파일 미생성",
-         "상태": "정상", "조치": "코드 구현 완료, 첫 자동매매 실행 시 자동 생성"},
-        {"우선순위": "🟡 중간", "이슈": "trade_log.json 파일 미생성",
-         "상태": "정상", "조치": "코드 구현 완료, 첫 주문 시 자동 생성"},
     ])
     st.dataframe(issues, use_container_width=True, hide_index=True)
 
