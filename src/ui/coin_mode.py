@@ -1322,7 +1322,7 @@ def render_coin_mode(config, save_config):
                                     "포지션": position_label,
                                     "실보유": "보유" if is_holding else "미보유",
                                     "실행": exec_signal,
-                                    "판단": position_state,
+                                    "판단": (prev_state if prev_state in ("BUY", "SELL") else "BUY") if position_state == "HOLD" else position_state,
                                     "이전": prev_state if prev_state else "-",
                                     "현재가": f"{close_now:,.0f}",
                                     "판단종가": f"{close_eval:,.0f}",
