@@ -30,6 +30,11 @@ jobs:
     if: github.event.inputs.run_job == 'trade'
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
       - name: Run Auto Trade via Cloud VM
         uses: appleboy/ssh-action@v1
         with:
@@ -52,11 +57,39 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
 
+      - name: Sync balance cache from VM
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_USER: ${{ secrets.VM_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "${VM_SSH_KEY}" > ~/.ssh/vm_key
+          chmod 600 ~/.ssh/vm_key
+          ssh-keyscan -H "${VM_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/balance_cache.json" ./balance_cache.json || echo "WARN: balance_cache.json not found"
+          scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/signal_state.json" ./signal_state.json || echo "WARN: signal_state.json not found"
+          rm -f ~/.ssh/vm_key
+          git config user.name "auto-trade-bot"
+          git config user.email "bot@auto-trade"
+          git add balance_cache.json signal_state.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "auto: trade 후 잔고/시그널 동기화"
+            git push
+          fi
+
   # ── 업비트 수동주문 (전략 분석 없이 즉시 매수/매도) ──
   manual_order:
     if: github.event.inputs.run_job == 'manual_order'
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
       - name: Run Manual Order via Cloud VM
         uses: appleboy/ssh-action@v1
         with:
@@ -78,6 +111,28 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
           MANUAL_ORDER: ${{ github.event.inputs.manual_order_params }}
+
+      - name: Sync balance cache from VM
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_USER: ${{ secrets.VM_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "${VM_SSH_KEY}" > ~/.ssh/vm_key
+          chmod 600 ~/.ssh/vm_key
+          ssh-keyscan -H "${VM_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/balance_cache.json" ./balance_cache.json || echo "WARN: balance_cache.json not found"
+          rm -f ~/.ssh/vm_key
+          git config user.name "auto-trade-bot"
+          git config user.email "bot@auto-trade"
+          git add balance_cache.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "auto: 수동주문 후 잔고 동기화"
+            git push
+          fi
 
   # ── 계좌 데이터 VM 경유 동기화 (잔고/체결/입출금) ──
   account_sync:
