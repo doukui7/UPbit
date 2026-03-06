@@ -1361,6 +1361,128 @@ def run_auto_trade():
             logger.info(f"[{a['ticker']}] 조건: {a.get('condition_summary', '')}")
             decision_notes.setdefault(a['ticker'], []).append(note)
 
+    # ── 3.5단계: 보충 매수/매도 (user_config 옵션) ──
+    # BUY 유지 중 목표 미달 → 설정 금액만큼 추가 매수
+    # SELL 유지 중 잔량 보유 → 설정 금액만큼 추가 매도
+    _ucfg = _load_user_config()
+    topup_enabled = _ucfg.get("topup_enabled", False)
+    topup_buy_amount = int(_ucfg.get("topup_buy_amount", MIN_ORDER_KRW))
+    topup_sell_amount = int(_ucfg.get("topup_sell_amount", MIN_ORDER_KRW))
+
+    if topup_enabled:
+        logger.info(f"보충 매수/매도 활성 (매수={topup_buy_amount:,}원, 매도={topup_sell_amount:,}원)")
+        krw_balance = trader.get_balance("KRW")  # 3단계 매수 후 갱신
+        topup_done = set()  # 같은 코인 중복 보충 방지
+
+        # ── 보충 매수 ──
+        for a in analyses:
+            if a['signal'] != 'HOLD' or a['position_state'] != 'BUY':
+                continue
+            if a['coin_sym'] in topup_done:
+                continue
+
+            target_value = total_portfolio_value * (a['weight'] / 100)
+            coin_total_w = coin_weight_sum.get(a['coin_sym'], a['weight'])
+            my_holding = a['coin_value'] * (a['weight'] / coin_total_w)
+            need_value = target_value - my_holding
+
+            if need_value < MIN_ORDER_KRW:
+                continue
+
+            buy_budget = min(topup_buy_amount, need_value, krw_balance) * 0.999
+            if buy_budget < MIN_ORDER_KRW * 0.999:
+                note = f"보충매수 스킵({a.get('strategy_label', '')}): KRW 부족 ({krw_balance:,.0f}원)"
+                logger.info(f"[{a['ticker']}] {note}")
+                decision_notes.setdefault(a['ticker'], []).append(note)
+                continue
+
+            logger.info(
+                f"[{a['ticker']}] 보충매수 {buy_budget:,.0f} KRW | "
+                f"목표={target_value:,.0f}, 보유={my_holding:,.0f}, 부족={need_value:,.0f}"
+            )
+            try:
+                result = trader.adaptive_buy(a['ticker'], buy_budget, interval=a.get('interval', 'day'))
+                logger.info(f"[{a['ticker']}] 보충매수 Result: {result}")
+                if isinstance(result, dict):
+                    result = dict(result)
+                else:
+                    result = {"raw_result": result}
+                result["_strategy_label"] = a.get("strategy_label", "")
+                result["_topup"] = True
+                exec_results.setdefault(a['ticker'], []).append(result)
+                _append_trade_log({
+                    "mode": "auto", "ticker": a['ticker'], "side": "BUY_TOPUP",
+                    "amount": f"{buy_budget:,.0f}", "strategy": a.get('strategy_label', ''),
+                    "result": "success", "detail": str(result)[:200],
+                })
+                krw_balance -= buy_budget
+                topup_done.add(a['coin_sym'])
+            except Exception as e:
+                logger.error(f"[{a['ticker']}] 보충매수 Error: {e}")
+                decision_notes.setdefault(a['ticker'], []).append(f"보충매수 오류({a.get('strategy_label', '')}): {e}")
+                _append_trade_log({
+                    "mode": "auto", "ticker": a['ticker'], "side": "BUY_TOPUP",
+                    "amount": f"{buy_budget:,.0f}", "strategy": a.get('strategy_label', ''),
+                    "result": "error", "detail": str(e)[:200],
+                })
+
+        # ── 보충 매도 ──
+        topup_sold = set()
+        for a in analyses:
+            if a['signal'] != 'HOLD' or a['position_state'] != 'SELL':
+                continue
+            if not a['is_holding']:
+                continue
+            if a['coin_sym'] in topup_sold:
+                continue
+
+            sell_value = a['coin_value']
+            if sell_value < MIN_ORDER_KRW:
+                continue
+
+            # 설정 금액에 해당하는 수량 계산
+            if a['current_price'] and a['current_price'] > 0:
+                sell_krw = min(topup_sell_amount, sell_value)
+                sell_qty = sell_krw / a['current_price']
+                sell_qty = min(sell_qty, a['coin_balance'])  # 보유량 초과 방지
+            else:
+                continue
+
+            act_value = sell_qty * a['current_price']
+            if act_value < MIN_ORDER_KRW:
+                continue
+
+            logger.info(
+                f"[{a['ticker']}] 보충매도 {sell_qty:.8g} {a['coin_sym']} ({act_value:,.0f} KRW) | "
+                f"보유가치={sell_value:,.0f}"
+            )
+            try:
+                result = trader.smart_sell(a['ticker'], sell_qty, interval=a.get('interval', 'day'))
+                logger.info(f"[{a['ticker']}] 보충매도 Result: {result}")
+                if isinstance(result, dict):
+                    result = dict(result)
+                else:
+                    result = {"raw_result": result}
+                result["_strategy_label"] = a.get("strategy_label", "")
+                result["_topup"] = True
+                exec_results.setdefault(a['ticker'], []).append(result)
+                _append_trade_log({
+                    "mode": "auto", "ticker": a['ticker'], "side": "SELL_TOPUP",
+                    "qty": f"{sell_qty:.8g}", "strategy": a.get('strategy_label', ''),
+                    "result": "success", "detail": str(result)[:200],
+                })
+                topup_sold.add(a['coin_sym'])
+            except Exception as e:
+                logger.error(f"[{a['ticker']}] 보충매도 Error: {e}")
+                decision_notes.setdefault(a['ticker'], []).append(f"보충매도 오류({a.get('strategy_label', '')}): {e}")
+                _append_trade_log({
+                    "mode": "auto", "ticker": a['ticker'], "side": "SELL_TOPUP",
+                    "qty": f"{sell_qty:.8g}", "strategy": a.get('strategy_label', ''),
+                    "result": "error", "detail": str(e)[:200],
+                })
+    else:
+        logger.info("보충 매수/매도 비활성 (user_config.topup_enabled=false)")
+
     # HOLD 로깅
     for a in analyses:
         if a['signal'] == 'HOLD':
@@ -3435,6 +3557,15 @@ def run_account_sync():
     except Exception as e:
         logger.error(f"account_sync 출금 조회 실패: {e}")
 
+    # 5) 미체결 주문
+    try:
+        pending = trader.get_orders(state="wait") or []
+        cache["pending_orders"] = pending if isinstance(pending, list) else []
+        logger.info(f"미체결 주문: {len(cache['pending_orders'])}건")
+    except Exception as e:
+        logger.error(f"account_sync 미체결 조회 실패: {e}")
+        cache["pending_orders"] = []
+
     # 로컬 저장 (push는 Runner에서 SCP 후 수행)
     try:
         content = json.dumps(cache, indent=2, ensure_ascii=False, default=str)
@@ -3465,14 +3596,17 @@ def run_account_sync():
             logger.warning(f"account_sync 현재가 조회 실패, 가격 없이 저장: {_e}")
             _save_balance_cache(cache["balances"])
 
+    pending_cnt = len(cache.get('pending_orders', []))
     logger.info(f"account_sync 완료 - 잔고: {len(cache['balances'])}종, "
                 f"주문: {len(cache['orders'])}건, "
+                f"미체결: {pending_cnt}건, "
                 f"입금: {len(cache['deposits'])}건, "
                 f"출금: {len(cache['withdraws'])}건")
     _send_telegram(
         f"<b>계좌 동기화 완료</b>\n"
         f"시각: {now_kst.strftime('%m-%d %H:%M')}\n"
         f"잔고: {len(cache['balances'])}종 | 주문: {len(cache['orders'])}건"
+        + (f" | 미체결: {pending_cnt}건" if pending_cnt > 0 else "")
     )
 
 
@@ -3481,10 +3615,15 @@ def run_manual_order():
     수동 주문 실행 (전략 분석 없이 즉시 매수/매도).
 
     환경변수:
-      MANUAL_ORDER: JSON 문자열 {"coin":"BTC","side":"buy","pct":50}
+      MANUAL_ORDER: JSON 문자열
+        시장가: {"coin":"BTC","side":"buy","pct":50}
+        지정가: {"coin":"BTC","side":"buy","order_type":"limit","price":100000000,"volume":0.001}
         - coin: 코인 심볼 (BTC, ETH, ...)
         - side: buy / sell
-        - pct: 가용 현금(매수) 또는 보유량(매도)의 비율(%)
+        - pct: 가용 현금(매수) 또는 보유량(매도)의 비율(%) — 시장가 전용
+        - order_type: "market" (기본) / "limit"
+        - price: 지정가 가격 — 지정가 전용
+        - volume: 지정가 수량 — 지정가 전용
     """
     load_dotenv()
 
@@ -3501,14 +3640,27 @@ def run_manual_order():
 
     coin = str(params.get("coin", "")).strip().upper()
     side = str(params.get("side", "")).strip().lower()
+    order_type = str(params.get("order_type", "market")).strip().lower()
     pct = _safe_float(params.get("pct", 0), default=0.0)
+    limit_price = _safe_float(params.get("price", 0), default=0.0)
+    limit_volume = _safe_float(params.get("volume", 0), default=0.0)
 
-    if not coin or side not in ("buy", "sell") or pct <= 0:
-        logger.error(f"manual_order: 잘못된 파라미터 - coin={coin}, side={side}, pct={pct}")
+    if not coin or side not in ("buy", "sell"):
+        logger.error(f"manual_order: 잘못된 파라미터 - coin={coin}, side={side}")
         return
 
+    # 시장가: pct 필수 / 지정가: price+volume 필수
+    if order_type == "limit":
+        if limit_price <= 0 or limit_volume <= 0:
+            logger.error(f"manual_order: 지정가 파라미터 부족 - price={limit_price}, volume={limit_volume}")
+            return
+    else:
+        if pct <= 0:
+            logger.error(f"manual_order: 시장가 비율 미설정 - pct={pct}")
+            return
+
     ticker = f"KRW-{coin}"
-    logger.info(f"=== Manual Order: {side.upper()} {coin} {pct}% ===")
+    logger.info(f"=== Manual Order: {order_type.upper()} {side.upper()} {coin} ===")
 
     ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY")
     SECRET_KEY = os.getenv("UPBIT_SECRET_KEY")
@@ -3529,7 +3681,30 @@ def run_manual_order():
     result = None
     detail = ""
 
-    if side == "buy":
+    if order_type == "limit":
+        # ── 지정가 주문 ──
+        total_krw = limit_price * limit_volume
+        if total_krw < MIN_ORDER_KRW:
+            msg = f"최소 주문금액 미달: {limit_price:,.0f} × {limit_volume:.8g} = {total_krw:,.0f}원 < {MIN_ORDER_KRW:,.0f}원"
+            logger.error(f"manual_order: {msg}")
+            _send_telegram(f"<b>수동 지정가 실패</b>\n{ticker} {msg}")
+            return
+        logger.info(f"[{ticker}] 지정가 {side}: {limit_price:,.0f}원 × {limit_volume:.8g}")
+        try:
+            if side == "buy":
+                result = trader.buy_limit(ticker, limit_price, limit_volume)
+                detail = f"지정가 매수 {limit_price:,.0f} × {limit_volume:.8g}"
+            else:
+                result = trader.sell_limit(ticker, limit_price, limit_volume)
+                detail = f"지정가 매도 {limit_price:,.0f} × {limit_volume:.8g}"
+        except Exception as e:
+            logger.error(f"manual_order LIMIT {side} error: {e}")
+            _send_telegram(f"<b>수동 지정가 오류</b>\n{ticker}: {e}")
+            _append_trade_log({"mode": "manual", "ticker": ticker, "side": side.upper(), "order_type": "limit", "result": "error", "detail": str(e)[:200]})
+            return
+
+    elif side == "buy":
+        # ── 시장가 매수 ──
         krw = _safe_float(trader.get_balance("KRW"), default=0.0)
         buy_amount = krw * (pct / 100) * 0.999  # 수수료 여유
         if buy_amount < MIN_ORDER_KRW:
@@ -3537,10 +3712,10 @@ def run_manual_order():
             logger.error(f"manual_order: {msg}")
             _send_telegram(f"<b>수동 매수 실패</b>\n{ticker} {msg}")
             return
-        logger.info(f"[{ticker}] 매수: {buy_amount:,.0f}원 ({pct}% of {krw:,.0f}원)")
+        logger.info(f"[{ticker}] 시장가 매수: {buy_amount:,.0f}원 ({pct}% of {krw:,.0f}원)")
         try:
             result = trader.adaptive_buy(ticker, buy_amount, interval="day")
-            detail = f"매수 {buy_amount:,.0f}원"
+            detail = f"시장가 매수 {buy_amount:,.0f}원"
         except Exception as e:
             logger.error(f"manual_order BUY error: {e}")
             _send_telegram(f"<b>수동 매수 오류</b>\n{ticker}: {e}")
@@ -3548,6 +3723,7 @@ def run_manual_order():
             return
 
     elif side == "sell":
+        # ── 시장가 매도 ──
         coin_balance = _safe_float(trader.get_balance(coin), default=0.0)
         sell_qty = coin_balance * (pct / 100)
         sell_value = sell_qty * current_price
@@ -3556,10 +3732,10 @@ def run_manual_order():
             logger.error(f"manual_order: {msg}")
             _send_telegram(f"<b>수동 매도 실패</b>\n{ticker} {msg}")
             return
-        logger.info(f"[{ticker}] 매도: {sell_qty:.8g} {coin} ({pct}% of {coin_balance:.8g})")
+        logger.info(f"[{ticker}] 시장가 매도: {sell_qty:.8g} {coin} ({pct}% of {coin_balance:.8g})")
         try:
             result = trader.smart_sell(ticker, sell_qty, interval="day")
-            detail = f"매도 {sell_qty:.8g} {coin} (≈{sell_value:,.0f}원)"
+            detail = f"시장가 매도 {sell_qty:.8g} {coin} (≈{sell_value:,.0f}원)"
         except Exception as e:
             logger.error(f"manual_order SELL error: {e}")
             _send_telegram(f"<b>수동 매도 오류</b>\n{ticker}: {e}")

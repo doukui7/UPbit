@@ -94,6 +94,32 @@ def _trigger_and_wait_gh(job_name: str, status_placeholder=None, extra_inputs: d
     """workflow 트리거 → 완료 대기 → 캐시 pull. 한 번에 처리."""
     import subprocess
 
+    # workflow 파일명 결정
+    _wf_map = {
+        "trade": "coin_trade.yml", "manual_order": "coin_trade.yml",
+        "account_sync": "coin_trade.yml",
+        "kiwoom_gold": "gold_trade.yml",
+        "kis_isa": "isa_trade.yml", "kis_pension": "pension_trade.yml",
+        "health_check": "monitoring.yml", "daily_status": "monitoring.yml",
+        "vm_once_add": "monitoring.yml", "vm_once_show": "monitoring.yml",
+    }
+    wf_file = _wf_map.get(job_name, "coin_trade.yml")
+
+    # 0) 트리거 전 최신 run ID 기록 (새 run 구분용)
+    prev_run_id = None
+    try:
+        r = subprocess.run(
+            ["gh", "run", "list", f"--workflow={wf_file}", "--limit", "1",
+             "--json", "databaseId"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode == 0:
+            _runs = json.loads(r.stdout)
+            if _runs:
+                prev_run_id = _runs[0].get("databaseId")
+    except Exception:
+        pass
+
     # 1) 트리거
     if status_placeholder:
         status_placeholder.text("워크플로우 트리거 중...")
@@ -101,33 +127,37 @@ def _trigger_and_wait_gh(job_name: str, status_placeholder=None, extra_inputs: d
     if not ok:
         return False, msg
 
-    # 2) run ID 찾기 (최대 10초 대기)
+    # 2) 새 run ID 찾기 (이전 run과 다른 ID, 최대 20초 대기)
     run_id = None
-    for _ in range(5):
+    for _ in range(10):
         time.sleep(2)
         try:
             r = subprocess.run(
-                ["gh", "run", "list", "--workflow=coin_trade.yml", "--limit", "1",
-                 "--json", "databaseId,status,conclusion"],
+                ["gh", "run", "list", f"--workflow={wf_file}", "--limit", "5",
+                 "--json", "databaseId,status"],
                 capture_output=True, text=True, timeout=15,
             )
             if r.returncode == 0:
-                runs = json.loads(r.stdout)
-                if runs:
-                    run_id = runs[0].get("databaseId")
+                for run in json.loads(r.stdout):
+                    rid = run.get("databaseId")
+                    if rid and rid != prev_run_id:
+                        run_id = rid
+                        break
+                if run_id:
                     break
         except Exception:
             pass
     if not run_id:
+        _sync_account_cache_from_github()
         return False, "실행 ID를 찾을 수 없습니다."
 
-    # 3) 완료 대기 (최대 90초)
+    # 3) 완료 대기 (최대 5분 = 300초)
     if status_placeholder:
         status_placeholder.text(f"실행 중... (run #{run_id})")
-    for i in range(30):
-        time.sleep(3)
+    for i in range(60):
+        time.sleep(5)
         if status_placeholder:
-            status_placeholder.text(f"실행 중... ({(i+1)*3}초 경과)")
+            status_placeholder.text(f"실행 중... ({(i+1)*5}초 경과)")
         try:
             r = subprocess.run(
                 ["gh", "run", "view", str(run_id), "--json", "status,conclusion"],
@@ -141,13 +171,13 @@ def _trigger_and_wait_gh(job_name: str, status_placeholder=None, extra_inputs: d
                     if status_placeholder:
                         status_placeholder.text("결과 가져오는 중...")
                     _sync_account_cache_from_github()
-                    return success, f"{'성공' if success else '실패'} ({(i+1)*3}초)"
+                    return success, f"{'성공' if success else '실패'} ({(i+1)*5}초)"
         except Exception:
             pass
 
     # 타임아웃 - 그래도 pull 시도
     _sync_account_cache_from_github()
-    return False, "타임아웃 (90초) - 캐시는 업데이트 시도했습니다."
+    return False, "타임아웃 (300초) - 캐시는 업데이트 시도했습니다."
 
 
 def _load_signal_state():
@@ -1901,8 +1931,7 @@ def render_coin_mode(config, save_config):
     with tab5:
         st.header("수동 주문")
 
-        # ── VM 경유 즉시 매수/매도 ──
-        st.subheader("VM 경유 즉시 주문")
+        # ── 잔고 표시 ──
         _acct = _load_account_cache()
         if _acct.get("updated_at"):
             bals = _acct.get("balances", {})
@@ -1916,34 +1945,7 @@ def render_coin_mode(config, save_config):
             if bal_parts:
                 st.caption(f"잔고 ({_acct['updated_at']}): " + " | ".join(bal_parts))
 
-        mo_col1, mo_col2, mo_col3 = st.columns(3)
-        mo_coin = mo_col1.selectbox("코인", ["BTC", "ETH", "XRP", "SOL", "DOGE"], key="mo_coin")
-        mo_side = mo_col2.selectbox("방향", ["매수 (BUY)", "매도 (SELL)"], key="mo_side")
-        mo_pct = mo_col3.slider("비율 (%)", 10, 100, 50, 10, key="mo_pct")
-
-        _side_val = "buy" if "BUY" in mo_side else "sell"
-        _side_label = "매수" if _side_val == "buy" else "매도"
-        _order_json = json.dumps({"coin": mo_coin, "side": _side_val, "pct": mo_pct})
-
-        if st.button(
-            f"{mo_coin} {mo_pct}% {_side_label} 실행 (VM 경유)",
-            key="btn_manual_order",
-            type="primary",
-            use_container_width=True,
-        ):
-            _status = st.empty()
-            ok, result_msg = _trigger_and_wait_gh(
-                "manual_order", _status,
-                extra_inputs={"manual_order_params": _order_json},
-            )
-            if ok:
-                _status.success(f"주문 완료 ({result_msg})")
-            else:
-                _status.error(f"주문 실패: {result_msg}")
-        st.caption("전략 분석 없이 지정한 코인/방향/비율로 VM → 업비트 경로로 즉시 주문합니다.")
-        st.divider()
-
-        # ── 30분봉 차트 ──
+        # ── 코인 선택 + 30분봉 차트 ──
         port_tickers = [f"{r['market']}-{r['coin'].upper()}" for r in portfolio_list]
         manual_options = list(dict.fromkeys(port_tickers + TOP_20_TICKERS))
         mt_ticker = st.selectbox("코인 선택", manual_options, key="mt_ticker_chart")
@@ -1987,6 +1989,274 @@ def render_coin_mode(config, save_config):
             st.plotly_chart(fig_30m, use_container_width=True, key=f"chart30m_{mt_ticker}")
         else:
             st.info("차트 데이터 로딩 중...")
+
+        st.divider()
+
+        # ═══ 호가창 + 주문 패널 (VM 경유 실행) ═══
+        mt_coin = mt_ticker.split("-")[1] if "-" in mt_ticker else mt_ticker
+
+        # 호가 데이터 + 현재가 조회 (pyupbit 공개 API)
+        ob_data = _ttl_cache(
+            f"ob_{mt_ticker}",
+            lambda: _pyupbit.get_orderbook(mt_ticker),
+            ttl=5,
+        )
+        cur_price = _ttl_cache(
+            f"price_{mt_ticker}",
+            lambda: _pyupbit.get_current_price(mt_ticker) or 0,
+            ttl=5,
+        )
+
+        ob_col, order_col = st.columns([2, 3])
+
+        # ── 좌: 호가창 (HTML 렌더링) ──
+        with ob_col:
+            st.markdown("**호가창**")
+            try:
+                if ob_data and len(ob_data) > 0:
+                    ob = ob_data[0] if isinstance(ob_data, list) else ob_data
+                    units = ob.get('orderbook_units', [])[:10]
+
+                    if units:
+                        max_size = max(
+                            max(u.get('ask_size', 0) for u in units),
+                            max(u.get('bid_size', 0) for u in units),
+                        )
+
+                        html = ['<table style="width:100%;border-collapse:collapse;font-size:13px;font-family:monospace;">']
+                        html.append('<tr style="border-bottom:2px solid #ddd;font-weight:bold;color:#666"><td>구분</td><td style="text-align:right">잔량</td><td style="text-align:right">가격</td><td style="text-align:right">등락</td><td>비율</td></tr>')
+
+                        ask_prices = []
+                        bid_prices = []
+
+                        for u in reversed(units):
+                            ask_p = u.get('ask_price', 0)
+                            ask_s = u.get('ask_size', 0)
+                            diff = ((ask_p / cur_price) - 1) * 100 if cur_price > 0 else 0
+                            bar_w = int(ask_s / max_size * 100) if max_size > 0 else 0
+                            ask_prices.append(ask_p)
+                            html.append(
+                                f'<tr style="color:#1976D2;border-bottom:1px solid #f0f0f0;height:28px">'
+                                f'<td>매도</td>'
+                                f'<td style="text-align:right">{ask_s:.4f}</td>'
+                                f'<td style="text-align:right;font-weight:bold">{ask_p:,.0f}</td>'
+                                f'<td style="text-align:right">{diff:+.2f}%</td>'
+                                f'<td><div style="background:#1976D2;height:12px;width:{bar_w}%;opacity:0.3"></div></td>'
+                                f'</tr>'
+                            )
+
+                        html.append('<tr style="border-top:3px solid #333;border-bottom:3px solid #333;height:4px"><td colspan="5"></td></tr>')
+
+                        for u in units:
+                            bid_p = u.get('bid_price', 0)
+                            bid_s = u.get('bid_size', 0)
+                            diff = ((bid_p / cur_price) - 1) * 100 if cur_price > 0 else 0
+                            bar_w = int(bid_s / max_size * 100) if max_size > 0 else 0
+                            bid_prices.append(bid_p)
+                            html.append(
+                                f'<tr style="color:#D32F2F;border-bottom:1px solid #f0f0f0;height:28px">'
+                                f'<td>매수</td>'
+                                f'<td style="text-align:right">{bid_s:.4f}</td>'
+                                f'<td style="text-align:right;font-weight:bold">{bid_p:,.0f}</td>'
+                                f'<td style="text-align:right">{diff:+.2f}%</td>'
+                                f'<td><div style="background:#D32F2F;height:12px;width:{bar_w}%;opacity:0.3"></div></td>'
+                                f'</tr>'
+                            )
+
+                        html.append('</table>')
+                        st.markdown(''.join(html), unsafe_allow_html=True)
+
+                        best_ask = units[0].get('ask_price', 0)
+                        best_bid = units[0].get('bid_price', 0)
+                        spread = best_ask - best_bid
+                        spread_pct = (spread / best_bid * 100) if best_bid > 0 else 0
+                        total_ask = ob.get('total_ask_size', 0)
+                        total_bid = ob.get('total_bid_size', 0)
+                        ob_ratio = total_bid / (total_ask + total_bid) * 100 if (total_ask + total_bid) > 0 else 50
+                        st.caption(f"스프레드 **{spread:,.0f}** ({spread_pct:.3f}%) | 매도 {total_ask:.2f} | 매수 {total_bid:.2f} | 매수비율 {ob_ratio:.0f}%")
+                    else:
+                        st.info("호가 데이터가 없습니다.")
+                else:
+                    st.info("호가 데이터를 불러올 수 없습니다.")
+            except Exception as e:
+                st.warning(f"호가 조회 실패: {e}")
+
+        # ── 우: 주문 패널 (VM 경유 실행) ──
+        with order_col:
+            st.markdown("**주문 실행 (VM 경유)**")
+            buy_tab, sell_tab = st.tabs(["매수", "매도"])
+
+            # 주문 성공 후 자산 동기화 헬퍼
+            def _order_and_sync(order_json, status_el, label):
+                ok, msg = _trigger_and_wait_gh(
+                    "manual_order", status_el,
+                    extra_inputs={"manual_order_params": order_json},
+                )
+                if ok:
+                    status_el.success(f"{label} 완료 ({msg})")
+                    # 자산 자동 동기화
+                    status_el.info("잔고 동기화 중...")
+                    _trigger_and_wait_gh("account_sync", status_el)
+                    _clear_cache("krw_bal_t1", "balances_t1", "prices_t1")
+                    status_el.success(f"{label} 완료 · 잔고 갱신됨")
+                else:
+                    status_el.error(f"{label} 실패: {msg}")
+
+            with buy_tab:
+                buy_type = st.radio("주문 유형", ["시장가", "지정가"], horizontal=True, key="mt_buy_type")
+
+                if buy_type == "시장가":
+                    buy_pct = st.slider("매수 비율 (%)", 10, 100, 50, 10, key="mt_buy_pct")
+                    st.caption(f"가용 KRW의 {buy_pct}%를 시장가 매수합니다.")
+
+                    if st.button(
+                        f"{mt_coin} {buy_pct}% 시장가 매수",
+                        key="mt_buy_vm",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        _buy_json = json.dumps({"coin": mt_coin, "side": "buy", "pct": buy_pct})
+                        _order_and_sync(_buy_json, st.empty(), "시장가 매수")
+
+                else:  # 지정가
+                    _bc1, _bc2 = st.columns(2)
+                    buy_price = _bc1.number_input(
+                        "매수 가격 (KRW)", min_value=1, value=int(cur_price * 0.99) if cur_price > 0 else 1,
+                        step=1000, key="mt_buy_price",
+                    )
+                    buy_vol = _bc2.number_input(
+                        f"매수 수량 ({mt_coin})", min_value=0.00000001, value=0.001,
+                        format="%.8f", key="mt_buy_vol",
+                    )
+                    buy_total = buy_price * buy_vol
+                    st.caption(f"총액: **{buy_total:,.0f} KRW**")
+
+                    if st.button(
+                        f"{mt_coin} 지정가 매수 ({buy_price:,.0f} × {buy_vol:.8g})",
+                        key="mt_lbuy_vm",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        if buy_total < 5000:
+                            st.error("최소 주문금액: 5,000 KRW")
+                        else:
+                            _buy_json = json.dumps({
+                                "coin": mt_coin, "side": "buy",
+                                "order_type": "limit", "price": buy_price, "volume": buy_vol,
+                            })
+                            _order_and_sync(_buy_json, st.empty(), "지정가 매수")
+
+            with sell_tab:
+                sell_type = st.radio("주문 유형", ["시장가", "지정가"], horizontal=True, key="mt_sell_type")
+
+                if sell_type == "시장가":
+                    sell_pct = st.slider("매도 비율 (%)", 10, 100, 100, 10, key="mt_sell_pct")
+                    st.caption(f"보유 {mt_coin}의 {sell_pct}%를 시장가 매도합니다.")
+
+                    if st.button(
+                        f"{mt_coin} {sell_pct}% 시장가 매도",
+                        key="mt_sell_vm",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        _sell_json = json.dumps({"coin": mt_coin, "side": "sell", "pct": sell_pct})
+                        _order_and_sync(_sell_json, st.empty(), "시장가 매도")
+
+                else:  # 지정가
+                    _sc1, _sc2 = st.columns(2)
+                    sell_price = _sc1.number_input(
+                        "매도 가격 (KRW)", min_value=1, value=int(cur_price * 1.01) if cur_price > 0 else 1,
+                        step=1000, key="mt_sell_price",
+                    )
+                    sell_vol = _sc2.number_input(
+                        f"매도 수량 ({mt_coin})", min_value=0.00000001, value=0.001,
+                        format="%.8f", key="mt_sell_vol",
+                    )
+                    sell_total = sell_price * sell_vol
+                    st.caption(f"총액: **{sell_total:,.0f} KRW**")
+
+                    if st.button(
+                        f"{mt_coin} 지정가 매도 ({sell_price:,.0f} × {sell_vol:.8g})",
+                        key="mt_lsell_vm",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        if sell_total < 5000:
+                            st.error("최소 주문금액: 5,000 KRW")
+                        else:
+                            _sell_json = json.dumps({
+                                "coin": mt_coin, "side": "sell",
+                                "order_type": "limit", "price": sell_price, "volume": sell_vol,
+                            })
+                            _order_and_sync(_sell_json, st.empty(), "지정가 매도")
+
+        # ── 미체결 주문 ──
+        st.divider()
+        st.markdown("**미체결 주문**")
+        if st.button("미체결 주문 조회 (VM 경유)", key="mt_pending_btn"):
+            _pend_status = st.empty()
+            _pend_status.info("미체결 주문 조회 중...")
+            ok, msg = _trigger_and_wait_gh("account_sync", _pend_status)
+            if ok:
+                _pend_status.success("잔고 동기화 완료")
+            else:
+                _pend_status.warning(f"동기화 실패: {msg}")
+
+        # account_cache.json 에서 미체결 정보 표시
+        _acct2 = _load_account_cache()
+        pending_orders = _acct2.get("pending_orders", [])
+        if pending_orders:
+            for i, order in enumerate(pending_orders):
+                side_kr = "매수" if order.get('side') == 'bid' else "매도"
+                side_color = "red" if order.get('side') == 'bid' else "blue"
+                market = order.get('market', '')
+                price = float(order.get('price', 0) or 0)
+                remaining = float(order.get('remaining_volume', 0) or 0)
+                created = order.get('created_at', '')
+                if created:
+                    try:
+                        created = pd.to_datetime(created).strftime('%m/%d %H:%M')
+                    except Exception:
+                        pass
+                st.markdown(f"**:{side_color}[{side_kr}]** {market} | {price:,.0f} × {remaining:.8f} | {created}")
+        else:
+            st.caption("미체결 주문이 없습니다.")
+
+        # ── 보충 매수/매도 설정 ──
+        st.divider()
+        st.markdown("**보충 매수/매도 (자동)**")
+        st.caption("BUY 시그널 유지 중 목표 미달 → 매 실행마다 설정 금액 추가 매수 / SELL 시그널 유지 중 잔량 보유 → 설정 금액 추가 매도")
+
+        _topup_enabled = config.get("topup_enabled", False)
+        _topup_buy_amt = config.get("topup_buy_amount", 5000)
+        _topup_sell_amt = config.get("topup_sell_amount", 5000)
+
+        _tu_on = st.checkbox("보충 매수/매도 활성화", value=_topup_enabled, key="topup_toggle")
+
+        if _tu_on:
+            _tu_c1, _tu_c2 = st.columns(2)
+            _tu_buy = _tu_c1.number_input(
+                "보충 매수 금액 (KRW/회)", min_value=5000, max_value=1000000,
+                value=max(5000, _topup_buy_amt), step=5000, key="topup_buy_amt",
+            )
+            _tu_sell = _tu_c2.number_input(
+                "보충 매도 금액 (KRW/회)", min_value=5000, max_value=1000000,
+                value=max(5000, _topup_sell_amt), step=5000, key="topup_sell_amt",
+            )
+        else:
+            _tu_buy = _topup_buy_amt
+            _tu_sell = _topup_sell_amt
+
+        # 설정 변경 감지 후 저장
+        if (_tu_on != _topup_enabled
+            or (_tu_on and (_tu_buy != _topup_buy_amt or _tu_sell != _topup_sell_amt))):
+            new_cfg = config.copy()
+            new_cfg["topup_enabled"] = _tu_on
+            new_cfg["topup_buy_amount"] = _tu_buy
+            new_cfg["topup_sell_amount"] = _tu_sell
+            save_config(new_cfg)
+            st.success("보충 매수/매도 설정 저장됨")
+            st.rerun()
 
     # --- Tab 3: History ---
     with tab3:
