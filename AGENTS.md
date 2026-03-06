@@ -31,10 +31,100 @@
 5. **결과 알림**: 텔레그램으로 주문 결과 + 잔고 현황 전송
 6. **잔고 갱신**: 주문 후 balance_cache.json 즉시 갱신 + GitHub push
 
+## 연금저축 예약주문 (run_kis_pension_trade)
+1. **예약주문 기반**: config/pension_orders.json의 '대기' 상태 주문을 전부 실행 (LAA 전략 분석 없음)
+2. **날짜 무시**: scheduled_kst 시간에 관계없이 대기 주문이면 모두 실행
+3. **주문 방식**: 동시호가 (장마감) / 시간외 종가 / 시장가 / 지정가
+4. **동시호가 실패 fallback**: 동시호가 실패 시 시간외 종가(ord_dvsn="06")로 자동 재주문
+5. **결과 저장**: pension_orders.json 상태를 완료/실패로 업데이트
+6. **텔레그램 알림**: 처리 건수 + 각 주문 결과 전송
+
+### 자동매매 흐름 (GitHub Actions → VM → 주문 실행)
+
+```
+[1] 사용자: Streamlit UI → 예약 주문 관리에서 주문 추가
+         ↓ (pension_orders.json 생성/수정)
+[2] 사용자: pension_orders.json을 GitHub에 커밋/푸시
+         ↓
+[3] GitHub Actions: pension_trade.yml schedule 트리거
+    - 매월 25~31일 평일 KST 15:20 (UTC 06:20)
+    - 또는 workflow_dispatch로 수동 실행
+         ↓
+[4] Runner: actions/checkout@v4 (master 브랜치 체크아웃)
+         ↓
+[5] Runner → VM SSH (appleboy/ssh-action):
+    a. cd ~/upbit
+    b. git fetch origin + git reset --hard origin/master
+       → 최신 pension_orders.json 반영
+    c. bash scripts/vm_run_job.sh kis_pension
+         ↓
+[6] VM: github_action_trade.py (TRADING_MODE=kis_pension)
+    → run_kis_pension_trade() 실행:
+    a. config/pension_orders.json 로드
+    b. status="대기" 주문 필터링
+    c. KIS 인증 (KIS_APP_KEY/SECRET/PENSION_ACCOUNT_NO)
+    d. 각 주문 실행:
+       - 동시호가: execute_closing_auction_buy/sell()
+         → 실패 시 send_order(ord_dvsn="06") 시간외 종가 재주문
+       - 시간외: send_order(ord_dvsn="06")
+       - 시장가: smart_buy_krw() / smart_sell_all()
+       - 지정가: send_order(ord_dvsn="00")
+    e. pension_orders.json 상태 업데이트 (완료/실패)
+    f. 텔레그램 알림 전송
+         ↓
+[7] Runner: SCP로 VM에서 pension_orders.json 다운로드
+         ↓
+[8] Runner: git add + commit + push
+    → 실행 결과가 GitHub에 동기화
+         ↓
+[9] 사용자: Streamlit UI에서 실행 결과 확인 (git pull 후)
+```
+
+### 상세 체크리스트
+
+#### A. 사전 준비 (1회)
+- [ ] GitHub Secrets 등록: `KIS_APP_KEY`, `KIS_APP_SECRET`, `KIS_PENSION_ACCOUNT_NO`
+- [ ] GitHub Secrets 등록: `VM_HOST`, `VM_USER`, `VM_SSH_KEY`
+- [ ] GitHub Secrets/Vars 등록: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+- [ ] VM에 `~/upbit` 리포 클론 + venv 설정
+- [ ] VM에 deploy key 등록 (push용, 선택사항 — 없어도 Runner에서 push)
+
+#### B. 주문 등록 (매월)
+- [ ] Streamlit UI → 연금저축 → 예약 주문 관리 → 매수/매도 주문 추가
+- [ ] 주문 정보 확인: ETF코드, 수량, 주문방식(동시호가/시간외/시장가/지정가)
+- [ ] pension_orders.json이 로컬에 정상 저장되었는지 확인
+- [ ] `git add config/pension_orders.json && git commit && git push`
+
+#### C. 스케줄 실행 검증
+- [ ] pension_trade.yml에 schedule cron 존재: `"20 6 25-31 * 1-5"`
+- [ ] pension_trade.yml에 Checkout 스텝 존재 (push를 위해 필수)
+- [ ] SSH 스크립트에서 `git reset --hard` → 최신 pension_orders.json 반영
+- [ ] vm_run_job.sh에서 TRADING_MODE=kis_pension 지원 확인
+- [ ] run_kis_pension_trade()가 대기 주문 전부 처리 확인 (날짜 무시)
+
+#### D. 주문 실행 검증
+- [ ] KIS 인증 성공 여부 (텔레그램 알림 or VM 로그 확인)
+- [ ] 동시호가 주문 → 체결 확인
+- [ ] 동시호가 실패 시 시간외 종가 자동 재주문 작동 확인
+- [ ] pension_orders.json 상태가 "완료" 또는 "실패"로 업데이트
+- [ ] 텔레그램에 주문 결과 알림 수신
+
+#### E. 결과 동기화 검증
+- [ ] Runner가 SCP로 pension_orders.json 다운로드 성공
+- [ ] git push로 실행 결과가 GitHub에 반영
+- [ ] Streamlit UI에서 git pull 후 결과 확인 가능
+
+#### F. 장애 대응
+- [ ] KIS 인증 실패 → 텔레그램 알림 + VM 로그 확인
+- [ ] 대기 주문 0건 → "대기 중인 예약주문 없음" 텔레그램 알림
+- [ ] SCP 실패 → Runner 로그에 WARN 출력 (치명적이지 않음)
+- [ ] 주문 실패 → pension_orders.json에 실패 사유 기록, 텔레그램 알림
+
 ## 주문 경로
-- **자동매매**: VM cron → github_action_trade.py → Upbit API (고정 IP)
-- **수동 주문**: Streamlit UI → GitHub Actions (workflow_dispatch) → VM SSH → Upbit API
-- **계좌 조회**: Streamlit UI → GitHub Actions → VM SSH → Upbit API → account_cache.json push
+- **코인 자동매매**: VM cron → github_action_trade.py → Upbit API (고정 IP)
+- **코인 수동 주문**: Streamlit UI → GitHub Actions (workflow_dispatch) → VM SSH → Upbit API
+- **코인 계좌 조회**: Streamlit UI → GitHub Actions → VM SSH → Upbit API → account_cache.json push
+- **연금저축 예약주문**: Streamlit UI → pension_orders.json 커밋 → GitHub Actions schedule → VM SSH → KIS API → 결과 push
 
 ## GitHub Actions ↔ VM 연동 참고사항 (2026-03-05 검증 완료)
 

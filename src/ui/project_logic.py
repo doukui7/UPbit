@@ -185,6 +185,44 @@ else: signal = "HOLD"
 """)
 
 
+def _load_exec_checklist() -> dict:
+    """실행 흐름 체크리스트 상태 로드."""
+    path = os.path.join(_PROJECT_ROOT, "config", "execution_checklist.json")
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_exec_checklist(data: dict):
+    """실행 흐름 체크리스트 상태 저장."""
+    path = os.path.join(_PROJECT_ROOT, "config", "execution_checklist.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _chk(key: str, label: str, auto_result: bool | None = None):
+    """체크리스트 항목. auto_result가 주어지면 자동 판정, 아니면 수동 체크."""
+    checklist = _load_exec_checklist()
+    if auto_result is not None:
+        # 자동 판정 항목
+        icon = "✅" if auto_result else "❌"
+        st.markdown(f"  {icon} {label}")
+        checklist[key] = auto_result
+        _save_exec_checklist(checklist)
+    else:
+        # 수동 체크 항목
+        default = checklist.get(key, False)
+        val = st.checkbox(label, value=default, key=f"_ec_{key}")
+        if val != default:
+            checklist[key] = val
+            _save_exec_checklist(checklist)
+
+
 def _render_execution_flow():
     """실행 흐름 섹션."""
     st.markdown("### 실행 흐름")
@@ -207,8 +245,11 @@ def _render_execution_flow():
 
 **핵심 원칙**: Python 스케줄러가 유일한 스케줄 실행 주체.
 cron과 GitHub Actions는 스케줄러 생존 감시(watchdog)만 담당.
+""")
 
-#### 자동매매 실행 순서
+    # ── 코인 자동매매 ──
+    with st.expander("코인 자동매매 실행 흐름 + 점검", expanded=True):
+        st.markdown("""
 ```
 Python 스케줄러 (4시간 간격 정시)
     │ _run_mode("upbit")
@@ -226,11 +267,50 @@ github_action_trade.py (TRADING_MODE=upbit)
     ├─ 6. 매도 먼저 실행 (현금 확보)
     ├─ 7. 현금 비례 배분 매수
     ├─ 8. signal_state.json 업데이트
-    ├─ 9. trade_log.json 기록 + GitHub push
+    ├─ 9. trade_log.json 기록
     └─ 10. 텔레그램 알림 발송
-```
 
-#### 수동 주문 실행 순서
+GitHub Actions (coin_trade.yml) — VM 실행 후:
+    ├─ SCP: balance_cache.json + signal_state.json + trade_log.json
+    └─ git push (결과 동기화)
+```
+""")
+        st.markdown("##### 사전 준비")
+        # 자동 체크: 파일 존재 여부
+        _chk("coin_portfolio", "portfolio.json 존재",
+             os.path.exists(os.path.join(_PROJECT_ROOT, "portfolio.json")))
+        _chk("coin_signal_state", "signal_state.json 존재",
+             os.path.exists(os.path.join(_PROJECT_ROOT, "signal_state.json")))
+        _chk("coin_trade_yml", "coin_trade.yml 워크플로우 존재",
+             os.path.exists(os.path.join(_PROJECT_ROOT, ".github", "workflows", "coin_trade.yml")))
+        _chk("coin_vm_run_job", "vm_run_job.sh 존재",
+             os.path.exists(os.path.join(_PROJECT_ROOT, "scripts", "vm_run_job.sh")))
+        _chk("coin_secrets_upbit", "GitHub Secrets: UPBIT_ACCESS_KEY / UPBIT_SECRET_KEY 등록")
+        _chk("coin_secrets_vm", "GitHub Secrets: VM_HOST / VM_USER / VM_SSH_KEY 등록")
+        _chk("coin_secrets_tg", "GitHub Secrets: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 등록")
+
+        st.markdown("##### 실행 검증")
+        _chk("coin_scheduler_running", "VM Python 스케줄러 (vm_scheduler.py) 상주 실행 중")
+        _chk("coin_cron_watchdog", "VM cron watchdog 5분마다 ensure 실행 중")
+        _chk("coin_candle_wait", "캔들 마감 대기 (4H 경계 시각 전 도착 시) 정상 동작")
+        _chk("coin_sma_signal", "SMA 전략 시그널 분석 정상 (BUY/SELL)")
+        _chk("coin_donchian_signal", "Donchian 전략 시그널 분석 정상 (BUY/SELL/HOLD)")
+        _chk("coin_signal_transition", "시그널 전환 감지 정상 (이전 상태 ↔ 현재 비교)")
+        _chk("coin_sell_exec", "매도 주문 실행 정상 (smart_sell)")
+        _chk("coin_buy_exec", "매수 주문 실행 정상 (smart_buy / adaptive_buy)")
+        _chk("coin_state_save", "signal_state.json 업데이트 정상")
+
+        st.markdown("##### 동기화 검증")
+        _chk("coin_git_reset_protect", "git reset --hard 전 signal_state.json + balance_cache.json 백업/복원")
+        _chk("coin_scp_balance", "SCP: balance_cache.json VM → Runner 다운로드 정상")
+        _chk("coin_scp_signal", "SCP: signal_state.json VM → Runner 다운로드 정상")
+        _chk("coin_scp_tradelog", "SCP: trade_log.json VM → Runner 다운로드 정상")
+        _chk("coin_git_push", "Runner → GitHub push 정상")
+        _chk("coin_telegram", "텔레그램 알림 수신 정상")
+
+    # ── 수동 주문 ──
+    with st.expander("코인 수동 주문 실행 흐름 + 점검", expanded=False):
+        st.markdown("""
 ```
 Streamlit UI (코인/방향/비율 선택)
     │
@@ -248,6 +328,148 @@ SSH → VM → vm_run_job.sh manual_order
     └─ 텔레그램 알림 발송
 ```
 """)
+        _chk("manual_workflow_dispatch", "workflow_dispatch 수동 트리거 정상")
+        _chk("manual_vm_ssh", "VM SSH 접속 + vm_run_job.sh manual_order 실행 정상")
+        _chk("manual_buy_exec", "수동 매수 실행 + 체결 확인")
+        _chk("manual_sell_exec", "수동 매도 실행 + 체결 확인")
+        _chk("manual_scp_push", "SCP + push 동기화 정상")
+        _chk("manual_telegram", "텔레그램 알림 수신 정상")
+
+    # ── 연금저축 예약주문 ──
+    with st.expander("연금저축 예약주문 실행 흐름 + 점검", expanded=True):
+        st.markdown("""
+```
+[1] 사용자: Streamlit UI → 예약 주문 관리 → 주문 추가
+         │ (config/pension_orders.json 생성/수정)
+         ▼
+[2] 사용자: pension_orders.json 커밋 + 푸시
+         │
+         ▼
+[3] GitHub Actions: pension_trade.yml 스케줄 트리거
+    │  매월 25~31일 평일 KST 15:20 (UTC 06:20)
+    │  또는 workflow_dispatch 수동 실행
+    ▼
+[4] Runner: actions/checkout@v4 (master)
+         │
+         ▼
+[5] Runner → VM SSH:
+    │  a. git fetch + git reset --hard → 최신 코드 반영
+    │  b. bash scripts/vm_run_job.sh kis_pension
+    ▼
+[6] VM: github_action_trade.py (TRADING_MODE=kis_pension)
+    │  → run_kis_pension_trade() 실행:
+    │
+    ├─ a. config/pension_orders.json 로드
+    ├─ b. status="대기" 주문 필터링
+    ├─ c. KIS 인증 (APP_KEY/SECRET/ACCOUNT_NO)
+    ├─ d. 각 주문 실행:
+    │     ├─ 동시호가: execute_closing_auction_buy/sell()
+    │     │    └─ 실패 시 → 시간외 종가 (ord_dvsn="06") 자동 재주문
+    │     ├─ 시간외: send_order(ord_dvsn="06")
+    │     ├─ 시장가: smart_buy_krw() / smart_sell_all()
+    │     └─ 지정가: send_order(ord_dvsn="00")
+    ├─ e. pension_orders.json 상태 업데이트 (완료/실패)
+    └─ f. 텔레그램 알림 전송
+         │
+         ▼
+[7] Runner: SCP → pension_orders.json 다운로드
+         │
+         ▼
+[8] Runner: git add + commit + push → 실행 결과 동기화
+         │
+         ▼
+[9] 사용자: Streamlit UI에서 결과 확인 (git pull)
+```
+""")
+        st.markdown("##### A. 사전 준비 (1회)")
+        _chk("pen_secrets_kis", "GitHub Secrets: KIS_APP_KEY / KIS_APP_SECRET 등록")
+        _chk("pen_secrets_acct", "GitHub Secrets: KIS_PENSION_ACCOUNT_NO 등록")
+        _chk("pen_secrets_vm", "GitHub Secrets: VM_HOST / VM_USER / VM_SSH_KEY 등록")
+        _chk("pen_secrets_tg", "GitHub Secrets: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 등록")
+        _chk("pen_vm_repo", "VM에 ~/upbit 리포 클론 + venv 설정 완료")
+
+        # 자동 체크
+        _pension_yml = os.path.join(_PROJECT_ROOT, ".github", "workflows", "pension_trade.yml")
+        _pension_orders = os.path.join(_PROJECT_ROOT, "config", "pension_orders.json")
+        _has_schedule = False
+        try:
+            if os.path.exists(_pension_yml):
+                with open(_pension_yml, "r", encoding="utf-8") as _f:
+                    _yml_content = _f.read()
+                _has_schedule = "schedule:" in _yml_content and "cron:" in _yml_content
+        except Exception:
+            pass
+        _chk("pen_yml_exists", "pension_trade.yml 워크플로우 존재",
+             os.path.exists(_pension_yml))
+        _chk("pen_yml_schedule", "pension_trade.yml에 schedule cron 트리거 설정됨",
+             _has_schedule)
+        _chk("pen_yml_checkout", "pension_trade.yml에 Checkout 스텝 존재 (push용)",
+             "checkout" in _yml_content.lower() if os.path.exists(_pension_yml) else False)
+        _chk("pen_yml_scp", "pension_trade.yml에 SCP + push 스텝 존재",
+             "scp" in _yml_content.lower() if os.path.exists(_pension_yml) else False)
+
+        st.markdown("##### B. 주문 등록 (매월)")
+        _chk("pen_orders_exist", "config/pension_orders.json 존재",
+             os.path.exists(_pension_orders))
+
+        # 대기 주문 수 표시
+        _pending_count = 0
+        try:
+            if os.path.exists(_pension_orders):
+                with open(_pension_orders, "r", encoding="utf-8") as _f:
+                    _orders = json.load(_f)
+                _pending_count = sum(1 for o in _orders if o.get("status") == "대기")
+        except Exception:
+            pass
+        if _pending_count > 0:
+            st.info(f"현재 대기 주문: {_pending_count}건")
+        else:
+            st.warning("대기 주문 없음 — 예약 주문 관리에서 주문을 추가하세요")
+
+        _chk("pen_orders_added", "예약 주문 관리에서 매수/매도 주문 추가 완료")
+        _chk("pen_orders_pushed", "pension_orders.json GitHub에 커밋 + 푸시 완료")
+
+        st.markdown("##### C. 스케줄 실행 검증")
+        _chk("pen_schedule_trigger", "GH Actions schedule 또는 dispatch 정상 트리거")
+        _chk("pen_vm_ssh", "VM SSH 접속 정상")
+        _chk("pen_git_reset", "VM에서 git reset --hard → 최신 pension_orders.json 반영")
+        _chk("pen_kis_auth", "KIS 인증 성공 (로그 또는 텔레그램 확인)")
+
+        st.markdown("##### D. 주문 실행 검증")
+        _chk("pen_exec_closing", "동시호가 주문 체결 확인")
+        _chk("pen_exec_fallback", "동시호가 실패 시 시간외 종가 자동 재주문 작동")
+        _chk("pen_orders_updated", "pension_orders.json 상태 '완료' 또는 '실패'로 업데이트")
+        _chk("pen_telegram", "텔레그램에 주문 결과 알림 수신")
+
+        st.markdown("##### E. 결과 동기화 검증")
+        _chk("pen_scp_download", "Runner가 SCP로 pension_orders.json 다운로드 성공")
+        _chk("pen_git_push", "git push로 실행 결과 GitHub에 반영")
+        _chk("pen_ui_confirm", "Streamlit UI에서 git pull 후 결과 확인 가능")
+
+    # ── 계좌 동기화 ──
+    with st.expander("계좌 데이터 동기화 (account_sync) 흐름 + 점검", expanded=False):
+        st.markdown("""
+```
+GitHub Actions (coin_trade.yml) — 스케줄 4H마다 +10분
+    │  또는 workflow_dispatch (run_job=account_sync)
+    ▼
+SSH → VM → vm_run_job.sh account_sync
+    │
+    ├─ 1. 업비트 잔고 조회
+    ├─ 2. account_cache.json 저장
+    ├─ 3. balance_cache.json 저장
+    └─ 4. 텔레그램 알림 (선택)
+
+Runner:
+    ├─ SCP: account_cache.json + balance_cache.json + signal_state.json + trade_log.json
+    └─ git push
+```
+""")
+        _chk("sync_schedule", "account_sync 스케줄 (4H마다 +10분) 정상 트리거")
+        _chk("sync_git_protect", "git reset 전 signal_state + balance_cache 백업/복원")
+        _chk("sync_scp_files", "SCP: 4개 파일 (account/balance/signal/trade_log) 다운로드 정상")
+        _chk("sync_git_push", "git push 정상")
+        _chk("sync_streamlit_refresh", "Streamlit UI에서 최신 잔고 표시 확인")
 
     st.markdown("""
 #### 실행 스케줄
@@ -259,9 +481,10 @@ SSH → VM → vm_run_job.sh manual_order
 | 일일 자산 현황 | 평일 09:00 KST | Python 스케줄러 → vm_run_job.sh |
 | 골드 (금현물) | 평일 15:05 KST | Python 스케줄러 → vm_run_job.sh |
 | ISA (위대리) | 매주 금요일 15:10 KST | Python 스케줄러 → vm_run_job.sh |
-| 연금저축 | 매월 25~31일 평일 15:20 KST | Python 스케줄러 → vm_run_job.sh |
-| 예약 주문 | vm_reserved_orders.json | Python 스케줄러 (1회성) |
+| 연금저축 예약주문 | 매월 25~31일 평일 15:20 KST | Python 스케줄러 + GH Actions |
+| 예약 주문 (코인) | vm_reserved_orders.json | Python 스케줄러 (1회성) |
 | 코인 수동주문 | Streamlit에서 즉시 | GitHub Actions → vm_run_job.sh |
+| 계좌 동기화 | 4H마다 +10분 | GH Actions → vm_run_job.sh |
 | 스케줄러 감시 | 5분마다 | VM cron + GitHub Actions |
 """)
 

@@ -3795,20 +3795,37 @@ def run_telegram_test_ping():
 
 def run_kis_pension_trade():
     """
-    한국투자증권 연금저축 계좌 - LAA 전략 자동매매.
+    한국투자증권 연금저축 계좌 - 예약주문 실행.
 
-    - 코어 75%: IWD/GLD/IEF
-    - 리스크 25%: SPY 200일선 위 QQQ, 아니면 SHY
-    - 월간 리밸런싱
+    config/pension_orders.json의 '대기' 상태 주문을 모두 실행한다.
+    주문 목록은 Streamlit UI에서 관리하고, 이 함수는 실행만 담당.
     """
     load_dotenv()
-    logger.info("=== KIS 연금저축 LAA 자동매매 시작 ===")
+    logger.info("=== KIS 연금저축 예약주문 실행 시작 ===")
 
-    order_phase = _get_kr_order_phase()
-    if order_phase == "closed":
-        logger.info("?? ?? ?? ??? ???? (09:00~15:30, 16:00~18:00 KST). ??? ?????.")
+    # 예약주문 파일 로드
+    orders_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "pension_orders.json")
+    try:
+        if os.path.exists(orders_file):
+            with open(orders_file, "r", encoding="utf-8") as f:
+                orders = json.load(f)
+            if not isinstance(orders, list):
+                orders = []
+        else:
+            orders = []
+    except Exception as e:
+        logger.error(f"pension_orders.json 로드 실패: {e}")
+        orders = []
+
+    pending = [o for o in orders if o.get("status") == "대기"]
+    if not pending:
+        logger.info("대기 중인 예약주문 없음. 종료.")
+        _send_telegram("<b>KIS 연금저축</b>\n대기 중인 예약주문 없음")
         return
-    logger.info(f"?? ?? ??: {_kr_order_phase_label(order_phase)} ({order_phase})")
+
+    logger.info(f"대기 주문 {len(pending)}건 발견")
+
+    # KIS 인증
     pension_key = _get_env_any("KIS_PENSION_APP_KEY", "KIS_APP_KEY")
     pension_secret = _get_env_any("KIS_PENSION_APP_SECRET", "KIS_APP_SECRET")
     pension_acct_raw = _get_env_any("KIS_PENSION_ACCOUNT_NO", "KIS_ACCOUNT_NO")
@@ -3826,130 +3843,100 @@ def run_kis_pension_trade():
 
     if not trader.auth():
         logger.error("KIS 인증 실패. 종료.")
+        _send_telegram("<b>KIS 연금저축</b>\nKIS 인증 실패")
         return
 
-    kr_etf_map = {
-        "SPY": _get_env_any("KR_ETF_LAA_SPY", "KR_ETF_SPY", default="360750"),
-        "IWD": _get_env_any("KR_ETF_LAA_IWD", "KR_ETF_SPY", default="360750"),
-        "GLD": _normalize_gold_kr_etf(_get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default=GOLD_KRX_ETF_CODE)),
-        "IEF": _get_env_any("KR_ETF_LAA_IEF", "KR_ETF_AGG", default="453540"),
-        "QQQ": _get_env_any("KR_ETF_LAA_QQQ", default="133690"),
-        "SHY": _get_env_any("KR_ETF_LAA_SHY", default="114470"),
-    }
-
-    tickers = ["SPY", "IWD", "GLD", "IEF", "QQQ", "SHY"]
-    price_data = {}
-    for ticker in tickers:
-        code = str(kr_etf_map.get(ticker, "")).strip()
-        df = _get_kis_daily_local_first(trader, code, count=420) if code else None
-        if df is None or len(df) == 0:
-            logger.error(f"{ticker}({code}) 국내 데이터 조회 실패. 종료.")
-            return
-        price_data[ticker] = df
-        logger.info(f"{ticker}({code}): {len(df)}건 로드")
-        time.sleep(0.2)
-
-    strategy = LAAStrategy(settings={"kr_etf_map": kr_etf_map})
-    signal = strategy.analyze(price_data)
-    if not signal:
-        logger.error("LAA 시그널 분석 실패. 종료.")
-        return
-
-    bal = _get_kis_balance_with_retry(trader, retries=3, delay_sec=0.8, log_prefix="KIS 연금저축")
-    if not bal:
-        logger.error("잔고 조회 실패. 종료.")
-        return
-
-    pension_base_code = next(
-        iter(signal.get("target_weights_kr", {}).keys()),
-        str(kr_etf_map.get("QQQ", "133690")),
-    )
-    cash = _get_kis_orderable_cash_precise(
-        trader, bal, base_code=pension_base_code, fallback=0.0
-    )
-    holdings = bal.get("holdings", []) or []
-    total_eval = float(bal.get("total_eval", 0.0)) or (cash + sum(float(h.get("eval_amt", 0.0)) for h in holdings))
-    total_eval = max(total_eval, 1.0)
-
-    target_weights_kr = signal.get("target_weights_kr", {})
-    tracked_codes = set(str(c) for c in target_weights_kr.keys())
-    current_vals = {c: 0.0 for c in tracked_codes}
-    current_qty = {c: 0 for c in tracked_codes}
-    for h in holdings:
-        code = str(h.get("code", ""))
-        if code in tracked_codes:
-            current_vals[code] += float(h.get("eval_amt", 0.0))
-            current_qty[code] += int(float(h.get("qty", 0)))
-
-    target_vals = {c: float(total_eval) * float(w) for c, w in target_weights_kr.items()}
-    min_order = 10_000
-    tolerance = 0.01  # 1%
-    actions = []
-
-    # 1) 매도부터 실행
-    for code in tracked_codes:
-        cur_v = float(current_vals.get(code, 0.0))
-        tgt_v = float(target_vals.get(code, 0.0))
-        if cur_v <= tgt_v * (1.0 + tolerance):
+    # 대기 주문 실행
+    results = []
+    changed = False
+    for o in orders:
+        if o.get("status") != "대기":
             continue
-        excess = cur_v - tgt_v
-        if excess < min_order:
+
+        code = str(o.get("etf_code", "")).strip()
+        side = o.get("side", "")
+        qty = int(o.get("qty", 0))
+        method = o.get("method", "")
+        oid = o.get("id", "")
+        etf_name = o.get("etf_name", code)
+
+        if qty <= 0 or not code:
+            o["status"] = "실패"
+            o["result"] = "수량 또는 ETF코드 누락"
+            o["executed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            changed = True
+            results.append(f"{etf_name}({code}): 실패 (수량/코드 누락)")
+            logger.warning(f"주문 {oid}: 수량/코드 누락")
             continue
-        price = _get_kis_price_local_first(trader, code) or 0.0
-        if price <= 0:
-            continue
-        qty = int(excess / price)
-        qty = min(qty, int(current_qty.get(code, 0)))
-        if qty <= 0:
-            continue
-        result = _execute_kis_sell_qty_by_phase(trader, code, qty, order_phase)
-        actions.append(f"SELL {code} {qty}? ({'OK' if _order_success(result) else 'FAIL'})")
-        logger.info(actions[-1])
-        time.sleep(0.8)
 
-    # 2) 매수 전 잔고 재조회
-    bal2 = _get_kis_balance_with_retry(trader, retries=2, delay_sec=0.5, log_prefix="KIS 연금저축") or {}
-    cash = _get_kis_orderable_cash_precise(
-        trader, bal2, base_code=pension_base_code, fallback=cash
-    )
-    holdings2 = bal2.get("holdings", []) or holdings
-    current_vals = {c: 0.0 for c in tracked_codes}
-    for h in holdings2:
-        code = str(h.get("code", ""))
-        if code in tracked_codes:
-            current_vals[code] += float(h.get("eval_amt", 0.0))
+        try:
+            res = None
+            if "동시호가" in method:
+                if "매수" in side:
+                    res = trader.execute_closing_auction_buy(code, qty)
+                else:
+                    res = trader.execute_closing_auction_sell(code, qty)
+                # 동시호가 실패 시 시간외 종가로 자동 재주문
+                if not (isinstance(res, dict) and res.get("success", False)):
+                    logger.warning(f"동시호가 실패 → 시간외 종가 재주문: {code}")
+                    ord_side = "BUY" if "매수" in side else "SELL"
+                    res2 = trader.send_order(ord_side, code, qty, price=0, ord_dvsn="06")
+                    success2 = isinstance(res2, dict) and res2.get("success", False)
+                    res = {
+                        "success": success2,
+                        "method": "동시호가실패→시간외종가",
+                        "closing_result": str(res)[:100],
+                        "after_hours_result": str(res2)[:100],
+                    }
+            elif "시간외" in method:
+                ord_side = "BUY" if "매수" in side else "SELL"
+                res = trader.send_order(ord_side, code, qty, price=0, ord_dvsn="06")
+            elif "시장가" in method:
+                if "매수" in side:
+                    price_val = float(o.get("price", 0)) or 0
+                    res = trader.smart_buy_krw(code, price_val)
+                else:
+                    res = trader.smart_sell_all(code)
+            else:
+                # 지정가 fallback
+                price_val = int(o.get("price", 0))
+                ord_side = "BUY" if "매수" in side else "SELL"
+                if price_val > 0:
+                    res = trader.send_order(ord_side, code, qty, price=price_val, ord_dvsn="00")
+                else:
+                    res = {"success": False, "msg": "지정가 0"}
 
-    # 3) 매수 실행
-    buy_candidates = []
-    for code in tracked_codes:
-        deficit = float(target_vals.get(code, 0.0)) - float(current_vals.get(code, 0.0))
-        if deficit > 0:
-            buy_candidates.append((code, deficit))
-    buy_candidates.sort(key=lambda x: x[1], reverse=True)
+            success = isinstance(res, dict) and res.get("success", False)
+            o["status"] = "완료" if success else "실패"
+            o["result"] = str(res)[:200] if res else "응답 없음"
+            o["executed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            changed = True
+            status_str = "완료" if success else "실패"
+            results.append(f"{side} {etf_name}({code}) x{qty}: {status_str}")
+            logger.info(f"주문 {oid}: {side} {code} x{qty} → {status_str}")
+            time.sleep(0.5)
+        except Exception as e:
+            o["status"] = "실패"
+            o["result"] = str(e)[:200]
+            o["executed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            changed = True
+            results.append(f"{side} {etf_name}({code}) x{qty}: 실패 ({e})")
+            logger.error(f"주문 {oid} 예외: {e}")
 
-    for code, deficit in buy_candidates:
-        if cash < min_order:
-            break
-        buy_amount = min(deficit, cash * 0.995)
-        if buy_amount < min_order:
-            continue
-        result = _execute_kis_buy_amount_by_phase(trader, code, buy_amount, order_phase)
-        actions.append(f"BUY {code} {buy_amount:,.0f}? ({'OK' if _order_success(result) else 'FAIL'})")
-        logger.info(actions[-1])
-        if _order_success(result):
-            cash -= buy_amount
-        time.sleep(0.8)
+    # 결과 저장
+    if changed:
+        try:
+            os.makedirs(os.path.dirname(orders_file), exist_ok=True)
+            with open(orders_file, "w", encoding="utf-8") as f:
+                json.dump(orders, f, ensure_ascii=False, indent=2)
+            logger.info("pension_orders.json 업데이트 완료")
+        except Exception as e:
+            logger.error(f"pension_orders.json 저장 실패: {e}")
 
-    if not actions:
-        actions.append("HOLD (리밸런싱 불필요)")
-
-    logger.info("=== KIS 연금저축 LAA 자동매매 완료 ===")
-    tg = [f"<b>KIS 연금저축 LAA</b>"]
-    tg.append(f"리스크 상태: {'공격' if signal.get('risk_on') else '방어'}")
-    tg.append(f"리스크 자산: {signal.get('selected_risk_asset')} -> {signal.get('selected_risk_kr_code')}")
-    tg.append(signal.get("reason", ""))
-    tg.append("실행:")
-    tg.extend([f"- {a}" for a in actions[:8]])
+    logger.info("=== KIS 연금저축 예약주문 실행 완료 ===")
+    tg = [f"<b>KIS 연금저축 예약주문</b>"]
+    tg.append(f"처리: {len(results)}건")
+    tg.extend([f"- {r}" for r in results[:10]])
     _send_telegram("\n".join(tg))
 
 

@@ -68,10 +68,10 @@ if TRADING_MODE="${MODE}" python scripts/github_action_trade.py 2>&1 | tee -a "$
   echo "[$(date '+%F %T')] done mode=${MODE}" >> "${LOG_FILE}"
 
   # balance_cache / signal_state 자동 push (deploy key 사용)
-  if [[ "${MODE}" == "upbit" || "${MODE}" == "manual_order" || "${MODE}" == "account_sync" ]]; then
+  if [[ "${MODE}" == "upbit" || "${MODE}" == "manual_order" || "${MODE}" == "account_sync" || "${MODE}" == "kis_pension" ]]; then
     (
       git remote set-url origin git@github.com:doukui7/UPbit.git 2>/dev/null || true
-      git add -f balance_cache.json signal_state.json trade_log.json 2>/dev/null || true
+      git add -f balance_cache.json signal_state.json trade_log.json config/pension_orders.json 2>/dev/null || true
       if ! git diff --cached --quiet 2>/dev/null; then
         git -c user.name="auto-trade-bot" -c user.email="bot@auto-trade" \
           commit -m "auto: VM ${MODE} 후 캐시 동기화" 2>/dev/null || true
