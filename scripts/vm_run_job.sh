@@ -39,8 +39,13 @@ if [[ -f "${REPO_DIR}/venv/bin/activate" ]]; then
 fi
 
 if [[ "${AUTO_UPDATE}" == "1" ]]; then
+  # 로컬 상태 파일 보존 (git reset 덮어쓰기 방지)
+  cp signal_state.json /tmp/_signal_state_backup.json 2>/dev/null || true
+  cp balance_cache.json /tmp/_balance_cache_backup.json 2>/dev/null || true
   git fetch origin --quiet 2>/dev/null || true
   git reset --hard origin/master --quiet 2>/dev/null || true
+  cp /tmp/_signal_state_backup.json signal_state.json 2>/dev/null || true
+  cp /tmp/_balance_cache_backup.json balance_cache.json 2>/dev/null || true
 fi
 
 if ! command -v python >/dev/null 2>&1; then
@@ -66,7 +71,7 @@ if TRADING_MODE="${MODE}" python scripts/github_action_trade.py 2>&1 | tee -a "$
   if [[ "${MODE}" == "upbit" || "${MODE}" == "manual_order" || "${MODE}" == "account_sync" ]]; then
     (
       git remote set-url origin git@github.com:doukui7/UPbit.git 2>/dev/null || true
-      git add -f balance_cache.json signal_state.json 2>/dev/null || true
+      git add -f balance_cache.json signal_state.json trade_log.json 2>/dev/null || true
       if ! git diff --cached --quiet 2>/dev/null; then
         git -c user.name="auto-trade-bot" -c user.email="bot@auto-trade" \
           commit -m "auto: VM ${MODE} 후 캐시 동기화" 2>/dev/null || true

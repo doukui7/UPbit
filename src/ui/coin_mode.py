@@ -2274,7 +2274,7 @@ def render_coin_mode(config, save_config):
     with tab3:
         st.header("거래 내역")
 
-        hist_tab1, hist_tab2, hist_tab3 = st.tabs(["💸 실제 거래 내역 (거래소)", "🧪 가상 로그 (페이퍼)", "📊 슬리피지 분석"])
+        hist_tab1, hist_tab2, hist_tab3 = st.tabs(["💸 실제 거래 내역 (거래소)", "📋 VM 매매 로그", "📊 슬리피지 분석"])
 
         with hist_tab1:
             st.subheader("실제 거래 내역")
@@ -2456,18 +2456,90 @@ def render_coin_mode(config, save_config):
             st.caption("Upbit API 제한: 최근 100건까지 조회 가능")
 
         with hist_tab2:
-            st.subheader("가상 계좌 관리")
+            st.subheader("VM 매매 로그")
 
-            if 'virtual_adjustment' not in st.session_state:
-                st.session_state.virtual_adjustment = 0
+            # trade_log.json sync from GitHub
+            _tl_path = os.path.join(PROJECT_ROOT, "trade_log.json")
+            if st.button("동기화", key="tl_sync"):
+                try:
+                    subprocess.run(
+                        ["git", "fetch", "origin", "--quiet"],
+                        cwd=PROJECT_ROOT, capture_output=True, timeout=10,
+                    )
+                    subprocess.run(
+                        ["git", "checkout", "origin/master", "--", "trade_log.json"],
+                        cwd=PROJECT_ROOT, capture_output=True, timeout=5,
+                    )
+                    st.toast("동기화 완료")
+                except Exception:
+                    pass
 
-            c1, c2 = st.columns(2)
-            amount = c1.number_input("금액 (KRW)", step=100000)
-            if c2.button("입출금 (가상)"):
-                st.session_state.virtual_adjustment += amount
-                st.success(f"가상 잔고 조정: {amount:,.0f} KRW")
+            # 로드
+            _tl_entries = []
+            if os.path.exists(_tl_path):
+                try:
+                    with open(_tl_path, "r", encoding="utf-8") as _f:
+                        _tl_entries = json.load(_f)
+                    if not isinstance(_tl_entries, list):
+                        _tl_entries = []
+                except Exception:
+                    _tl_entries = []
 
-            st.info(f"누적 가상 조정액: {st.session_state.virtual_adjustment:,.0f} KRW")
+            if not _tl_entries:
+                st.info("VM 매매 로그가 없습니다. (trade_log.json 미동기화)")
+            else:
+                # 필터
+                _tl_modes = ["전체", "auto", "manual", "signal"]
+                _tl_mode = st.selectbox("모드 필터", _tl_modes, key="tl_mode_filter")
+
+                _tl_rows = []
+                for e in _tl_entries:
+                    mode = e.get("mode", "")
+                    if _tl_mode != "전체" and mode != _tl_mode:
+                        continue
+                    side = e.get("side", "")
+                    side_kr = {"BUY": "매수", "SELL": "매도", "BUY_TOPUP": "보충매수", "SELL_TOPUP": "보충매도"}.get(side, side)
+                    mode_kr = {"auto": "자동", "manual": "수동", "signal": "시그널"}.get(mode, mode)
+                    amount_str = e.get("amount", e.get("qty", ""))
+                    _tl_rows.append({
+                        "시간": e.get("time", ""),
+                        "모드": mode_kr,
+                        "코인": e.get("ticker", ""),
+                        "구분": side_kr,
+                        "전략": e.get("strategy", ""),
+                        "금액/수량": str(amount_str),
+                        "결과": e.get("result", ""),
+                        "상세": str(e.get("detail", ""))[:80],
+                    })
+
+                if _tl_rows:
+                    _tl_df = pd.DataFrame(_tl_rows)
+                    st.success(f"{len(_tl_df)}건")
+
+                    def _color_trade_side(val):
+                        if val in ("매수", "보충매수"):
+                            return "color: #e74c3c"
+                        elif val in ("매도", "보충매도"):
+                            return "color: #2980b9"
+                        elif val == "시그널":
+                            return "color: #f39c12"
+                        return ""
+
+                    def _color_result(val):
+                        if val == "success":
+                            return "color: #27ae60"
+                        elif val == "error":
+                            return "color: #e74c3c"
+                        return ""
+
+                    st.dataframe(
+                        _tl_df.style
+                            .map(_color_trade_side, subset=["구분"])
+                            .map(_color_result, subset=["결과"]),
+                        use_container_width=True, hide_index=True,
+                    )
+                else:
+                    st.info("필터 조건에 해당하는 로그 없음")
 
         with hist_tab3:
             st.subheader("슬리피지 분석 (실제 체결 vs 백테스트)")

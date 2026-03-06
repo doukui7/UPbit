@@ -46,8 +46,13 @@ jobs:
           envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             cd ~/upbit
+            # 로컬 상태 파일 보존 (git reset 덮어쓰기 방지)
+            cp signal_state.json /tmp/_signal_state_backup.json 2>/dev/null || true
+            cp balance_cache.json /tmp/_balance_cache_backup.json 2>/dev/null || true
             git remote set-url origin https://github.com/doukui7/UPbit.git 2>/dev/null || true
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            cp /tmp/_signal_state_backup.json signal_state.json 2>/dev/null || true
+            cp /tmp/_balance_cache_backup.json balance_cache.json 2>/dev/null || true
             bash scripts/vm_run_job.sh upbit
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
@@ -69,10 +74,11 @@ jobs:
           ssh-keyscan -H "${VM_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
           scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/balance_cache.json" ./balance_cache.json || echo "WARN: balance_cache.json not found"
           scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/signal_state.json" ./signal_state.json || echo "WARN: signal_state.json not found"
+          scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/trade_log.json" ./trade_log.json || echo "WARN: trade_log.json not found"
           rm -f ~/.ssh/vm_key
           git config user.name "auto-trade-bot"
           git config user.email "bot@auto-trade"
-          git add balance_cache.json signal_state.json 2>/dev/null || true
+          git add balance_cache.json signal_state.json trade_log.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
@@ -101,8 +107,10 @@ jobs:
           envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,MANUAL_ORDER
           script: |
             cd ~/upbit
+            cp signal_state.json /tmp/_signal_state_backup.json 2>/dev/null || true
             git remote set-url origin https://github.com/doukui7/UPbit.git 2>/dev/null || true
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            cp /tmp/_signal_state_backup.json signal_state.json 2>/dev/null || true
             bash scripts/vm_run_job.sh manual_order
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
@@ -123,14 +131,16 @@ jobs:
           chmod 600 ~/.ssh/vm_key
           ssh-keyscan -H "${VM_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
           scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/balance_cache.json" ./balance_cache.json || echo "WARN: balance_cache.json not found"
+          scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/signal_state.json" ./signal_state.json || echo "WARN: signal_state.json not found"
+          scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/trade_log.json" ./trade_log.json || echo "WARN: trade_log.json not found"
           rm -f ~/.ssh/vm_key
           git config user.name "auto-trade-bot"
           git config user.email "bot@auto-trade"
-          git add balance_cache.json 2>/dev/null || true
+          git add balance_cache.json signal_state.json trade_log.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "auto: 수동주문 후 잔고 동기화"
+            git commit -m "auto: 수동주문 후 잔고/시그널 동기화"
             git push
           fi
 
@@ -156,8 +166,10 @@ jobs:
           envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,TRADING_MODE,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             cd ~/upbit
+            cp signal_state.json /tmp/_signal_state_backup.json 2>/dev/null || true
             git remote set-url origin https://github.com/doukui7/UPbit.git 2>/dev/null || true
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            cp /tmp/_signal_state_backup.json signal_state.json 2>/dev/null || true
             bash scripts/vm_run_job.sh account_sync
         env:
           UPBIT_ACCESS_KEY: ${{ secrets.UPBIT_ACCESS_KEY }}
@@ -182,12 +194,14 @@ jobs:
           # VM에서 캐시 파일 다운로드
           scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/account_cache.json" ./account_cache.json || echo "WARN: account_cache.json not found"
           scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/balance_cache.json" ./balance_cache.json || echo "WARN: balance_cache.json not found"
+          scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/signal_state.json" ./signal_state.json || echo "WARN: signal_state.json not found"
+          scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/trade_log.json" ./trade_log.json || echo "WARN: trade_log.json not found"
           rm -f ~/.ssh/vm_key
 
           # 변경사항 있으면 commit & push
           git config user.name "auto-trade-bot"
           git config user.email "bot@auto-trade"
-          git add account_cache.json balance_cache.json 2>/dev/null || true
+          git add account_cache.json balance_cache.json signal_state.json trade_log.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else

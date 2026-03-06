@@ -1165,6 +1165,14 @@ def run_auto_trade():
                 result['prev_state'] = prev
                 result['signal_key'] = key
                 logger.info(f"[{ticker}] 전환감지: prev={prev} → state={result['position_state']} → signal={result['signal']}")
+                # 시그널 전환 발생 시 trade_log에 기록
+                if result['signal'] in ('BUY', 'SELL'):
+                    _append_trade_log({
+                        "mode": "signal", "ticker": ticker,
+                        "side": result['signal'],
+                        "strategy": result.get('strategy_label', ''),
+                        "detail": f"prev={prev} → {result['position_state']}",
+                    })
                 analyses.append(result)
             else:
                 analyze_errors.append(f"{ticker}=분석결과없음")
