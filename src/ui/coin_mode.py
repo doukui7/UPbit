@@ -2314,6 +2314,12 @@ def render_coin_mode(config, save_config):
             _krw_bal = float(_bals.get("KRW", 0))
             _bc_time = _bc.get("updated_at", "N/A")
 
+            # 코인별 weight 합산 (비례 분할용)
+            _coin_wt_sum = {}
+            for _pi in portfolio_list:
+                _sym = _pi['coin'].upper()
+                _coin_wt_sum[_sym] = _coin_wt_sum.get(_sym, 0) + float(_pi.get('weight', 0))
+
             # 포트폴리오 정보 사전 계산
             _port_info = []
             _total_coin_v = 0
@@ -2385,13 +2391,16 @@ def render_coin_mode(config, save_config):
                     # 보충 매수/매도 (분석 실행 전략 + interval 스킵 전략 모두)
                     if _tu_on:
                         _target_v = _total_pv * (_p["weight"] / 100) if _total_pv > 0 else 0
+                        # 같은 코인에 여러 전략 → weight 비례로 보유가치 분할
+                        _cw_total = _coin_wt_sum.get(_p["coin_sym"], _p["weight"])
+                        _my_hold = _p["coin_v"] * (_p["weight"] / _cw_total) if _cw_total > 0 else 0
                         if _p["maint"] == "BUY":
-                            _need = _target_v - _p["coin_v"]
+                            _need = _target_v - _my_hold
                             if _need >= 5000:
                                 _buy_amt = min(_tu_buy, _need)
-                                _actions.append(f"보충매수 ~{_buy_amt:,.0f}원")
+                                _actions.append(f"보충매수 ~{_buy_amt:,.0f}원 (부족 {_need:,.0f}원)")
                             else:
-                                _actions.append("보충매수 불필요(목표충족)")
+                                _actions.append(f"보충매수 불필요(목표충족, 보유{_my_hold:,.0f}/목표{_target_v:,.0f})")
                         elif _p["maint"] == "SELL" and _p["coin_v"] >= 5000:
                             _sell_amt = min(_tu_sell, _p["coin_v"])
                             _actions.append(f"보충매도 ~{_sell_amt:,.0f}원")

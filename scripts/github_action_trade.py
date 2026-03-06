@@ -1621,19 +1621,15 @@ def run_auto_trade():
         ticker = str(a.get("ticker", ""))
 
         if sig == "HOLD":
-            # HOLD 신호여도 실제 포지션과 이전 상태가 다르면 동기화
-            # 예: prev=None이고 position_state=BUY이면 → BUY 보유 중임을 저장
-            # 예: prev=None이고 position_state=SELL이고 미보유면 → SELL 저장
-            if prev == "-" and pos_state in ("BUY", "SELL"):
-                # 최초 실행인데 HOLD 신호인 경우 현재 포지션으로 상태 초기화
-                if pos_state == "BUY" and bool(a.get("is_holding")):
+            # HOLD 신호: 이전 상태 없으면 보유 여부 기반으로 초기화
+            if prev == "-":
+                # 최초 실행 — 실제 보유 여부로 상태 결정
+                if bool(a.get("is_holding")):
                     next_signal_state[key] = "BUY"
-                    logger.info(f"[{ticker}] 상태초기화(최초): BUY (현재 보유 중, HOLD 신호)")
-                elif pos_state == "SELL" and not bool(a.get("is_holding")):
-                    next_signal_state[key] = "SELL"
-                    logger.info(f"[{ticker}] 상태초기화(최초): SELL (미보유, HOLD 신호)")
+                    logger.info(f"[{ticker}] 상태초기화(최초): BUY (보유 중, pos={pos_state})")
                 else:
-                    logger.info(f"[{ticker}] 상태미기록(최초HOLD): pos={pos_state}, holding={a.get('is_holding')}")
+                    next_signal_state[key] = "SELL"
+                    logger.info(f"[{ticker}] 상태초기화(최초): SELL (미보유, pos={pos_state})")
             continue
 
         if sig == "SELL":

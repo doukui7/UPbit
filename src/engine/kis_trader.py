@@ -1131,7 +1131,13 @@ class KISTrader:
 
         limit_price = self._get_limit_price(stock_code, "BUY")
         if limit_price <= 0:
-            return {"success": False, "msg": "?꾩옱媛 議고쉶 ?ㅽ뙣"}
+            # 현재가 조회 실패 → 시간외 종가(ord_dvsn="06") 직접 시도
+            logger.warning(f"[동시호가 매수] 현재가 조회 실패 → 시간외 종가로 대체: {stock_code}")
+            fb = self.send_order("BUY", stock_code, qty, price=0, ord_dvsn="06")
+            fb_ok = isinstance(fb, dict) and fb.get("success", False)
+            return {"success": fb_ok, "phase1_result": None, "phase2_result": fb,
+                    "filled_qty": qty if fb_ok else 0, "remaining_qty": 0 if fb_ok else qty,
+                    "method": "price_fail_after_hours", "msg": str(fb)}
 
         logger.info(f"[동시호가 매수] {stock_code} {qty}주 @ 상한가 {limit_price:,}원")
         phase1 = self.send_order("BUY", stock_code, qty, price=limit_price, ord_dvsn="00")
@@ -1196,7 +1202,13 @@ class KISTrader:
 
         limit_price = self._get_limit_price(stock_code, "SELL")
         if limit_price <= 0:
-            return {"success": False, "msg": "?꾩옱媛 議고쉶 ?ㅽ뙣"}
+            # 현재가 조회 실패 → 시간외 종가(ord_dvsn="06") 직접 시도
+            logger.warning(f"[동시호가 매도] 현재가 조회 실패 → 시간외 종가로 대체: {stock_code}")
+            fb = self.send_order("SELL", stock_code, qty, price=0, ord_dvsn="06")
+            fb_ok = isinstance(fb, dict) and fb.get("success", False)
+            return {"success": fb_ok, "phase1_result": None, "phase2_result": fb,
+                    "filled_qty": qty if fb_ok else 0, "remaining_qty": 0 if fb_ok else qty,
+                    "method": "price_fail_after_hours", "msg": str(fb)}
 
         logger.info(f"[동시호가 매도] {stock_code} {qty}주 @ 하한가 {limit_price:,}원")
         phase1 = self.send_order("SELL", stock_code, qty, price=limit_price, ord_dvsn="00")
