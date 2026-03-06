@@ -13,6 +13,8 @@ from src.trading.upbit_trader import UpbitTrader
 from src.strategy.sma import SMAStrategy
 from src.strategy.donchian import DonchianStrategy
 import src.engine.data_cache as data_cache
+
+_COIN_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.ui.components.performance import render_performance_table, _render_performance_analysis, _apply_return_hover_format, _apply_dd_hover_format
 from src.ui.components.triggers import render_strategy_trigger_tab
 
@@ -2466,16 +2468,16 @@ def render_coin_mode(config, save_config):
             st.subheader("VM 매매 로그")
 
             # trade_log.json sync from GitHub
-            _tl_path = os.path.join(PROJECT_ROOT, "trade_log.json")
+            _tl_path = os.path.join(_COIN_PROJECT_ROOT, "trade_log.json")
             if st.button("동기화", key="tl_sync"):
                 try:
                     subprocess.run(
                         ["git", "fetch", "origin", "--quiet"],
-                        cwd=PROJECT_ROOT, capture_output=True, timeout=10,
+                        cwd=_COIN_PROJECT_ROOT, capture_output=True, timeout=10,
                     )
                     subprocess.run(
                         ["git", "checkout", "origin/master", "--", "trade_log.json"],
-                        cwd=PROJECT_ROOT, capture_output=True, timeout=5,
+                        cwd=_COIN_PROJECT_ROOT, capture_output=True, timeout=5,
                     )
                     st.toast("동기화 완료")
                 except Exception:

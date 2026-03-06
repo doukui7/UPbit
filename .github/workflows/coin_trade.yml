@@ -27,7 +27,7 @@ permissions:
 jobs:
   # ── 업비트 BTC 자동매매 (VM SSH 경유 - 고정 IP) ──
   trade:
-    if: github.event.inputs.run_job == 'trade'
+    if: (github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'trade') || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
