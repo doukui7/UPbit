@@ -1164,7 +1164,12 @@ def run_auto_trade():
                 result['signal'] = _determine_signal(result['position_state'], prev)
                 result['prev_state'] = prev
                 result['signal_key'] = key
-                logger.info(f"[{ticker}] 전환감지: prev={prev} → state={result['position_state']} → signal={result['signal']}")
+                # Donchian HOLD 해소: 채널 중립구간이면 이전 유지 상태로 치환
+                # (보충 매수/매도 등에서 유지 포지션 판별용)
+                raw_pos = result['position_state']
+                if result['position_state'] == 'HOLD' and prev in ('BUY', 'SELL'):
+                    result['position_state'] = prev
+                logger.info(f"[{ticker}] 전환감지: prev={prev} → raw={raw_pos} → state={result['position_state']} → signal={result['signal']}")
                 # 시그널 전환 발생 시 trade_log에 기록
                 if result['signal'] in ('BUY', 'SELL'):
                     _append_trade_log({
@@ -1488,6 +1493,109 @@ def run_auto_trade():
                     "qty": f"{sell_qty:.8g}", "strategy": a.get('strategy_label', ''),
                     "result": "error", "detail": str(e)[:200],
                 })
+        # ── 보충 매수/매도 (interval 스킵된 전략) ──
+        # day 전략은 09시만 분석하지만, 보충 매수/매도는 매 실행마다 체크
+        if skipped_by_interval:
+            logger.info(f"interval 스킵 전략 보충 체크: {len(skipped_by_interval)}건")
+            for skip_ticker, skip_iv in skipped_by_interval:
+                skip_item = next(
+                    (p for p in portfolio
+                     if f"{p.get('market','KRW')}-{p['coin'].upper()}" == skip_ticker
+                     and _normalize_coin_interval(p.get('interval', 'day')) == skip_iv),
+                    None,
+                )
+                if not skip_item:
+                    continue
+                skip_key = _make_signal_key(skip_item)
+                maint_state = signal_state.get(skip_key)
+                if not maint_state or maint_state not in ('BUY', 'SELL'):
+                    continue
+                skip_coin = skip_item['coin'].upper()
+                skip_weight = float(skip_item.get('weight', 0))
+                skip_label = f"{skip_item.get('strategy','SMA')}({skip_item.get('parameter',20)}, {skip_iv})"
+
+                # 잔고 조회
+                try:
+                    skip_bal = float(trader.get_balance(skip_coin) or 0.0)
+                except Exception:
+                    skip_bal = 0.0
+                skip_price = _get_upbit_price_local_first(skip_ticker)
+                skip_val = skip_bal * float(skip_price or 0)
+                skip_holding = skip_val >= MIN_ORDER_KRW
+
+                if maint_state == 'BUY' and skip_coin not in topup_done:
+                    # 보충 매수
+                    target_v = total_portfolio_value * (skip_weight / 100)
+                    cw = coin_weight_sum.get(skip_coin, skip_weight)
+                    my_hold = skip_val * (skip_weight / cw) if cw > 0 else 0
+                    need_v = target_v - my_hold
+                    if need_v >= MIN_ORDER_KRW:
+                        buy_b = min(topup_buy_amount, need_v, krw_balance) * 0.999
+                        if buy_b >= MIN_ORDER_KRW * 0.999:
+                            logger.info(
+                                f"[{skip_ticker}] 보충매수(스킵전략 {skip_label}) {buy_b:,.0f} KRW | "
+                                f"목표={target_v:,.0f}, 보유={my_hold:,.0f}, 부족={need_v:,.0f}"
+                            )
+                            try:
+                                result = trader.adaptive_buy(skip_ticker, buy_b, interval=skip_iv)
+                                logger.info(f"[{skip_ticker}] 보충매수(스킵) Result: {result}")
+                                if isinstance(result, dict):
+                                    result = dict(result)
+                                else:
+                                    result = {"raw_result": result}
+                                result["_strategy_label"] = skip_label
+                                result["_topup"] = True
+                                exec_results.setdefault(skip_ticker, []).append(result)
+                                _append_trade_log({
+                                    "mode": "auto", "ticker": skip_ticker, "side": "BUY_TOPUP",
+                                    "amount": f"{buy_b:,.0f}", "strategy": skip_label,
+                                    "result": "success", "detail": str(result)[:200],
+                                })
+                                krw_balance -= buy_b
+                                topup_done.add(skip_coin)
+                            except Exception as e:
+                                logger.error(f"[{skip_ticker}] 보충매수(스킵) Error: {e}")
+                                _append_trade_log({
+                                    "mode": "auto", "ticker": skip_ticker, "side": "BUY_TOPUP",
+                                    "amount": f"{buy_b:,.0f}", "strategy": skip_label,
+                                    "result": "error", "detail": str(e)[:200],
+                                })
+
+                elif maint_state == 'SELL' and skip_holding and skip_coin not in topup_sold:
+                    # 보충 매도
+                    if skip_price and skip_price > 0:
+                        sell_krw = min(topup_sell_amount, skip_val)
+                        sell_qty = sell_krw / skip_price
+                        sell_qty = min(sell_qty, skip_bal)
+                        act_val = sell_qty * skip_price
+                        if act_val >= MIN_ORDER_KRW:
+                            logger.info(
+                                f"[{skip_ticker}] 보충매도(스킵전략 {skip_label}) {sell_qty:.8g} {skip_coin} | "
+                                f"보유가치={skip_val:,.0f}"
+                            )
+                            try:
+                                result = trader.smart_sell(skip_ticker, sell_qty, interval=skip_iv)
+                                logger.info(f"[{skip_ticker}] 보충매도(스킵) Result: {result}")
+                                if isinstance(result, dict):
+                                    result = dict(result)
+                                else:
+                                    result = {"raw_result": result}
+                                result["_strategy_label"] = skip_label
+                                result["_topup"] = True
+                                exec_results.setdefault(skip_ticker, []).append(result)
+                                _append_trade_log({
+                                    "mode": "auto", "ticker": skip_ticker, "side": "SELL_TOPUP",
+                                    "qty": f"{sell_qty:.8g}", "strategy": skip_label,
+                                    "result": "success", "detail": str(result)[:200],
+                                })
+                                topup_sold.add(skip_coin)
+                            except Exception as e:
+                                logger.error(f"[{skip_ticker}] 보충매도(스킵) Error: {e}")
+                                _append_trade_log({
+                                    "mode": "auto", "ticker": skip_ticker, "side": "SELL_TOPUP",
+                                    "qty": f"{sell_qty:.8g}", "strategy": skip_label,
+                                    "result": "error", "detail": str(e)[:200],
+                                })
     else:
         logger.info("보충 매수/매도 비활성 (user_config.topup_enabled=false)")
 

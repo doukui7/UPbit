@@ -17,6 +17,7 @@ import src.engine.data_cache as data_cache
 _COIN_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.ui.components.performance import render_performance_table, _render_performance_analysis, _apply_return_hover_format, _apply_dd_hover_format
 from src.ui.components.triggers import render_strategy_trigger_tab
+from src.ui.components.ops_log import render_ops_log_tab
 
 def _load_balance_cache():
     """최근 잔고 캐시 파일(balance_cache.json) 로드."""
@@ -1025,7 +1026,7 @@ def render_coin_mode(config, save_config):
     _render_live_ticker()
 
     # --- Tabs ---
-    tab1, tab5, tab3, tab4, tab6 = st.tabs(["🚀 실시간 포트폴리오", "🛒 수동 주문", "📜 거래 내역", "📊 백테스트", "⏰ 트리거"])
+    tab1, tab5, tab3, tab4, tab6, tab7 = st.tabs(["🚀 실시간 포트폴리오", "🛒 수동 주문", "📜 거래 내역", "📊 백테스트", "⏰ 트리거", "📝 운영 로그"])
 
     # --- Tab 1: Live Portfolio (Default) ---
     with tab1:
@@ -2278,6 +2279,104 @@ def render_coin_mode(config, save_config):
             except Exception as _ge:
                 st.warning(f"설정 저장됨 (Git 푸시 실패: {_ge})")
             st.rerun()
+
+        # ── 다음 VM 실행 예약정보 ──
+        st.divider()
+        st.markdown("**다음 VM 실행 예약**")
+        try:
+            from datetime import timezone as _tz
+            _kst = _tz(timedelta(hours=9))
+            _now_kst = datetime.now(_kst)
+            # cron: KST 01:10/05:10/09:10/13:10/17:10/21:10
+            _sched_hours = [1, 5, 9, 13, 17, 21]
+            _next_dt = None
+            for _h in _sched_hours:
+                _cand = _now_kst.replace(hour=_h, minute=10, second=0, microsecond=0)
+                if _cand > _now_kst:
+                    _next_dt = _cand
+                    break
+            if _next_dt is None:
+                _next_dt = (_now_kst + timedelta(days=1)).replace(hour=1, minute=10, second=0, microsecond=0)
+            _remain = _next_dt - _now_kst
+            _remain_str = f"{int(_remain.total_seconds() // 3600)}시간 {int((_remain.total_seconds() % 3600) // 60)}분"
+
+            st.info(f"다음 실행: **{_next_dt.strftime('%Y-%m-%d %H:%M KST')}** ({_remain_str} 후)")
+
+            # signal_state 로드
+            _sig_file = os.path.join(_COIN_PROJECT_ROOT, "signal_state.json")
+            _sig_state = {}
+            if os.path.exists(_sig_file):
+                with open(_sig_file, "r", encoding="utf-8") as _sf:
+                    _sig_state = json.load(_sf)
+
+            # 잔고 캐시 로드
+            _bc = _load_balance_cache() or {}
+            _bals = _bc.get("balances", {})
+            _krw_bal = float(_bals.get("KRW", 0))
+            _bc_time = _bc.get("updated_at", "N/A")
+
+            # 포트폴리오 가치 추정
+            _total_coin_v = 0
+            _strat_rows = []
+            for _pi in portfolio_list:
+                _tk = f"{_pi.get('market','KRW')}-{_pi['coin'].upper()}"
+                _sym = _pi['coin'].upper()
+                _strat_name = _pi.get('strategy', 'SMA')
+                _param = _pi.get('parameter', 20)
+                _iv = _pi.get('interval', 'day')
+                _wt = float(_pi.get('weight', 0))
+                # signal key
+                _iv_norm = _iv
+                for _alias, _real in [("4h", "minute240"), ("1h", "minute60"), ("1d", "day")]:
+                    if _iv.lower() == _alias:
+                        _iv_norm = _real
+                _skey = f"{_tk}_{_strat_name}_{_param}_{_iv_norm}"
+                _maint = _sig_state.get(_skey, "?")
+
+                # 잔고
+                _coin_b = float(_bals.get(_sym, 0))
+                _prices = _bc.get("prices", {})
+                _coin_p = float(_prices.get(_tk, 0))
+                _coin_v = _coin_b * _coin_p
+                _total_coin_v += _coin_v
+
+                # 다음 실행 시 interval 매칭 여부
+                _next_h = _next_dt.hour
+                if _iv_norm == "day":
+                    _will_run = (_next_h == 9)
+                    _next_run_for = "09:10 KST" if not _will_run else "이번 실행"
+                else:
+                    _will_run = True
+                    _next_run_for = "이번 실행"
+
+                # 보충 매수/매도 예상
+                _action = "대기"
+                if _tu_on and _will_run:
+                    if _maint == "BUY":
+                        _action = f"보충매수 {_tu_buy:,}원" if _coin_v < (_krw_bal + _total_coin_v) * (_wt / 100) else "목표 충족"
+                    elif _maint == "SELL":
+                        _action = f"보충매도 {_tu_sell:,}원" if _coin_v >= 5000 else "잔량 없음"
+                elif not _will_run:
+                    _action = f"스킵(주기 미도래, 다음 {_next_run_for})"
+
+                _strat_rows.append({
+                    "전략": f"{_strat_name}({_param}, {_iv})",
+                    "유지상태": _maint,
+                    "실행여부": "실행" if _will_run else "스킵",
+                    "예상동작": _action,
+                })
+
+            if _strat_rows:
+                _sdf = pd.DataFrame(_strat_rows)
+                st.dataframe(_sdf, use_container_width=True, hide_index=True)
+
+            _total_pv = _krw_bal + _total_coin_v
+            st.caption(
+                f"잔고 KRW {_krw_bal:,.0f}원 | 코인 {_total_coin_v:,.0f}원 | "
+                f"총 {_total_pv:,.0f}원 (캐시: {_bc_time})"
+            )
+        except Exception as _ve_err:
+            st.warning(f"예약정보 로드 실패: {_ve_err}")
 
     # --- Tab 3: History ---
     with tab3:
@@ -4472,4 +4571,6 @@ def render_coin_mode(config, save_config):
                     else:
                         st.warning("결과가 없습니다. 데이터 다운로드가 필요할 수 있습니다.")
 
-
+    # --- Tab 7: 운영 로그 ---
+    with tab7:
+        render_ops_log_tab()
