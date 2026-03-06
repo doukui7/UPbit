@@ -1,0 +1,12 @@
+[
+  {
+    "mode": "auto",
+    "ticker": "KRW-BTC",
+    "side": "BUY",
+    "amount": "11,241",
+    "strategy": "SMA(29, 1D)",
+    "result": "success",
+    "detail": "{'type': 'buy_adaptive', 'ticker': 'KRW-BTC', 'filled_volume': 0.00010821, 'avg_price': 103867499.30690324, 'total_krw': 11239.5021, 'logs': [{'iter': 1, 'slippage': np.float64(-1.4614610814812004), '",
+    "time": "2026-03-06 09:02:19 KST"
+  }
+]
