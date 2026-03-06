@@ -256,11 +256,13 @@ def _state_to_position_label(state):
     s = str(state or "").upper()
     if s == "BUY":
         return "보유"
+    if s == "HOLD":
+        return "보유"  # 돈치안 HOLD = 매수 후 채널 내부 유지
     if s == "SELL":
         return "현금"
     if s == "UNKNOWN":
         return "미확인"
-    return "중립"
+    return "현금"
 
 def render_coin_mode(config, save_config):
     from src.utils.helpers import load_mode_config, save_mode_config
