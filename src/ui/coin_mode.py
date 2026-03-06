@@ -2255,7 +2255,19 @@ def render_coin_mode(config, save_config):
             new_cfg["topup_buy_amount"] = _tu_buy
             new_cfg["topup_sell_amount"] = _tu_sell
             save_config(new_cfg)
-            st.success("보충 매수/매도 설정 저장됨")
+            # VM에 반영되도록 자동 커밋+푸시
+            import subprocess as _sp
+            _proj = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            try:
+                _sp.run(["git", "add", "user_config.json"], cwd=_proj, capture_output=True, timeout=10)
+                _sp.run(
+                    ["git", "commit", "-m", "auto: 보충 매수/매도 설정 변경"],
+                    cwd=_proj, capture_output=True, timeout=10,
+                )
+                _sp.run(["git", "push"], cwd=_proj, capture_output=True, timeout=30)
+                st.success("보충 설정 저장 + Git 푸시 완료")
+            except Exception as _ge:
+                st.warning(f"설정 저장됨 (Git 푸시 실패: {_ge})")
             st.rerun()
 
     # --- Tab 3: History ---
