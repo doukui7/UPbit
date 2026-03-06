@@ -95,6 +95,76 @@ def _update_pen_order_status(order_id: str, status: str, result: str = ""):
     _save_pen_orders(orders)
 
 
+def _execute_pending_pen_orders(trader) -> list[str]:
+    """예정 시간이 지난 대기 주문을 실행하고 상태를 업데이트한다."""
+    orders = _load_pen_orders()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    results = []
+    changed = False
+
+    for o in orders:
+        if o.get("status") != "대기":
+            continue
+        sched = o.get("scheduled_kst", "")
+        if not sched or sched > now_str:
+            continue
+
+        code = str(o.get("etf_code", "")).strip()
+        side = o.get("side", "")
+        qty = int(o.get("qty", 0))
+        method = o.get("method", "")
+        oid = o.get("id", "")
+
+        if qty <= 0 or not code:
+            o["status"] = "실패"
+            o["result"] = "수량 또는 ETF코드 누락"
+            o["executed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            changed = True
+            results.append(f"{oid}: 실패 (수량/코드 누락)")
+            continue
+
+        try:
+            res = None
+            if "동시호가" in method:
+                if "매수" in side:
+                    res = trader.execute_closing_auction_buy(code, qty)
+                else:
+                    res = trader.execute_closing_auction_sell(code, qty)
+            elif "시간외" in method:
+                ord_side = "BUY" if "매수" in side else "SELL"
+                res = trader.send_order(ord_side, code, qty, price=0, ord_dvsn="06")
+            elif "시장가" in method:
+                if "매수" in side:
+                    res = trader.smart_buy_krw(code, float(o.get("price", 0)) or 0)
+                else:
+                    res = trader.smart_sell_all(code)
+            else:
+                # 지정가 fallback
+                price = int(o.get("price", 0))
+                ord_side = "BUY" if "매수" in side else "SELL"
+                if price > 0:
+                    res = trader.send_order(ord_side, code, qty, price=price, ord_dvsn="00")
+                else:
+                    res = {"success": False, "msg": "지정가 0"}
+
+            success = isinstance(res, dict) and res.get("success", False)
+            o["status"] = "완료" if success else "실패"
+            o["result"] = str(res)[:200] if res else "응답 없음"
+            o["executed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            changed = True
+            results.append(f"{oid}: {'완료' if success else '실패'}")
+        except Exception as e:
+            o["status"] = "실패"
+            o["result"] = str(e)[:200]
+            o["executed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            changed = True
+            results.append(f"{oid}: 실패 ({e})")
+
+    if changed:
+        _save_pen_orders(orders)
+    return results
+
+
 def _sidebar_etf_code_input(title: str, code_value: str, key: str, disabled: bool = False) -> str:
     code = _code_only(code_value)
     if not st.session_state.get("_etf_code_input_css_loaded", False):
@@ -701,6 +771,17 @@ def render_kis_pension_mode(config, save_config):
         _new_tok = {"token": trader.access_token, "expiry": trader.token_expiry}
         st.session_state[_pen_token_key] = _new_tok
         st.session_state[_kis_shared_token_key] = _new_tok
+
+    # ── 예약 주문 자동 실행 (예정 시간 지난 대기 건) ──
+    _pen_exec_key = "_pen_orders_last_check"
+    _pen_last_check = st.session_state.get(_pen_exec_key, "")
+    _pen_now_min = datetime.now().strftime("%Y-%m-%d %H:%M")
+    if _pen_last_check != _pen_now_min:
+        st.session_state[_pen_exec_key] = _pen_now_min
+        _exec_results = _execute_pending_pen_orders(trader)
+        if _exec_results:
+            for _er in _exec_results:
+                st.toast(_er)
 
     pen_bal_key = f"pension_balance_cache_{kis_acct}_{kis_prdt}"
     pen_bal_ts_key = f"pension_balance_cache_ts_{kis_acct}_{kis_prdt}"
