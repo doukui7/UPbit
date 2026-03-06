@@ -1377,8 +1377,16 @@ def render_coin_mode(config, save_config):
                                         sig_color = "red"
                                     else:
                                         sig_color = "gray"
+                                    # 돈치안: 보유→매도이격도, 미보유→매수이격도 표시
+                                    if strategy_name.startswith("donchian"):
+                                        if effective_state in ("BUY", "HOLD"):
+                                            _chart_dist = f"매도이격:{sell_dist:+.1f}%"
+                                        else:
+                                            _chart_dist = f"매수이격:{buy_dist:+.1f}%"
+                                    else:
+                                        _chart_dist = f"{buy_dist:+.1f}%"
                                     fig_m.update_layout(
-                                        title=f"{p_ticker.replace('KRW-','')} {p_strategy}{p_param} ({iv_label}) [{position_label}] [실행:{exec_signal}] [{buy_dist:+.1f}%]",
+                                        title=f"{p_ticker.replace('KRW-','')} {p_strategy}{p_param} ({iv_label}) [{position_label}] [실행:{exec_signal}] [{_chart_dist}]",
                                         title_font_color=sig_color,
                                         height=300, margin=dict(l=0, r=0, t=35, b=30),
                                         xaxis_rangeslider_visible=False,
