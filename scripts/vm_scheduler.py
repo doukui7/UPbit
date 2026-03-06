@@ -36,12 +36,17 @@ STATE_FILE = LOG_DIR / "vm_scheduler_state.json"
 LOCK_FILE = LOG_DIR / "vm_scheduler.lock"
 RESERVED_ORDER_FILE = LOG_DIR / "vm_reserved_orders.json"
 LEGACY_ONEOFF_FILE = LOG_DIR / "vm_oneoff_jobs.json"
+BALANCE_CACHE_FILE = REPO_DIR / "balance_cache.json"
 CHECK_INTERVAL_SEC = 5
 HEARTBEAT_INTERVAL_SEC = 30
+BALANCE_SYNC_INTERVAL_SEC = 30       # 잔고 조회 주기 (초)
+BALANCE_PUSH_INTERVAL_SEC = 10 * 60  # 잔고 git push 주기 (초)
 HEARTBEAT_EPOCH_KEY = "__heartbeat_epoch"
 HEARTBEAT_KST_KEY = "__heartbeat_kst"
 STARTED_AT_KEY = "__started_at_kst"
 LAST_ERROR_KEY = "__last_error"
+_LAST_BALANCE_SYNC = 0.0  # 마지막 잔고 조회 시각 (epoch)
+_LAST_BALANCE_PUSH = 0.0  # 마지막 잔고 push 시각 (epoch)
 
 
 def _is_weekday(dt: datetime) -> bool:
@@ -298,6 +303,135 @@ def _minute_key(dt: datetime) -> str:
     return dt.strftime("%Y%m%d%H%M")
 
 
+# ═══════════════════════════════════════════
+# 잔고 실시간 동기화 (30초마다 조회, 10분마다 push)
+# ═══════════════════════════════════════════
+def _sync_balance() -> bool:
+    """잔고+현재가 조회 후 balance_cache.json 로컬 저장. 성공 시 True."""
+    global _LAST_BALANCE_SYNC
+    now_epoch = time.time()
+    if (now_epoch - _LAST_BALANCE_SYNC) < BALANCE_SYNC_INTERVAL_SEC:
+        return False
+
+    _LAST_BALANCE_SYNC = now_epoch
+
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
+
+    ak = os.environ.get("UPBIT_ACCESS_KEY", "")
+    sk = os.environ.get("UPBIT_SECRET_KEY", "")
+    if not ak or not sk:
+        return False
+
+    try:
+        sys.path.insert(0, str(REPO_DIR))
+        from src.trading.upbit_trader import UpbitTrader
+        trader = UpbitTrader(ak, sk)
+        balances = trader.get_all_balances()
+        if not isinstance(balances, dict) or not balances:
+            return False
+
+        # 보유 코인 현재가 조회
+        prices = {}
+        for sym in list(balances.keys()):
+            if sym == "KRW":
+                continue
+            ticker = f"KRW-{sym}"
+            try:
+                p = float(trader.get_current_price(ticker) or 0)
+                if p > 0:
+                    prices[ticker] = p
+            except Exception:
+                pass
+
+        now_kst = _now_kst()
+        cache = {
+            "updated_at": now_kst.strftime("%Y-%m-%d %H:%M:%S KST"),
+            "balances": {str(k): float(v) for k, v in balances.items()},
+        }
+        if prices:
+            cache["prices"] = prices
+
+        BALANCE_CACHE_FILE.write_text(
+            json.dumps(cache, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return True
+    except Exception as e:
+        logging.warning("잔고 동기화 실패: %s", e)
+        return False
+
+
+def _push_balance_cache() -> bool:
+    """balance_cache.json을 git commit+push. 성공 시 True."""
+    global _LAST_BALANCE_PUSH
+    now_epoch = time.time()
+    if (now_epoch - _LAST_BALANCE_PUSH) < BALANCE_PUSH_INTERVAL_SEC:
+        return False
+
+    _LAST_BALANCE_PUSH = now_epoch
+
+    if not BALANCE_CACHE_FILE.exists():
+        return False
+
+    try:
+        subprocess.run(
+            ["git", "remote", "set-url", "origin",
+             "git@github.com:doukui7/UPbit.git"],
+            cwd=str(REPO_DIR), capture_output=True, timeout=5,
+        )
+        subprocess.run(
+            ["git", "add", "-f", "balance_cache.json"],
+            cwd=str(REPO_DIR), capture_output=True, timeout=5,
+        )
+        diff = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            cwd=str(REPO_DIR), capture_output=True, timeout=5,
+        )
+        if diff.returncode == 0:
+            # 변경 없음
+            subprocess.run(
+                ["git", "remote", "set-url", "origin",
+                 "https://github.com/doukui7/UPbit.git"],
+                cwd=str(REPO_DIR), capture_output=True, timeout=5,
+            )
+            return False
+
+        subprocess.run(
+            ["git", "-c", "user.name=auto-trade-bot",
+             "-c", "user.email=bot@auto-trade",
+             "commit", "-m", "auto: 잔고 캐시 동기화"],
+            cwd=str(REPO_DIR), capture_output=True, timeout=10,
+        )
+        push_res = subprocess.run(
+            ["git", "push", "origin", "master"],
+            cwd=str(REPO_DIR), capture_output=True, timeout=30,
+        )
+        subprocess.run(
+            ["git", "remote", "set-url", "origin",
+             "https://github.com/doukui7/UPbit.git"],
+            cwd=str(REPO_DIR), capture_output=True, timeout=5,
+        )
+        if push_res.returncode == 0:
+            logging.info("잔고 캐시 push 완료")
+            return True
+        else:
+            logging.warning("잔고 캐시 push 실패: %s", push_res.stderr[:200] if push_res.stderr else "")
+            return False
+    except Exception as e:
+        logging.warning("잔고 캐시 push 예외: %s", e)
+        # remote URL 복원
+        subprocess.run(
+            ["git", "remote", "set-url", "origin",
+             "https://github.com/doukui7/UPbit.git"],
+            cwd=str(REPO_DIR), capture_output=True, timeout=5,
+        )
+        return False
+
+
 def _touch_heartbeat(state: dict[str, str], now: datetime, *, force: bool = False) -> bool:
     """
     상태 파일에 heartbeat를 기록한다.
@@ -332,16 +466,22 @@ def main() -> int:
         "스케줄: upbit[01/05/09/13/17/21:00], health[+5m], daily[평일09:00], "
         "gold[평일15:05], isa[금15:10], pension[25~31평일15:20], oneoff[vm_reserved_orders.json]"
     )
+    logging.info(
+        "잔고 동기화: 조회=%ds, push=%ds (다른 작업 실행 중에는 건너뜀)",
+        BALANCE_SYNC_INTERVAL_SEC, BALANCE_PUSH_INTERVAL_SEC,
+    )
 
     try:
         while RUNNING:
             now = _now_kst()
             mk = _minute_key(now)
             state_dirty = False
+            has_heavy_job = False
 
             try:
                 if _run_due_oneoff_jobs(now, state):
                     state_dirty = True
+                    has_heavy_job = True
                     if LAST_ERROR_KEY in state:
                         state.pop(LAST_ERROR_KEY, None)
 
@@ -353,6 +493,7 @@ def main() -> int:
                     _run_mode(rule.mode, rule.label)
                     state[rule.mode] = mk
                     state_dirty = True
+                    has_heavy_job = True
                     if LAST_ERROR_KEY in state:
                         state.pop(LAST_ERROR_KEY, None)
             except Exception as e:
@@ -360,6 +501,14 @@ def main() -> int:
                 logging.exception("스케줄 루프 예외: %s", e)
                 state[LAST_ERROR_KEY] = f"{now.strftime('%Y-%m-%d %H:%M:%S')} | {type(e).__name__}: {e}"
                 state_dirty = True
+
+            # ── 잔고 실시간 동기화 (다른 작업이 없을 때) ──
+            if not has_heavy_job:
+                try:
+                    _sync_balance()
+                    _push_balance_cache()
+                except Exception as e:
+                    logging.debug("잔고 동기화 예외 (무시): %s", e)
 
             if _touch_heartbeat(state, now, force=state_dirty):
                 state_dirty = True
