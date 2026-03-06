@@ -127,6 +127,17 @@ def render_strategy_trigger_tab(mode: str, coin_portfolio: list | None = None):
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         else:
             st.info("등록된 코인 전략이 없습니다.")
+
+        with st.expander("VM 스케줄러 안내", expanded=False):
+            st.markdown(
+                "- **VM 스케줄러**: 5초 간격 루프로 코인/골드/ISA/연금저축 자동매매 실행\n"
+                "- **잔고 자동 조회**: 30초마다 업비트 API로 잔고+현재가 조회\n"
+                "- **GitHub Push**: 10분마다 balance_cache.json을 자동 커밋+푸시\n"
+                "- **재시작 방법**: 운영 로그 > 시스템 상태 탭에서 재시작 버튼 클릭\n"
+                "  또는 GH Actions > VM Scheduler > Run workflow > `vm_scheduler_start`\n"
+                "- **코드 변경 후 반드시 재시작 필요** (최신 로직 반영)"
+            )
+
         _render_coin_logic_guide()
         st.divider()
         _render_trade_log()

@@ -550,6 +550,78 @@ def _render_system_status():
     else:
         st.warning("signal_state.json 없음")
 
+    # ── VM 스케줄러 제어 ──
+    st.markdown("#### VM 스케줄러 관리")
+    st.caption(
+        "VM 스케줄러는 5초 간격 루프로 동작하며, 코인/골드/ISA/연금저축 자동매매 + "
+        "잔고 30초 자동 조회 + 10분마다 GitHub push를 수행합니다. "
+        "코드 변경 후 **재시작**해야 최신 로직이 반영됩니다."
+    )
+    _sc1, _sc2, _sc3, _sc4 = st.columns(4)
+    with _sc1:
+        if st.button("재시작", key="ops_vm_restart", type="primary"):
+            with st.spinner("VM 스케줄러 재시작 중 (stop → start)..."):
+                # stop
+                r1 = _run_gh(["workflow", "run", "vm_scheduler.yml",
+                              "-f", "run_job=vm_scheduler_stop"], timeout=15)
+                import time as _time
+                _time.sleep(15)
+                # start
+                r2 = _run_gh(["workflow", "run", "vm_scheduler.yml",
+                              "-f", "run_job=vm_scheduler_start"], timeout=15)
+                if r2 is not None or r1 is not None:
+                    st.toast("재시작 트리거 완료 — GH Actions에서 실행 중 (약 30초 소요)")
+                else:
+                    st.toast("트리거 실패 — gh CLI 확인 필요")
+    with _sc2:
+        if st.button("상태 확인", key="ops_vm_status"):
+            out = _run_gh(["workflow", "run", "vm_scheduler.yml",
+                           "-f", "run_job=vm_scheduler_status"], timeout=15)
+            if out is not None:
+                st.toast("상태 확인 트리거 완료 — GH Actions 로그에서 결과 확인")
+            else:
+                st.toast("트리거 실패")
+    with _sc3:
+        if st.button("중지", key="ops_vm_stop"):
+            out = _run_gh(["workflow", "run", "vm_scheduler.yml",
+                           "-f", "run_job=vm_scheduler_stop"], timeout=15)
+            if out is not None:
+                st.toast("중지 트리거 완료")
+            else:
+                st.toast("트리거 실패")
+    with _sc4:
+        if st.button("시작", key="ops_vm_start"):
+            out = _run_gh(["workflow", "run", "vm_scheduler.yml",
+                           "-f", "run_job=vm_scheduler_start"], timeout=15)
+            if out is not None:
+                st.toast("시작 트리거 완료")
+            else:
+                st.toast("트리거 실패")
+
+    # VM Scheduler 최근 실행 내역
+    _vm_runs_out = _run_gh([
+        "run", "list", "--workflow=vm_scheduler.yml", "--limit", "5",
+        "--json", "status,conclusion,createdAt,databaseId",
+    ])
+    if _vm_runs_out:
+        try:
+            _vm_runs = json.loads(_vm_runs_out)
+            _vm_rows = []
+            for _vr in _vm_runs:
+                _vt = _vr.get("createdAt", "")
+                if _vt:
+                    try:
+                        _vdt = datetime.fromisoformat(_vt.replace("Z", "+00:00"))
+                        _vt = _vdt.astimezone(_KST).strftime("%m-%d %H:%M")
+                    except Exception:
+                        _vt = _vt[:16]
+                _vc = _vr.get("conclusion") or _vr.get("status", "")
+                _vm_rows.append({"시간": _vt, "상태": _vc, "ID": _vr.get("databaseId", "")})
+            if _vm_rows:
+                st.dataframe(pd.DataFrame(_vm_rows), use_container_width=True, hide_index=True)
+        except Exception:
+            pass
+
     # ── trade_log 최근 5건 ──
     st.markdown("#### 최근 매매 로그 (5건)")
     tl = _load_json("trade_log.json")
