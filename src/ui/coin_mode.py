@@ -2287,11 +2287,11 @@ def render_coin_mode(config, save_config):
             from datetime import timezone as _tz
             _kst = _tz(timedelta(hours=9))
             _now_kst = datetime.now(_kst)
-            # cron: KST 01:10/05:10/09:10/13:10/17:10/21:10
+            # cron: KST 01:00/05:00/09:00/13:00/17:00/21:00
             _sched_hours = [1, 5, 9, 13, 17, 21]
             _next_dt = None
             for _h in _sched_hours:
-                _cand = _now_kst.replace(hour=_h, minute=10, second=0, microsecond=0)
+                _cand = _now_kst.replace(hour=_h, minute=0, second=0, microsecond=0)
                 if _cand > _now_kst:
                     _next_dt = _cand
                     break
