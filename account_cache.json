@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-03-06 12:41:38 KST",
+  "updated_at": "2026-03-06 14:14:04 KST",
   "balances": {
     "BTC": 0.00084792,
     "KRW": 11259.29910583
@@ -2994,5 +2994,6 @@
       "transaction_type": "default",
       "is_cancelable": false
     }
-  ]
+  ],
+  "pending_orders": []
 }
