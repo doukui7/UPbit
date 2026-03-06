@@ -77,6 +77,113 @@ def _sync_from_github() -> list[str]:
 # ═══════════════════════════════════════════
 # 서브탭 1: GH Actions 실행 내역
 # ═══════════════════════════════════════════
+def _get_failure_note(run_id) -> str:
+    """실패한 run의 실패 step 이름을 한글로 조회."""
+    out = _run_gh([
+        "run", "view", str(run_id),
+        "--json", "jobs",
+    ], timeout=10)
+    if not out:
+        return "로그 조회 실패"
+    try:
+        data = json.loads(out)
+        jobs = data.get("jobs", [])
+        for job in jobs:
+            if job.get("conclusion") != "failure":
+                continue
+            steps = job.get("steps", [])
+            for step in steps:
+                if step.get("conclusion") == "failure":
+                    name = step.get("name", "?")
+                    # 한글 변환
+                    if "SSH" in name or "Cloud VM" in name:
+                        return f"VM SSH 연결 실패 또는 타임아웃 ({name})"
+                    if "Sync" in name or "push" in name.lower():
+                        return f"동기화/Push 단계 실패 ({name})"
+                    if "Checkout" in name:
+                        return f"코드 체크아웃 실패 ({name})"
+                    return f"실패 단계: {name}"
+            return f"실패 job: {job.get('name', '?')}"
+    except Exception:
+        pass
+    return "원인 불명"
+
+
+def _analyze_success_run(run_kst_str: str, workflow: str) -> str:
+    """
+    성공한 run에서 실제 매매가 없었을 때 이유를 분석.
+    trade_log와 signal_state를 교차 확인.
+    """
+    if "Coin" not in workflow:
+        return ""  # 코인 외 워크플로우는 분석 생략
+
+    # trade_log에서 해당 시간대 기록 존재 확인
+    tl = _load_json("trade_log.json")
+    # run_kst_str: "03-06 21:39" 형태 → 날짜+시 추출
+    date_part = run_kst_str[:5]   # "03-06"
+    hour_part = run_kst_str[6:8]  # "21"
+
+    has_trade = False
+    trade_summary = ""
+    if isinstance(tl, list):
+        for e in tl:
+            t = e.get("time", "")
+            # "2026-03-06 09:02:19 KST" 형태
+            if f"-{date_part}" in t:
+                t_hour = t[11:13] if len(t) > 13 else ""
+                # ±1시간 범위로 매칭 (GH Actions 시작 ~ 실행 완료)
+                try:
+                    rh = int(hour_part)
+                    th = int(t_hour)
+                    if abs(rh - th) <= 1 or abs(rh - th) >= 23:
+                        has_trade = True
+                        side = {"BUY": "매수", "SELL": "매도",
+                                "BUY_TOPUP": "보충매수", "SELL_TOPUP": "보충매도"
+                                }.get(e.get("side", ""), e.get("side", ""))
+                        result = "성공" if e.get("result") == "success" else "실패"
+                        trade_summary += f"{side}({result}) "
+                except (ValueError, TypeError):
+                    pass
+
+    if has_trade:
+        return f"매매 실행됨: {trade_summary.strip()}"
+
+    # 매매 없음 → signal_state로 원인 분석
+    sig = _load_json("signal_state.json")
+    if not isinstance(sig, dict):
+        return "매매 없음 (signal_state 미확인)"
+
+    reasons = []
+    for key, val in sig.items():
+        if key.startswith("__"):
+            continue
+        if val == "BUY":
+            reasons.append(f"{key}: BUY 유지 → 전환 없어 매매 불필요")
+        elif val == "SELL":
+            reasons.append(f"{key}: SELL 유지 → 전환 없어 매매 불필요")
+        elif val == "HOLD":
+            reasons.append(f"{key}: HOLD → 돈치안 채널 내부, 매매 없음")
+
+    if reasons:
+        return "매매 없음 — " + "; ".join(reasons)
+    return "매매 없음 (시그널 전환 없음)"
+
+
+# 수동 기록: 특정 run ID에 대한 실패 원인 + 수정 내용 (한글)
+_MANUAL_NOTES: dict[int, str] = {
+    22763810376: (
+        "[실패 원인] VM SSH 타임아웃 — coin_trade.yml의 schedule 조건에 "
+        "'github.event_name == schedule' 누락으로 trade job이 아예 실행되지 않음.\n"
+        "[수정] schedule 조건 추가 (커밋 5779277)"
+    ),
+    22756233176: (
+        "[실패 원인] VM SSH 타임아웃 — 보충매수 로직에서 Donchian HOLD 상태를 "
+        "매수 대상으로 인식하지 못해 무한 대기.\n"
+        "[수정] HOLD 해소 로직 추가: prev state가 BUY면 보충매수 실행 (커밋 e5871ea)"
+    ),
+}
+
+
 def _render_gh_actions():
     st.subheader("GH Actions 실행 내역")
 
@@ -107,17 +214,30 @@ def _render_gh_actions():
     # 시간순 정렬 (최신 먼저)
     all_runs.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
 
+    # 실패 run의 원인 조회 (캐싱)
+    notes_cache = st.session_state.get("_ops_run_notes", {})
+    for r in all_runs:
+        run_id = r.get("databaseId")
+        if not run_id:
+            continue
+        conclusion = r.get("conclusion", "")
+        if run_id in _MANUAL_NOTES:
+            notes_cache[run_id] = _MANUAL_NOTES[run_id]
+        elif run_id not in notes_cache:
+            if conclusion == "failure":
+                notes_cache[run_id] = _get_failure_note(run_id)
+    st.session_state["_ops_run_notes"] = notes_cache
+
     rows = []
     for r in all_runs:
         updated = r.get("updatedAt", "")
+        kst_str = ""
         if updated:
             try:
                 dt = datetime.fromisoformat(updated.replace("Z", "+00:00"))
                 kst_str = dt.astimezone(_KST).strftime("%m-%d %H:%M")
             except Exception:
                 kst_str = updated[:16]
-        else:
-            kst_str = ""
 
         status = r.get("status", "")
         conclusion = r.get("conclusion", "")
@@ -126,12 +246,21 @@ def _render_gh_actions():
         else:
             state_str = status
 
+        run_id = r.get("databaseId", "")
+        wf_name = r.get("workflow", "")
+        note = notes_cache.get(run_id, "")
+
+        # 성공 run: 매매 여부 분석
+        if state_str == "success" and not note and kst_str:
+            note = _analyze_success_run(kst_str, wf_name)
+
         rows.append({
             "시간(KST)": kst_str,
-            "워크플로우": r.get("workflow", ""),
+            "워크플로우": wf_name,
             "이벤트": r.get("event", ""),
             "상태": state_str,
-            "ID": r.get("databaseId", ""),
+            "ID": run_id,
+            "비고": note,
         })
 
     df = pd.DataFrame(rows)
@@ -149,6 +278,44 @@ def _render_gh_actions():
         df.style.map(_color_state, subset=["상태"]),
         use_container_width=True, hide_index=True,
     )
+
+    # 상세 내역 expander
+    noted_rows = [r for r in rows if r["비고"]]
+    fail_rows = [r for r in rows if r["상태"] == "failure"]
+    no_trade_rows = [r for r in rows if r["상태"] == "success" and "매매 없음" in r.get("비고", "")]
+
+    if fail_rows:
+        with st.expander(f"실패 {len(fail_rows)}건 상세", expanded=True):
+            for fr in fail_rows:
+                st.markdown(f"**{fr['시간(KST)']} | {fr['워크플로우']}** (ID: {fr['ID']})")
+                note = fr.get("비고", "")
+                if note:
+                    # 수정 내용이 포함된 경우 분리 표시
+                    if "[수정]" in note:
+                        parts = note.split("[수정]")
+                        st.error(parts[0].strip())
+                        st.success(f"[수정] {parts[1].strip()}")
+                    else:
+                        st.error(note)
+                else:
+                    st.warning("원인 미확인 — 로그 직접 확인 필요")
+
+    if no_trade_rows:
+        with st.expander(f"성공했지만 매매 없음 {len(no_trade_rows)}건", expanded=False):
+            for nr in no_trade_rows:
+                st.markdown(f"**{nr['시간(KST)']} | {nr['워크플로우']}**")
+                note = nr.get("비고", "")
+                # 전략별 상태를 줄바꿈으로 표시
+                if ";" in note:
+                    parts = note.split("—", 1)
+                    st.caption(parts[0].strip())
+                    if len(parts) > 1:
+                        for reason in parts[1].split(";"):
+                            reason = reason.strip()
+                            if reason:
+                                st.caption(f"  • {reason}")
+                else:
+                    st.caption(note)
 
     # 요약 카드
     success_cnt = sum(1 for r in rows if r["상태"] == "success")

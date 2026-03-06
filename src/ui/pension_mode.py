@@ -466,14 +466,8 @@ def render_kis_pension_mode(config, save_config):
 
     # 현재 포트폴리오에 포함된 전략 목록(표시용)
     _active_strategies = list(_pen_port_edited["strategy"].unique()) if not _pen_port_edited.empty else []
-    # 자동 시그널 계산 대상: 비중이 0%를 초과하는 전략만
-    if not _pen_port_edited.empty:
-        _weighted_port = _pen_port_edited[
-            pd.to_numeric(_pen_port_edited["weight"], errors="coerce").fillna(0) > 0
-        ]
-        _auto_signal_strategies = list(_weighted_port["strategy"].unique()) if not _weighted_port.empty else []
-    else:
-        _auto_signal_strategies = []
+    # 자동 시그널 계산 대상: 모든 전략 (비중 0%라도 샘플 표시)
+    _auto_signal_strategies = list(_pen_port_edited["strategy"].unique()) if not _pen_port_edited.empty else []
 
     _panel_options = ["접기", "LAA 전략 설정", "듀얼모멘텀 설정", "VAA 전략 설정", "CDM 전략 설정"]
     

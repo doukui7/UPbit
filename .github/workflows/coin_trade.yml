@@ -83,7 +83,8 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "auto: trade 후 잔고/시그널 동기화"
-            git push
+            git pull --rebase origin master || true
+            git push || echo "WARN: push failed, will retry next run"
           fi
 
   # ── 업비트 수동주문 (전략 분석 없이 즉시 매수/매도) ──
@@ -141,7 +142,8 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "auto: 수동주문 후 잔고/시그널 동기화"
-            git push
+            git pull --rebase origin master || true
+            git push || echo "WARN: push failed, will retry next run"
           fi
 
   # ── 계좌 데이터 VM 경유 동기화 (잔고/체결/입출금) ──
@@ -198,7 +200,7 @@ jobs:
           scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/trade_log.json" ./trade_log.json || echo "WARN: trade_log.json not found"
           rm -f ~/.ssh/vm_key
 
-          # 변경사항 있으면 commit & push
+          # 변경사항 있으면 commit & push (충돌 방지: pull --rebase)
           git config user.name "auto-trade-bot"
           git config user.email "bot@auto-trade"
           git add account_cache.json balance_cache.json signal_state.json trade_log.json 2>/dev/null || true
@@ -206,5 +208,6 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "auto: 계좌 데이터 동기화"
-            git push
+            git pull --rebase origin master || true
+            git push || echo "WARN: push failed, will retry next run"
           fi
