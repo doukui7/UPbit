@@ -366,70 +366,10 @@ def _sync_balance() -> bool:
 
 
 def _push_balance_cache() -> bool:
-    """balance_cache.json을 git commit+push. 성공 시 True."""
-    global _LAST_BALANCE_PUSH
-    now_epoch = time.time()
-    if (now_epoch - _LAST_BALANCE_PUSH) < BALANCE_PUSH_INTERVAL_SEC:
-        return False
-
-    _LAST_BALANCE_PUSH = now_epoch
-
-    if not BALANCE_CACHE_FILE.exists():
-        return False
-
-    try:
-        subprocess.run(
-            ["git", "remote", "set-url", "origin",
-             "git@github.com:doukui7/UPbit.git"],
-            cwd=str(REPO_DIR), capture_output=True, timeout=5,
-        )
-        subprocess.run(
-            ["git", "add", "-f", "balance_cache.json"],
-            cwd=str(REPO_DIR), capture_output=True, timeout=5,
-        )
-        diff = subprocess.run(
-            ["git", "diff", "--cached", "--quiet"],
-            cwd=str(REPO_DIR), capture_output=True, timeout=5,
-        )
-        if diff.returncode == 0:
-            # 변경 없음
-            subprocess.run(
-                ["git", "remote", "set-url", "origin",
-                 "https://github.com/doukui7/UPbit.git"],
-                cwd=str(REPO_DIR), capture_output=True, timeout=5,
-            )
-            return False
-
-        subprocess.run(
-            ["git", "-c", "user.name=auto-trade-bot",
-             "-c", "user.email=bot@auto-trade",
-             "commit", "-m", "auto: 잔고 캐시 동기화"],
-            cwd=str(REPO_DIR), capture_output=True, timeout=10,
-        )
-        push_res = subprocess.run(
-            ["git", "push", "origin", "master"],
-            cwd=str(REPO_DIR), capture_output=True, timeout=30,
-        )
-        subprocess.run(
-            ["git", "remote", "set-url", "origin",
-             "https://github.com/doukui7/UPbit.git"],
-            cwd=str(REPO_DIR), capture_output=True, timeout=5,
-        )
-        if push_res.returncode == 0:
-            logging.info("잔고 캐시 push 완료")
-            return True
-        else:
-            logging.warning("잔고 캐시 push 실패: %s", push_res.stderr[:200] if push_res.stderr else "")
-            return False
-    except Exception as e:
-        logging.warning("잔고 캐시 push 예외: %s", e)
-        # remote URL 복원
-        subprocess.run(
-            ["git", "remote", "set-url", "origin",
-             "https://github.com/doukui7/UPbit.git"],
-            cwd=str(REPO_DIR), capture_output=True, timeout=5,
-        )
-        return False
+    """VM에서 직접 push 불가 (SSH key/PAT 없음).
+    push는 GH Actions vm_scheduler.yml ensure cron (5분)에서 SCP로 수행.
+    이 함수는 no-op으로 유지."""
+    return False
 
 
 def _touch_heartbeat(state: dict[str, str], now: datetime, *, force: bool = False) -> bool:
