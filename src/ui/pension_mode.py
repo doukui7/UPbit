@@ -1858,7 +1858,7 @@ def render_kis_pension_mode(config, save_config):
                     _total_sell_count += 1
                 else:
                     _order_status = "유지"
-                _row_data = {"ETF": info["ETF"], "현재수량(주)": _cur, "현재 비중(%)": round(_cur_weight, 2)}
+                _row_data = {"ETF": info["ETF"], "ETF코드": str(code), "현재수량(주)": _cur, "현재 비중(%)": round(_cur_weight, 2)}
                 for _col in _strat_col_map.values():
                     _row_data[_col] = info.get(_col, 0)
                 _row_data["합산 목표(주)"] = _total_target
@@ -1901,8 +1901,10 @@ def render_kis_pension_mode(config, save_config):
             _sm3.metric("매수 예정 종목", f"{_total_buy_count}개")
             _sm4.metric("매도 예정 종목", f"{_total_sell_count}개")
             st.dataframe(pd.DataFrame(_combo_list), use_container_width=True, hide_index=True)
+            st.session_state["pen_combined_rebal_data"] = _combo_list
         else:
             st.info("시그널 계산 결과가 없습니다. 잔고를 새로고침해주세요.")
+            st.session_state.pop("pen_combined_rebal_data", None)
 
         # ──────────────────────────────────────────────────────────
         # 섹션 3: 전략별 상세 하위탭
@@ -3010,6 +3012,117 @@ def render_kis_pension_mode(config, save_config):
             st.subheader("예약 주문 관리")
             st.caption("주문을 예약하고 이력을 영구 보관합니다. 실행된 주문도 삭제되지 않습니다.")
 
+            # ── 리밸런싱 주문 미리보기 ──
+            _combo_rebal = st.session_state.get("pen_combined_rebal_data")
+            if _combo_rebal:
+                _rebal_buy = [r for r in _combo_rebal if r.get("주문 상태") == "매수" and int(r.get("매수 예정(주)", 0)) > 0]
+                _rebal_sell = [r for r in _combo_rebal if r.get("주문 상태") == "매도" and int(r.get("매도 예정(주)", 0)) > 0]
+                _has_rebal = bool(_rebal_buy or _rebal_sell)
+
+                # 리밸런싱 예정일 계산
+                from datetime import date as _rb_date
+                import calendar as _rb_cal
+                _rb_today = _rb_date.today()
+                _rb_y, _rb_m = _rb_today.year, _rb_today.month
+                _rb_last = _rb_cal.monthrange(_rb_y, _rb_m)[1]
+                _rb_dt = _rb_date(_rb_y, _rb_m, _rb_last)
+                while _rb_dt.weekday() >= 5:
+                    _rb_dt -= timedelta(days=1)
+                _is_rebal_day = (_rb_today == _rb_dt)
+                _rb_days_left = (_rb_dt - _rb_today).days
+
+                if _has_rebal:
+                    _rb_title = "리밸런싱 주문 미리보기"
+                    if _is_rebal_day:
+                        _rb_title += " (오늘 리밸런싱일)"
+                    with st.expander(_rb_title, expanded=_is_rebal_day):
+                        if _is_rebal_day:
+                            st.success("오늘은 리밸런싱 예정일입니다. 아래 주문을 확인 후 일괄 예약 등록하세요.")
+                        else:
+                            st.info(f"다음 리밸런싱: {_rb_dt.strftime('%Y-%m-%d')} (D-{_rb_days_left})")
+
+                        # 매도 주문 먼저
+                        if _rebal_sell:
+                            st.markdown("**매도 예정**")
+                            _sell_rows = []
+                            for _rs in _rebal_sell:
+                                _sell_rows.append({
+                                    "ETF": _rs.get("ETF", ""),
+                                    "현재수량(주)": _rs.get("현재수량(주)", 0),
+                                    "합산 목표(주)": _rs.get("합산 목표(주)", 0),
+                                    "매도수량(주)": _rs.get("매도 예정(주)", 0),
+                                    "현재 비중(%)": _rs.get("현재 비중(%)", 0),
+                                    "목표 비중(%)": _rs.get("목표 비중(%)", 0),
+                                })
+                            st.dataframe(pd.DataFrame(_sell_rows), use_container_width=True, hide_index=True)
+
+                        # 매수 주문
+                        if _rebal_buy:
+                            st.markdown("**매수 예정**")
+                            _buy_rows = []
+                            for _rb in _rebal_buy:
+                                _buy_rows.append({
+                                    "ETF": _rb.get("ETF", ""),
+                                    "현재수량(주)": _rb.get("현재수량(주)", 0),
+                                    "합산 목표(주)": _rb.get("합산 목표(주)", 0),
+                                    "매수수량(주)": _rb.get("매수 예정(주)", 0),
+                                    "현재 비중(%)": _rb.get("현재 비중(%)", 0),
+                                    "목표 비중(%)": _rb.get("목표 비중(%)", 0),
+                                })
+                            st.dataframe(pd.DataFrame(_buy_rows), use_container_width=True, hide_index=True)
+
+                        # 일괄 예약 등록
+                        st.markdown("---")
+                        _rbc1, _rbc2 = st.columns(2)
+                        with _rbc1:
+                            _rb_method = st.selectbox(
+                                "주문 방식",
+                                ["동시호가 (장마감)", "시간외 종가", "시장가"],
+                                key="pen_rebal_bulk_method",
+                            )
+                        with _rbc2:
+                            _rb_exec_date = st.date_input("실행 예정일", value=_rb_dt, key="pen_rebal_bulk_date")
+
+                        if _rb_method == "동시호가 (장마감)":
+                            _rb_time = pd.Timestamp("15:20").time()
+                            st.caption("실행 시각: 15:20 (동시호가 고정)")
+                        elif _rb_method == "시간외 종가":
+                            _rb_time = pd.Timestamp("15:40").time()
+                            st.caption("실행 시각: 15:40 (시간외 종가 고정)")
+                        else:
+                            _rb_time = pd.Timestamp("15:10").time()
+
+                        if st.button("일괄 예약 등록", key="pen_rebal_bulk_register", type="primary"):
+                            _rb_sched = f"{_rb_exec_date.strftime('%Y-%m-%d')} {_rb_time.strftime('%H:%M')}"
+                            _rb_count = 0
+                            # 매도 먼저 등록
+                            for _rs in _rebal_sell:
+                                _etf_code = str(_rs.get("ETF코드", "")).strip()
+                                _qty = int(_rs.get("매도 예정(주)", 0))
+                                if _etf_code and _qty > 0:
+                                    _add_pen_order(
+                                        etf_code=_etf_code, side="매도", qty=_qty,
+                                        method=_rb_method, price=0,
+                                        scheduled_kst=_rb_sched, note="리밸런싱",
+                                    )
+                                    _rb_count += 1
+                            # 매수
+                            for _rb in _rebal_buy:
+                                _etf_code = str(_rb.get("ETF코드", "")).strip()
+                                _qty = int(_rb.get("매수 예정(주)", 0))
+                                if _etf_code and _qty > 0:
+                                    _add_pen_order(
+                                        etf_code=_etf_code, side="매수", qty=_qty,
+                                        method=_rb_method, price=0,
+                                        scheduled_kst=_rb_sched, note="리밸런싱",
+                                    )
+                                    _rb_count += 1
+                            if _rb_count > 0:
+                                st.success(f"리밸런싱 주문 {_rb_count}건 예약 등록 완료")
+                                st.rerun()
+                            else:
+                                st.warning("등록할 주문이 없습니다. (ETF 코드 매핑 확인 필요)")
+
             with st.expander("새 예약 주문 등록", expanded=False):
                 rc1, rc2, rc3 = st.columns(3)
                 with rc1:
@@ -3033,7 +3146,17 @@ def render_kis_pension_mode(config, save_config):
                     )
                 with rc6:
                     rsv_date = st.date_input("실행 예정일", key="pen_rsv_date")
-                    rsv_time = st.time_input("실행 예정 시각", value=pd.Timestamp("15:10").time(), key="pen_rsv_time")
+                    # 주문 방식에 따라 시간 자동 결정
+                    if rsv_method == "동시호가 (장마감)":
+                        rsv_time = pd.Timestamp("15:20").time()
+                        st.markdown("**실행 예정 시각**")
+                        st.info("15:20 (동시호가 고정)")
+                    elif rsv_method == "시간외 종가":
+                        rsv_time = pd.Timestamp("15:40").time()
+                        st.markdown("**실행 예정 시각**")
+                        st.info("15:40 (시간외 종가 고정)")
+                    else:
+                        rsv_time = st.time_input("실행 예정 시각", value=pd.Timestamp("15:10").time(), key="pen_rsv_time")
 
                 rsv_note = st.text_input("메모 (선택)", key="pen_rsv_note", placeholder="예: 채권 리밸런싱")
 
@@ -3084,50 +3207,11 @@ def render_kis_pension_mode(config, save_config):
                         label = f"{o.get('side','')} {_fmt_etf_code_name(o.get('etf_code',''))} {o.get('qty',0)}주 | {o.get('method','')} | 예정: {o.get('scheduled_kst','')}"
                         if o.get("note"):
                             label += f" | {o['note']}"
-
-                        ec1, ec2, ec3 = st.columns([5, 1, 1])
-                        with ec1:
-                            st.markdown(f"🟡 {label}")
-                        with ec2:
-                            if st.button("즉시 실행", key=f"pen_rsv_exec_{oid}", type="primary"):
-                                with st.spinner(f"{o.get('side','')} 주문 실행 중..."):
-                                    _exec_code = str(o.get("etf_code", ""))
-                                    _exec_qty = int(o.get("qty", 0))
-                                    _exec_method = str(o.get("method", ""))
-                                    _exec_price = int(o.get("price", 0))
-                                    _exec_side = str(o.get("side", ""))
-
-                                    if _exec_side == "매수":
-                                        if _exec_method == "동시호가 (장마감)":
-                                            result = trader.execute_closing_auction_buy(_exec_code, _exec_qty)
-                                        elif _exec_method == "지정가" and _exec_price > 0:
-                                            result = trader.send_order("BUY", _exec_code, _exec_qty, price=_exec_price, ord_dvsn="00")
-                                        elif _exec_method == "시간외 종가":
-                                            result = trader.send_order("BUY", _exec_code, _exec_qty, price=0, ord_dvsn="06")
-                                        else:
-                                            result = trader.send_order("BUY", _exec_code, _exec_qty, ord_dvsn="01")
-                                    else:
-                                        if _exec_method == "동시호가 (장마감)":
-                                            result = trader.smart_sell_qty_closing(_exec_code, _exec_qty)
-                                        elif _exec_method == "지정가" and _exec_price > 0:
-                                            result = trader.send_order("SELL", _exec_code, _exec_qty, price=_exec_price, ord_dvsn="00")
-                                        elif _exec_method == "시간외 종가":
-                                            result = trader.send_order("SELL", _exec_code, _exec_qty, price=0, ord_dvsn="06")
-                                        else:
-                                            result = trader.smart_sell_qty(_exec_code, _exec_qty)
-
-                                    if result and isinstance(result, dict) and result.get("success"):
-                                        _update_pen_order_status(oid, "완료", str(result))
-                                        st.success(f"주문 완료: {result}")
-                                        st.session_state[pen_bal_key] = trader.get_balance()
-                                    else:
-                                        _update_pen_order_status(oid, "실패", str(result))
-                                        st.error(f"주문 실패: {result}")
-                                st.rerun()
-                        with ec3:
-                            if st.button("취소", key=f"pen_rsv_cancel_{oid}"):
-                                _update_pen_order_status(oid, "취소")
-                                st.rerun()
+                        _pc1, _pc2 = st.columns([6, 1])
+                        _pc1.markdown(f"🟡 {label}")
+                        if _pc2.button("취소", key=f"pen_rsv_cancel_{oid}"):
+                            _update_pen_order_status(oid, "취소")
+                            st.rerun()
 
                 # ── 전체 이력 테이블 ──
                 with st.expander(f"주문 이력 ({len(pen_orders)}건)", expanded=bool(done_orders)):
