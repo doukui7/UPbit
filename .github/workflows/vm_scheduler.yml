@@ -108,7 +108,14 @@ jobs:
           script: |
             cd ~/upbit
             git remote set-url origin https://github.com/doukui7/UPbit.git 2>/dev/null || true
+            # 상태 파일 백업 (git reset 덮어쓰기 방지)
+            cp balance_cache.json /tmp/_bc_backup.json 2>/dev/null || true
+            cp signal_state.json /tmp/_ss_backup.json 2>/dev/null || true
+            cp trade_log.json /tmp/_tl_backup.json 2>/dev/null || true
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
+            cp /tmp/_bc_backup.json balance_cache.json 2>/dev/null || true
+            cp /tmp/_ss_backup.json signal_state.json 2>/dev/null || true
+            cp /tmp/_tl_backup.json trade_log.json 2>/dev/null || true
             {
               printf "UPBIT_ACCESS_KEY=%q\n" "${UPBIT_ACCESS_KEY}"
               printf "UPBIT_SECRET_KEY=%q\n" "${UPBIT_SECRET_KEY}"
