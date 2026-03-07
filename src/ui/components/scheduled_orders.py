@@ -210,88 +210,81 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
                 is_signal_skip = (iv_norm == "day" and sh != 9)
                 skip_note = " — 시그널 분석은 09시만" if is_signal_skip else ""
 
+                # ── 비중 / 보유 계산 ──
+                cw_total = coin_wt_sum.get(sym, wt)
+                sell_ratio = wt / cw_total if cw_total > 0 else 1
+                my_qty = coin_b * sell_ratio
+                my_val = my_qty * close_now
+
                 st.markdown(
                     f"**[{strat_name} {param} / {_iv_label(iv)}]** "
-                    f"현재: {state} ({'보유' if state == 'BUY' else '현금'}){skip_note}"
+                    f"현재: {state} ({'보유' if state == 'BUY' else '현금'}) | "
+                    f"비중 {wt:.0f}%{skip_note}"
                 )
 
-                # 현재가 + 목표가 항상 표시
+                # ── 현재가 + 조건 + 예상 주문 ──
                 if close_now > 0:
-                    if state == "BUY" and sell_target > 0:
-                        dist = (close_now - sell_target) / sell_target * 100
-                        met = close_now < sell_target
-                        cond = "충족 → 매도 실행" if met else f"미충족 ({dist:+.2f}%)"
-                        st.markdown(
-                            f"  현재가: **{close_now:,.0f}원** | "
-                            f"매도가: {sell_label} = **{sell_target:,.0f}원** | {cond}"
-                        )
-                    elif state == "SELL" and buy_target > 0:
-                        dist = (close_now - buy_target) / buy_target * 100
-                        met = close_now > buy_target
-                        cond = "충족 → 매수 실행" if met else f"미충족 ({dist:+.2f}%)"
-                        st.markdown(
-                            f"  현재가: **{close_now:,.0f}원** | "
-                            f"매수가: {buy_label} = **{buy_target:,.0f}원** | {cond}"
-                        )
-                    elif sell_target > 0 or buy_target > 0:
-                        tgt = sell_target or buy_target
-                        lbl = sell_label if sell_target > 0 else buy_label
-                        st.markdown(f"  현재가: **{close_now:,.0f}원** | 목표가: {lbl} = **{tgt:,.0f}원**")
-                    else:
-                        st.markdown(f"  현재가: **{close_now:,.0f}원**")
+                    st.markdown(f"  현재가: **{close_now:,.0f}원**")
 
-                if state == "BUY":
-                    if coin_b > 0 and not is_signal_skip:
-                        # 비중별 매도: 동일 코인의 모든 전략이 SELL 전환 시에만 전량 매도
-                        cw_total = coin_wt_sum.get(sym, wt)
-                        sell_ratio = wt / cw_total if cw_total > 0 else 1
-                        sell_qty = coin_b * sell_ratio
-                        sell_val = sell_qty * close_now
-                        # 동일 코인 전 전략의 예상 매도 여부 확인
-                        all_sell = all(
-                            sig_state.get(_make_signal_key(p2), "BUY") in ("SELL", "?", "미확인")
-                            for p2 in portfolio_list if p2["coin"].upper() == sym
-                        )
-                        if all_sell:
-                            st.caption(f"  보유: {sym} {coin_b:.8g}개 ({coin_v:,.0f}원) → 전 전략 SELL 시 전량 매도 예정")
+                    if state == "BUY":
+                        # 매도 조건 분석
+                        if sell_target > 0:
+                            dist = (close_now - sell_target) / sell_target * 100
+                            met = close_now < sell_target
+                            st.markdown(f"  매도 조건가: {sell_label} = **{sell_target:,.0f}원** | 이격도 **{dist:+.1f}%**")
+                            if is_signal_skip:
+                                expected = "HOLD (1D → 09시만 시그널 분석)"
+                            elif met:
+                                expected = f"**SELL** → {my_qty:.8g}개 ({my_val:,.0f}원) 매도"
+                            else:
+                                expected = "HOLD (조건 미충족)"
                         else:
-                            st.caption(
-                                f"  보유: {sym} {coin_b:.8g}개 ({coin_v:,.0f}원) → "
-                                f"비중 {wt:.0f}%/{cw_total:.0f}% 매도 ({sell_qty:.8g}개, {sell_val:,.0f}원)"
-                            )
-                    elif coin_b > 0:
-                        st.caption(f"  보유: {sym} {coin_b:.8g}개 ({coin_v:,.0f}원)")
+                            expected = "HOLD (목표가 미산출)" if not is_signal_skip else "HOLD (1D → 09시만)"
+                        st.markdown(f"  예상 주문: {expected}")
 
-                    # 보충 매수 (1D 스킵 슬롯에서도 표시)
-                    if tu_on and wt > 0:
-                        target_v = total_pv * (wt / 100)
-                        cw_total = coin_wt_sum.get(sym, wt)
-                        my_hold = coin_v * (wt / cw_total) if cw_total > 0 else 0
-                        need = target_v - my_hold
-                        if need >= 5000:
-                            buy_amt = min(tu_buy, need)
-                            st.caption(
-                                f"  보충매수: 목표 {target_v:,.0f}원 - 보유 {my_hold:,.0f}원 = "
-                                f"부족 {need:,.0f}원 → **{buy_amt:,.0f}원 매수 예정**"
-                            )
-                        else:
-                            st.caption(f"  보충매수: 불필요 (보유 {my_hold:,.0f}원 / 목표 {target_v:,.0f}원)")
+                        # 보유 정보
+                        if coin_b > 0:
+                            st.caption(f"  보유: {sym} {my_qty:.8g}개 ({my_val:,.0f}원) / 전체 {coin_b:.8g}개 ({coin_v:,.0f}원)")
 
-                elif state == "SELL":
-                    if not is_signal_skip:
-                        if krw_bal > 5000 and wt > 0:
+                        # 보충 매수
+                        if tu_on and wt > 0:
                             target_v = total_pv * (wt / 100)
-                            est_qty = target_v / close_now if close_now > 0 else 0
-                            st.caption(
-                                f"  현금: {krw_bal:,.0f}원 → 조건 충족 시 "
-                                f"{sym} ~{est_qty:.8g}개 ({target_v:,.0f}원) 매수 예정"
-                            )
-                    # 보충 매도 (1D 스킵 슬롯에서도 표시)
-                    if tu_on and coin_v >= 5000:
-                        sell_amt = min(tu_sell, coin_v)
-                        st.caption(f"  보충매도: 잔량 {coin_v:,.0f}원 → **{sell_amt:,.0f}원 매도 예정**")
+                            need = target_v - my_val
+                            if need >= 5000:
+                                buy_amt = min(tu_buy, need)
+                                st.caption(
+                                    f"  보충매수: 목표 {target_v:,.0f}원 - 보유 {my_val:,.0f}원 = "
+                                    f"부족 {need:,.0f}원 → **{buy_amt:,.0f}원 매수 예정**"
+                                )
+
+                    elif state == "SELL":
+                        # 매수 조건 분석
+                        if buy_target > 0:
+                            dist = (close_now - buy_target) / buy_target * 100
+                            met = close_now > buy_target
+                            st.markdown(f"  매수 조건가: {buy_label} = **{buy_target:,.0f}원** | 이격도 **{dist:+.1f}%**")
+                            if is_signal_skip:
+                                expected = "HOLD (1D → 09시만 시그널 분석)"
+                            elif met:
+                                target_v = total_pv * (wt / 100)
+                                est_qty = target_v / close_now if close_now > 0 else 0
+                                expected = f"**BUY** → ~{est_qty:.8g}개 ({target_v:,.0f}원) 매수"
+                            else:
+                                expected = "HOLD (조건 미충족)"
+                        else:
+                            expected = "HOLD (목표가 미산출)" if not is_signal_skip else "HOLD (1D → 09시만)"
+                        st.markdown(f"  예상 주문: {expected}")
+
+                        # 보충 매도
+                        if tu_on and coin_v >= 5000:
+                            sell_val_tu = my_val if my_val >= 5000 else coin_v
+                            sell_amt = min(tu_sell, sell_val_tu)
+                            st.caption(f"  보충매도: 잔량 {sell_val_tu:,.0f}원 → **{sell_amt:,.0f}원 매도 예정**")
+
+                    else:
+                        st.markdown(f"  예상 주문: 시그널 미확인 — 전략 분석 후 결정")
                 else:
-                    st.caption(f"  시그널 상태 미확인 — 전략 분석 후 결정")
+                    st.markdown(f"  현재가: 조회 실패")
 
     st.caption(
         f"잔고 KRW {krw_bal:,.0f}원 | 코인 {total_coin_v:,.0f}원 | "
