@@ -1154,6 +1154,14 @@ def run_auto_trade():
         if not _is_coin_interval_due(iv, now_kst):
             skipped_by_interval.append((ticker, iv))
             logger.info(f"[{ticker}] 주기 미도래({iv}) - 이번 실행에서 스킵")
+            _strat_label = f"{item.get('strategy', 'SMA')}({item.get('parameter', 20)}, {item.get('interval', 'day')})"
+            _append_trade_log({
+                "mode": "signal", "ticker": ticker,
+                "side": "SKIP",
+                "strategy": _strat_label,
+                "reason": f"주기 미도래({iv})",
+                "detail": f"interval={iv}, 보충매수/매도만 실행",
+            })
             continue
         try:
             result = analyze_asset(trader, item)
@@ -1170,14 +1178,21 @@ def run_auto_trade():
                 if result['position_state'] == 'HOLD' and prev in ('BUY', 'SELL'):
                     result['position_state'] = prev
                 logger.info(f"[{ticker}] 전환감지: prev={prev} → raw={raw_pos} → state={result['position_state']} → signal={result['signal']}")
-                # 시그널 전환 발생 시 trade_log에 기록
-                if result['signal'] in ('BUY', 'SELL'):
-                    _append_trade_log({
-                        "mode": "signal", "ticker": ticker,
-                        "side": result['signal'],
-                        "strategy": result.get('strategy_label', ''),
-                        "detail": f"prev={prev} → {result['position_state']}",
-                    })
+                # 모든 시그널 결정을 trade_log에 기록 (HOLD 포함)
+                _log_entry = {
+                    "mode": "signal", "ticker": ticker,
+                    "side": result['signal'],
+                    "strategy": result.get('strategy_label', ''),
+                    "detail": f"prev={prev} → raw={raw_pos} → {result['position_state']}",
+                    "current_price": result.get('current_price', 0),
+                    "buy_target": result.get('buy_level', 0),
+                    "sell_target": result.get('sell_level', 0),
+                    "buy_gap": result.get('buy_gap_pct', ''),
+                    "sell_gap": result.get('sell_gap_pct', ''),
+                    "condition": result.get('condition_summary', ''),
+                    "reason": _describe_upbit_signal_reason(result),
+                }
+                _append_trade_log(_log_entry)
                 analyses.append(result)
             else:
                 analyze_errors.append(f"{ticker}=분석결과없음")

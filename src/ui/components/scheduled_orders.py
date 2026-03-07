@@ -101,7 +101,7 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
             skey = _make_signal_key(pi)
 
             try:
-                df = data_cache.get_ohlcv(tk, iv, count=200)
+                df = data_cache.get_ohlcv_local_first(tk, iv, count=max(200, param + 20))
                 if df is None or len(df) < 2:
                     continue
 
@@ -298,6 +298,7 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
 # ═══════════════════════════════════════════
 def _render_past_orders():
     st.subheader("과거 주문 내역")
+    st.caption("매 실행 주기마다 전략별 판단(BUY/SELL/HOLD/SKIP) 및 실행 결과를 기록합니다.")
 
     tl = _load_json("trade_log.json")
     if not isinstance(tl, list) or not tl:
@@ -305,38 +306,98 @@ def _render_past_orders():
         return
 
     # 필터
-    side_map = {"BUY": "매수", "SELL": "매도", "BUY_TOPUP": "보충매수", "SELL_TOPUP": "보충매도"}
-    fc1, fc2 = st.columns(2)
-    sides = fc1.multiselect("구분 필터", list(side_map.values()), default=list(side_map.values()), key="past_side_filter")
-    max_rows = fc2.number_input("표시 건수", min_value=10, max_value=200, value=50, step=10, key="past_max_rows")
+    side_map = {
+        "BUY": "매수", "SELL": "매도", "HOLD": "보유유지",
+        "SKIP": "주기스킵", "BUY_TOPUP": "보충매수", "SELL_TOPUP": "보충매도",
+    }
+    side_icons = {
+        "BUY": "🟢", "SELL": "🔴", "HOLD": "⚪",
+        "SKIP": "⏭️", "BUY_TOPUP": "🟡", "SELL_TOPUP": "🟠",
+    }
+    all_labels = list(side_map.values())
+    fc1, fc2, fc3 = st.columns([2, 1, 1])
+    sides = fc1.multiselect("구분 필터", all_labels, default=all_labels, key="past_side_filter")
+    max_rows = fc2.number_input("표시 건수", min_value=10, max_value=500, value=50, step=10, key="past_max_rows")
+    view_mode = fc3.radio("보기", ["테이블", "상세"], key="past_view_mode", horizontal=True)
 
     reverse_map = {v: k for k, v in side_map.items()}
     selected_keys = {reverse_map.get(s, s) for s in sides}
 
-    rows = []
-    for e in tl:
-        side = e.get("side", "")
-        if side not in selected_keys:
-            continue
-        result = e.get("result", "")
-        icon = "O" if result == "success" else "X"
-        rows.append({
-            "시간": e.get("time", ""),
-            "종목": e.get("ticker", ""),
-            "구분": side_map.get(side, side),
-            "금액": e.get("amount", ""),
-            "결과": icon,
-            "전략": e.get("strategy", ""),
-            "모드": e.get("mode", ""),
-        })
-        if len(rows) >= max_rows:
-            break
+    filtered = [e for e in tl if e.get("side", "") in selected_keys][:max_rows]
 
-    if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        st.caption(f"총 {len(tl)}건 중 {len(rows)}건 표시")
-    else:
+    if not filtered:
         st.info("필터 조건에 맞는 기록이 없습니다.")
+        return
+
+    if view_mode == "상세":
+        # 상세 보기: 각 항목을 카드 형태로 표시
+        for e in filtered:
+            side = e.get("side", "")
+            icon = side_icons.get(side, "❓")
+            label = side_map.get(side, side)
+            time_str = e.get("time", "")
+            ticker = e.get("ticker", "")
+            strategy = e.get("strategy", "")
+            reason = e.get("reason", "")
+            condition = e.get("condition", "")
+            cur_price = e.get("current_price", 0)
+            buy_tgt = e.get("buy_target", 0)
+            sell_tgt = e.get("sell_target", 0)
+            buy_gap = e.get("buy_gap", "")
+            sell_gap = e.get("sell_gap", "")
+            result = e.get("result", "")
+            amount = e.get("amount", "") or e.get("qty", "")
+
+            header = f"{icon} **{label}** | {ticker} | {strategy} | {time_str}"
+            if result:
+                res_icon = "✅" if result == "success" else ("❌" if result == "error" else "")
+                header += f" | {res_icon}"
+
+            with st.container():
+                st.markdown(header)
+                lines = []
+                if cur_price:
+                    lines.append(f"현재가: **{_safe_float(cur_price):,.0f}원**")
+                if sell_tgt and _safe_float(sell_tgt) > 0:
+                    lines.append(f"매도가: {_safe_float(sell_tgt):,.0f}원 (이격 {sell_gap})")
+                if buy_tgt and _safe_float(buy_tgt) > 0:
+                    lines.append(f"매수가: {_safe_float(buy_tgt):,.0f}원 (이격 {buy_gap})")
+                if reason:
+                    lines.append(f"사유: {reason}")
+                if amount:
+                    lines.append(f"금액: {amount}")
+                if condition and not reason:
+                    lines.append(f"조건: {condition}")
+                if lines:
+                    st.caption("  |  ".join(lines))
+                st.markdown("---")
+    else:
+        # 테이블 보기
+        rows = []
+        for e in filtered:
+            side = e.get("side", "")
+            icon = side_icons.get(side, "")
+            result = e.get("result", "")
+            res_icon = "✅" if result == "success" else ("❌" if result == "error" else "-")
+            cur_price = _safe_float(e.get("current_price", 0))
+            sell_tgt = _safe_float(e.get("sell_target", 0))
+            buy_tgt = _safe_float(e.get("buy_target", 0))
+            rows.append({
+                "시간": e.get("time", ""),
+                "종목": e.get("ticker", ""),
+                "판단": f"{icon} {side_map.get(side, side)}",
+                "현재가": f"{cur_price:,.0f}" if cur_price else "-",
+                "매도가": f"{sell_tgt:,.0f}" if sell_tgt else "-",
+                "매수가": f"{buy_tgt:,.0f}" if buy_tgt else "-",
+                "이격도": e.get("sell_gap", "") or e.get("buy_gap", "") or "-",
+                "사유": e.get("reason", "") or "-",
+                "금액": e.get("amount", "") or e.get("qty", "") or "-",
+                "결과": res_icon,
+                "전략": e.get("strategy", ""),
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    st.caption(f"총 {len(tl)}건 중 {len(filtered)}건 표시")
 
 
 # ═══════════════════════════════════════════
