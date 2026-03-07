@@ -54,8 +54,70 @@ def _iv_label(iv: str) -> str:
     return m.get(iv, iv)
 
 
+def _fmt_krw(v):
+    """숫자를 쉼표 포함 원화 문자열로."""
+    if v and v > 0:
+        return f"{v:,.0f}"
+    return "-"
+
+
+def _compute_strategy_targets(portfolio_list):
+    """전략별 목표가 계산 (SMA/Donchian)."""
+    targets = {}
+    try:
+        from src.strategy.sma import SMAStrategy
+        from src.strategy.donchian import DonchianStrategy
+        import src.engine.data_cache as data_cache
+
+        for pi in portfolio_list:
+            tk = f"{pi.get('market', 'KRW')}-{pi['coin'].upper()}"
+            strat_name = pi.get("strategy", "SMA").lower()
+            param = int(pi.get("parameter", 20) or 20)
+            sell_param = int(pi.get("sell_parameter", 0) or 0) or param
+            iv = _normalize_interval(pi.get("interval", "day"))
+            skey = _make_signal_key(pi)
+
+            try:
+                df = data_cache.get_ohlcv_local_first(tk, iv, count=max(200, param + 20))
+                if df is None or len(df) < 2:
+                    continue
+
+                if strat_name.startswith("donchian"):
+                    strat = DonchianStrategy()
+                    df_feat = strat.create_features(df, buy_period=param, sell_period=sell_param)
+                    if df_feat is None or len(df_feat) < 2:
+                        continue
+                    eval_c = df_feat.iloc[-2]
+                    targets[skey] = {
+                        "buy_target": _safe_float(eval_c.get(f"Donchian_Upper_{param}")),
+                        "sell_target": _safe_float(eval_c.get(f"Donchian_Lower_{sell_param}")),
+                        "type": "donchian",
+                        "buy_label": f"상단({param})",
+                        "sell_label": f"하단({sell_param})",
+                    }
+                else:
+                    strat = SMAStrategy()
+                    df_feat = strat.create_features(df, periods=[param])
+                    if df_feat is None or len(df_feat) < 2:
+                        continue
+                    eval_c = df_feat.iloc[-2]
+                    sma_val = _safe_float(eval_c.get(f"SMA_{param}"))
+                    targets[skey] = {
+                        "buy_target": sma_val,
+                        "sell_target": sma_val,
+                        "type": "sma",
+                        "buy_label": f"SMA({param})",
+                        "sell_label": f"SMA({param})",
+                    }
+            except Exception:
+                pass
+    except ImportError:
+        pass
+    return targets
+
+
 # ═══════════════════════════════════════════
-# 서브탭 1: 예정 주문 (향후 24시간 상세 조건)
+# 서브탭 1: 예정 주문 (테이블 형식)
 # ═══════════════════════════════════════════
 def _render_upcoming_orders(portfolio_list, initial_cap, config):
     now_kst = datetime.now(_KST)
@@ -84,61 +146,8 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
     tu_buy = config.get("topup_buy_amount", 5000)
     tu_sell = config.get("topup_sell_amount", 5000)
 
-    # ── 전략별 목표가 계산 ──
-    # SMA/Donchian feature 계산
-    strategy_targets = {}
-    try:
-        from src.strategy.sma import SMAStrategy
-        from src.strategy.donchian import DonchianStrategy
-        import src.engine.data_cache as data_cache
-
-        for pi in portfolio_list:
-            tk = f"{pi.get('market', 'KRW')}-{pi['coin'].upper()}"
-            strat_name = pi.get("strategy", "SMA").lower()
-            param = int(pi.get("parameter", 20) or 20)
-            sell_param = int(pi.get("sell_parameter", 0) or 0) or param
-            iv = _normalize_interval(pi.get("interval", "day"))
-            skey = _make_signal_key(pi)
-
-            try:
-                df = data_cache.get_ohlcv_local_first(tk, iv, count=max(200, param + 20))
-                if df is None or len(df) < 2:
-                    continue
-
-                if strat_name.startswith("donchian"):
-                    strat = DonchianStrategy()
-                    df_feat = strat.create_features(df, buy_period=param, sell_period=sell_param)
-                    if df_feat is None or len(df_feat) < 2:
-                        continue
-                    eval_c = df_feat.iloc[-2]
-                    upper_key = f"Donchian_Upper_{param}"
-                    lower_key = f"Donchian_Lower_{sell_param}"
-                    strategy_targets[skey] = {
-                        "buy_target": _safe_float(eval_c.get(upper_key)),
-                        "sell_target": _safe_float(eval_c.get(lower_key)),
-                        "type": "donchian",
-                        "buy_label": f"상단밴드({param})",
-                        "sell_label": f"하단밴드({sell_param})",
-                    }
-                else:
-                    strat = SMAStrategy()
-                    df_feat = strat.create_features(df, periods=[param])
-                    if df_feat is None or len(df_feat) < 2:
-                        continue
-                    eval_c = df_feat.iloc[-2]
-                    sma_key = f"SMA_{param}"
-                    sma_val = _safe_float(eval_c.get(sma_key))
-                    strategy_targets[skey] = {
-                        "buy_target": sma_val,
-                        "sell_target": sma_val,
-                        "type": "sma",
-                        "buy_label": f"SMA({param})",
-                        "sell_label": f"SMA({param})",
-                    }
-            except Exception:
-                pass
-    except ImportError:
-        pass
+    # ── 전략별 목표가 ──
+    strategy_targets = _compute_strategy_targets(portfolio_list)
 
     # ── 코인별 weight 합산 ──
     coin_wt_sum = {}
@@ -165,136 +174,125 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
     remain = next_dt - now_kst
     hh = int(remain.total_seconds() // 3600)
     mm = int((remain.total_seconds() % 3600) // 60)
-    st.info(f"다음 실행: **{next_dt.strftime('%Y-%m-%d %H:%M KST')}** ({hh}시간 {mm}분 후)")
+    st.info(f"다음 실행: **{next_dt.strftime('%Y-%m-%d %H:%M KST')}** ({hh}시간 {mm}분 후) | 캐시: {bc_time}")
 
-    # ── 각 슬롯별 상세 조건 표시 ──
+    # ── 테이블 데이터 생성 ──
+    rows = []
     for slot in future_slots:
         sh = slot.hour
-        slot_remain = slot - now_kst
-        s_hh = int(slot_remain.total_seconds() // 3600)
-        s_mm = int((slot_remain.total_seconds() % 3600) // 60)
-        is_next = (slot == next_dt)
+        slot_label = slot.strftime("%m/%d %H:%M")
 
-        header = f"{'▶ ' if is_next else ''}{slot.strftime('%m월 %d일 %H:%M')} KST"
-        if is_next:
-            header += f" ({s_hh}시간 {s_mm}분 후)"
+        for pi in portfolio_list:
+            sym = pi["coin"].upper()
+            tk = f"{pi.get('market', 'KRW')}-{sym}"
+            strat_name = pi.get("strategy", "SMA")
+            param = int(pi.get("parameter", 20) or 20)
+            iv = pi.get("interval", "day")
+            iv_norm = _normalize_interval(iv)
+            wt = float(pi.get("weight", 0))
+            skey = _make_signal_key(pi)
 
-        with st.expander(header, expanded=is_next):
-            for pi in portfolio_list:
-                sym = pi["coin"].upper()
-                tk = f"{pi.get('market', 'KRW')}-{sym}"
-                strat_name = pi.get("strategy", "SMA")
-                param = int(pi.get("parameter", 20) or 20)
-                iv = pi.get("interval", "day")
-                iv_norm = _normalize_interval(iv)
-                wt = float(pi.get("weight", 0))
-                skey = _make_signal_key(pi)
+            state = sig_state.get(skey, "?")
+            if state == "HOLD":
+                state = "BUY"
+            elif state == "?":
+                state = "미확인"
 
-                state = sig_state.get(skey, "?")
-                if state == "HOLD":
-                    state = "BUY"
-                elif state == "?":
-                    state = "미확인"
+            close_now = _safe_float(prices.get(tk, 0))
+            coin_b = _safe_float(bals.get(sym, 0))
+            cw_total = coin_wt_sum.get(sym, wt)
+            sell_ratio = wt / cw_total if cw_total > 0 else 1
+            my_qty = coin_b * sell_ratio
+            my_val = my_qty * close_now
 
-                close_now = _safe_float(prices.get(tk, 0))
-                coin_b = _safe_float(bals.get(sym, 0))
-                coin_v = coin_b * close_now
+            tgt = strategy_targets.get(skey, {})
+            buy_target = tgt.get("buy_target", 0)
+            sell_target = tgt.get("sell_target", 0)
 
-                targets = strategy_targets.get(skey, {})
-                buy_target = targets.get("buy_target", 0)
-                sell_target = targets.get("sell_target", 0)
-                buy_label = targets.get("buy_label", "목표가")
-                sell_label = targets.get("sell_label", "목표가")
+            is_signal_skip = (iv_norm == "day" and sh != 9)
+            strat_label = f"{strat_name}({param}, {_iv_label(iv)})"
 
-                # 1D 전략은 09시에만 시그널 분석, 보충 주문은 매 슬롯 실행
-                is_signal_skip = (iv_norm == "day" and sh != 9)
-                skip_note = " — 시그널 분석은 09시만" if is_signal_skip else ""
+            # 조건가 / 이격도 / 예상 주문 결정
+            cond_price = "-"
+            gap_str = "-"
+            expected = ""
+            note = ""
 
-                # ── 비중 / 보유 계산 ──
-                cw_total = coin_wt_sum.get(sym, wt)
-                sell_ratio = wt / cw_total if cw_total > 0 else 1
-                my_qty = coin_b * sell_ratio
-                my_val = my_qty * close_now
-
-                st.markdown(
-                    f"**[{strat_name} {param} / {_iv_label(iv)}]** "
-                    f"현재: {state} ({'보유' if state == 'BUY' else '현금'}) | "
-                    f"비중 {wt:.0f}%{skip_note}"
-                )
-
-                # ── 현재가 + 조건 + 예상 주문 ──
-                if close_now > 0:
-                    st.markdown(f"  현재가: **{close_now:,.0f}원**")
-
-                    if state == "BUY":
-                        # 매도 조건 분석
-                        if sell_target > 0:
-                            dist = (close_now - sell_target) / sell_target * 100
-                            met = close_now < sell_target
-                            st.markdown(f"  매도 조건가: {sell_label} = **{sell_target:,.0f}원** | 이격도 **{dist:+.1f}%**")
-                            if is_signal_skip:
-                                expected = "HOLD (1D → 09시만 시그널 분석)"
-                            elif met:
-                                expected = f"**SELL** → {my_qty:.8g}개 ({my_val:,.0f}원) 매도"
-                            else:
-                                expected = "HOLD (조건 미충족)"
-                        else:
-                            expected = "HOLD (목표가 미산출)" if not is_signal_skip else "HOLD (1D → 09시만)"
-                        st.markdown(f"  예상 주문: {expected}")
-
-                        # 보유 정보
-                        if coin_b > 0:
-                            st.caption(f"  보유: {sym} {my_qty:.8g}개 ({my_val:,.0f}원) / 전체 {coin_b:.8g}개 ({coin_v:,.0f}원)")
-
-                        # 보충 매수
-                        if tu_on and wt > 0:
-                            target_v = total_pv * (wt / 100)
-                            need = target_v - my_val
-                            if need >= 5000:
-                                buy_amt = min(tu_buy, need)
-                                st.caption(
-                                    f"  보충매수: 목표 {target_v:,.0f}원 - 보유 {my_val:,.0f}원 = "
-                                    f"부족 {need:,.0f}원 → **{buy_amt:,.0f}원 매수 예정**"
-                                )
-
-                    elif state == "SELL":
-                        # 매수 조건 분석
-                        if buy_target > 0:
-                            dist = (close_now - buy_target) / buy_target * 100
-                            met = close_now > buy_target
-                            st.markdown(f"  매수 조건가: {buy_label} = **{buy_target:,.0f}원** | 이격도 **{dist:+.1f}%**")
-                            if is_signal_skip:
-                                expected = "HOLD (1D → 09시만 시그널 분석)"
-                            elif met:
-                                target_v = total_pv * (wt / 100)
-                                est_qty = target_v / close_now if close_now > 0 else 0
-                                expected = f"**BUY** → ~{est_qty:.8g}개 ({target_v:,.0f}원) 매수"
-                            else:
-                                expected = "HOLD (조건 미충족)"
-                        else:
-                            expected = "HOLD (목표가 미산출)" if not is_signal_skip else "HOLD (1D → 09시만)"
-                        st.markdown(f"  예상 주문: {expected}")
-
-                        # 보충 매도
-                        if tu_on and coin_v >= 5000:
-                            sell_val_tu = my_val if my_val >= 5000 else coin_v
-                            sell_amt = min(tu_sell, sell_val_tu)
-                            st.caption(f"  보충매도: 잔량 {sell_val_tu:,.0f}원 → **{sell_amt:,.0f}원 매도 예정**")
-
+            if close_now <= 0:
+                expected = "가격 조회 실패"
+            elif state == "BUY":
+                # 보유 중 → 매도 조건 분석
+                if sell_target > 0:
+                    cond_price = _fmt_krw(sell_target)
+                    dist = (close_now - sell_target) / sell_target * 100
+                    gap_str = f"{dist:+.1f}%"
+                    if is_signal_skip:
+                        expected = "HOLD (1D→09시만)"
+                    elif close_now < sell_target:
+                        expected = f"SELL ({my_qty:.8g}개, {_fmt_krw(my_val)}원)"
                     else:
-                        st.markdown(f"  예상 주문: 시그널 미확인 — 전략 분석 후 결정")
+                        expected = "HOLD"
                 else:
-                    st.markdown(f"  현재가: 조회 실패")
+                    expected = "HOLD (1D→09시만)" if is_signal_skip else "HOLD (미산출)"
+
+                # 보충 매수
+                if tu_on and wt > 0:
+                    target_v = total_pv * (wt / 100)
+                    need = target_v - my_val
+                    if need >= 5000:
+                        buy_amt = min(tu_buy, need)
+                        note = f"보충매수 {_fmt_krw(buy_amt)}원"
+
+            elif state == "SELL":
+                # 현금 → 매수 조건 분석
+                if buy_target > 0:
+                    cond_price = _fmt_krw(buy_target)
+                    dist = (close_now - buy_target) / buy_target * 100
+                    gap_str = f"{dist:+.1f}%"
+                    if is_signal_skip:
+                        expected = "HOLD (1D→09시만)"
+                    elif close_now > buy_target:
+                        target_v = total_pv * (wt / 100)
+                        expected = f"BUY (~{_fmt_krw(target_v)}원)"
+                    else:
+                        expected = "HOLD"
+                else:
+                    expected = "HOLD (1D→09시만)" if is_signal_skip else "HOLD (미산출)"
+
+                # 보충 매도
+                if tu_on and my_val >= 5000:
+                    sell_amt = min(tu_sell, my_val)
+                    note = f"보충매도 {_fmt_krw(sell_amt)}원"
+            else:
+                expected = "미확인"
+
+            rows.append({
+                "실행시간": slot_label,
+                "종목": tk,
+                "전략": strat_label,
+                "상태": state,
+                "현재가": _fmt_krw(close_now),
+                "조건가": cond_price,
+                "이격도": gap_str,
+                "예상주문": expected,
+                "비고": note or "-",
+            })
+
+    if rows:
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("표시할 예정 주문이 없습니다.")
 
     st.caption(
-        f"잔고 KRW {krw_bal:,.0f}원 | 코인 {total_coin_v:,.0f}원 | "
-        f"총 {total_pv:,.0f}원 (캐시: {bc_time})"
+        f"KRW {krw_bal:,.0f}원 | 코인 {total_coin_v:,.0f}원 | "
+        f"총 {total_pv:,.0f}원"
     )
-    st.caption("※ 예상 동작은 현재 시그널 상태 기준이며, 실제 전략 분석 결과에 따라 변경될 수 있습니다.")
+    st.caption("※ 현재 시그널 기준 예상이며, 실제 전략 분석 결과에 따라 변경될 수 있습니다.")
 
 
 # ═══════════════════════════════════════════
-# 서브탭 2: 과거 주문 내역
+# 서브탭 2: 과거 주문 내역 (테이블)
 # ═══════════════════════════════════════════
 def _render_past_orders():
     st.subheader("과거 주문 내역")
@@ -305,20 +303,15 @@ def _render_past_orders():
         st.info("매매 로그 없음 (trade_log.json)")
         return
 
-    # 필터
+    # 필터 UI
     side_map = {
         "BUY": "매수", "SELL": "매도", "HOLD": "보유유지",
         "SKIP": "주기스킵", "BUY_TOPUP": "보충매수", "SELL_TOPUP": "보충매도",
     }
-    side_icons = {
-        "BUY": "🟢", "SELL": "🔴", "HOLD": "⚪",
-        "SKIP": "⏭️", "BUY_TOPUP": "🟡", "SELL_TOPUP": "🟠",
-    }
     all_labels = list(side_map.values())
-    fc1, fc2, fc3 = st.columns([2, 1, 1])
+    fc1, fc2 = st.columns([3, 1])
     sides = fc1.multiselect("구분 필터", all_labels, default=all_labels, key="past_side_filter")
     max_rows = fc2.number_input("표시 건수", min_value=10, max_value=500, value=50, step=10, key="past_max_rows")
-    view_mode = fc3.radio("보기", ["테이블", "상세"], key="past_view_mode", horizontal=True)
 
     reverse_map = {v: k for k, v in side_map.items()}
     selected_keys = {reverse_map.get(s, s) for s in sides}
@@ -329,74 +322,29 @@ def _render_past_orders():
         st.info("필터 조건에 맞는 기록이 없습니다.")
         return
 
-    if view_mode == "상세":
-        # 상세 보기: 각 항목을 카드 형태로 표시
-        for e in filtered:
-            side = e.get("side", "")
-            icon = side_icons.get(side, "❓")
-            label = side_map.get(side, side)
-            time_str = e.get("time", "")
-            ticker = e.get("ticker", "")
-            strategy = e.get("strategy", "")
-            reason = e.get("reason", "")
-            condition = e.get("condition", "")
-            cur_price = e.get("current_price", 0)
-            buy_tgt = e.get("buy_target", 0)
-            sell_tgt = e.get("sell_target", 0)
-            buy_gap = e.get("buy_gap", "")
-            sell_gap = e.get("sell_gap", "")
-            result = e.get("result", "")
-            amount = e.get("amount", "") or e.get("qty", "")
-
-            header = f"{icon} **{label}** | {ticker} | {strategy} | {time_str}"
-            if result:
-                res_icon = "✅" if result == "success" else ("❌" if result == "error" else "")
-                header += f" | {res_icon}"
-
-            with st.container():
-                st.markdown(header)
-                lines = []
-                if cur_price:
-                    lines.append(f"현재가: **{_safe_float(cur_price):,.0f}원**")
-                if sell_tgt and _safe_float(sell_tgt) > 0:
-                    lines.append(f"매도가: {_safe_float(sell_tgt):,.0f}원 (이격 {sell_gap})")
-                if buy_tgt and _safe_float(buy_tgt) > 0:
-                    lines.append(f"매수가: {_safe_float(buy_tgt):,.0f}원 (이격 {buy_gap})")
-                if reason:
-                    lines.append(f"사유: {reason}")
-                if amount:
-                    lines.append(f"금액: {amount}")
-                if condition and not reason:
-                    lines.append(f"조건: {condition}")
-                if lines:
-                    st.caption("  |  ".join(lines))
-                st.markdown("---")
-    else:
-        # 테이블 보기
-        rows = []
-        for e in filtered:
-            side = e.get("side", "")
-            icon = side_icons.get(side, "")
-            result = e.get("result", "")
-            res_icon = "✅" if result == "success" else ("❌" if result == "error" else "-")
-            cur_price = _safe_float(e.get("current_price", 0))
-            sell_tgt = _safe_float(e.get("sell_target", 0))
-            buy_tgt = _safe_float(e.get("buy_target", 0))
-            rows.append({
-                "시간": e.get("time", ""),
-                "종목": e.get("ticker", ""),
-                "판단": f"{icon} {side_map.get(side, side)}",
-                "현재가": f"{cur_price:,.0f}" if cur_price else "-",
-                "매도가": f"{sell_tgt:,.0f}" if sell_tgt else "-",
-                "매수가": f"{buy_tgt:,.0f}" if buy_tgt else "-",
-                "이격도": e.get("sell_gap", "") or e.get("buy_gap", "") or "-",
-                "사유": e.get("reason", "") or "-",
-                "금액": e.get("amount", "") or e.get("qty", "") or "-",
-                "결과": res_icon,
-                "전략": e.get("strategy", ""),
-            })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
+    # 테이블 생성
+    rows = []
+    for e in filtered:
+        side = e.get("side", "")
+        result = e.get("result", "")
+        res_icon = "OK" if result == "success" else ("FAIL" if result == "error" else "-")
+        cur_price = _safe_float(e.get("current_price", 0))
+        sell_tgt = _safe_float(e.get("sell_target", 0))
+        buy_tgt = _safe_float(e.get("buy_target", 0))
+        rows.append({
+            "시간": e.get("time", ""),
+            "종목": e.get("ticker", ""),
+            "판단": side_map.get(side, side),
+            "현재가": _fmt_krw(cur_price),
+            "매도가": _fmt_krw(sell_tgt),
+            "매수가": _fmt_krw(buy_tgt),
+            "이격도": e.get("sell_gap", "") or e.get("buy_gap", "") or "-",
+            "사유": e.get("reason", "") or "-",
+            "금액": e.get("amount", "") or e.get("qty", "") or "-",
+            "결과": res_icon,
+            "전략": e.get("strategy", ""),
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     st.caption(f"총 {len(tl)}건 중 {len(filtered)}건 표시")
 
 
