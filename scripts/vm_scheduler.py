@@ -392,8 +392,7 @@ def _get_gh_pat() -> str:
 
 
 def _push_balance_cache() -> bool:
-    """VM에서 GitHub Actions workflow_dispatch를 트리거하여 잔고 캐시를 push.
-    GH_PAT(Classic PAT)가 설정되어 있어야 동작."""
+    """VM에서 GH_PAT로 직접 git push. GH Actions 의존 없음."""
     global _LAST_BALANCE_PUSH
     now_epoch = time.time()
     if (now_epoch - _LAST_BALANCE_PUSH) < BALANCE_PUSH_INTERVAL_SEC:
@@ -406,18 +405,67 @@ def _push_balance_cache() -> bool:
     _LAST_BALANCE_PUSH = now_epoch
 
     try:
-        import urllib.request
-        url = "https://api.github.com/repos/doukui7/UPbit/actions/workflows/vm_scheduler.yml/dispatches"
-        payload = json.dumps({"ref": "master", "inputs": {"run_job": "balance_sync"}}).encode()
-        req = urllib.request.Request(url, data=payload, method="POST")
-        req.add_header("Authorization", f"token {gh_pat}")
-        req.add_header("Accept", "application/vnd.github+json")
-        req.add_header("Content-Type", "application/json")
-        urllib.request.urlopen(req, timeout=15)
-        logging.info("잔고 동기화 workflow_dispatch 트리거 완료")
-        return True
+        cwd = str(REPO_DIR)
+        # GH_PAT HTTPS URL 설정
+        subprocess.run(
+            ["git", "remote", "set-url", "origin",
+             f"https://{gh_pat}@github.com/doukui7/UPbit.git"],
+            cwd=cwd, capture_output=True, timeout=10,
+        )
+        # git add
+        subprocess.run(
+            ["git", "add", "-f", "balance_cache.json", "signal_state.json", "trade_log.json"],
+            cwd=cwd, capture_output=True, timeout=10,
+        )
+        # 변경 확인
+        diff = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            cwd=cwd, capture_output=True, timeout=10,
+        )
+        if diff.returncode == 0:
+            # 변경 없음 → URL 원복 후 종료
+            subprocess.run(
+                ["git", "remote", "set-url", "origin", "https://github.com/doukui7/UPbit.git"],
+                cwd=cwd, capture_output=True, timeout=10,
+            )
+            return False
+        # commit
+        subprocess.run(
+            ["git", "-c", "user.name=auto-trade-bot", "-c", "user.email=bot@auto-trade",
+             "commit", "-m", "auto: VM 잔고/시그널 동기화"],
+            cwd=cwd, capture_output=True, timeout=10,
+        )
+        # pull --rebase (충돌 방지)
+        subprocess.run(
+            ["git", "pull", "--rebase", "origin", "master"],
+            cwd=cwd, capture_output=True, timeout=30,
+        )
+        # push
+        result = subprocess.run(
+            ["git", "push", "origin", "master"],
+            cwd=cwd, capture_output=True, timeout=30,
+        )
+        # 보안: URL 원복
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", "https://github.com/doukui7/UPbit.git"],
+            cwd=cwd, capture_output=True, timeout=10,
+        )
+        if result.returncode == 0:
+            logging.info("잔고 동기화 git push 완료")
+            return True
+        else:
+            logging.warning("잔고 동기화 git push 실패: %s",
+                            (result.stderr or b"").decode()[:200])
+            return False
     except Exception as e:
-        logging.warning("잔고 동기화 workflow_dispatch 트리거 실패: %s", e)
+        logging.warning("잔고 동기화 git push 예외: %s", e)
+        try:
+            subprocess.run(
+                ["git", "remote", "set-url", "origin", "https://github.com/doukui7/UPbit.git"],
+                cwd=str(REPO_DIR), capture_output=True, timeout=10,
+            )
+        except Exception:
+            pass
         return False
 
 

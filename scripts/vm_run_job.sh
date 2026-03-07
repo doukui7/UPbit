@@ -67,17 +67,21 @@ echo "[$(date '+%F %T')] start mode=${MODE}" >> "${LOG_FILE}"
 if TRADING_MODE="${MODE}" python scripts/github_action_trade.py 2>&1 | tee -a "${LOG_FILE}"; then
   echo "[$(date '+%F %T')] done mode=${MODE}" >> "${LOG_FILE}"
 
-  # balance_cache / signal_state 자동 push (deploy key 사용)
+  # balance_cache / signal_state 자동 push (GH_PAT HTTPS)
   if [[ "${MODE}" == "upbit" || "${MODE}" == "manual_order" || "${MODE}" == "account_sync" || "${MODE}" == "kis_pension" ]]; then
     (
-      git remote set-url origin git@github.com:doukui7/UPbit.git 2>/dev/null || true
+      if [[ -n "${GH_PAT:-}" ]]; then
+        git remote set-url origin "https://${GH_PAT}@github.com/doukui7/UPbit.git" 2>/dev/null || true
+      fi
       git add -f balance_cache.json signal_state.json trade_log.json config/pension_orders.json 2>/dev/null || true
       if ! git diff --cached --quiet 2>/dev/null; then
         git -c user.name="auto-trade-bot" -c user.email="bot@auto-trade" \
           commit -m "auto: VM ${MODE} 후 캐시 동기화" 2>/dev/null || true
+        git pull --rebase origin master 2>/dev/null || true
         git push origin master 2>/dev/null && echo "[$(date '+%F %T')] cache push OK" >> "${LOG_FILE}" \
-          || echo "[$(date '+%F %T')] cache push SKIP (no deploy key?)" >> "${LOG_FILE}"
+          || echo "[$(date '+%F %T')] cache push SKIP (no GH_PAT?)" >> "${LOG_FILE}"
       fi
+      # 보안: push 후 URL 원복 (토큰 노출 방지)
       git remote set-url origin https://github.com/doukui7/UPbit.git 2>/dev/null || true
     ) 2>/dev/null || true
   fi

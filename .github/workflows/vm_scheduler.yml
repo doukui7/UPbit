@@ -2,8 +2,9 @@ name: "VM Scheduler"
 
 on:
   schedule:
-    # VM 스케줄러 생존 감시 (5분 주기)
-    - cron: "*/5 * * * *"
+    # VM 스케줄러 생존 감시 + 코드 업데이트 (15분 주기)
+    # 잔고 push는 VM 직접 처리 (GH_PAT), ensure는 보조 역할
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       run_job:
