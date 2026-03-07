@@ -365,11 +365,60 @@ def _sync_balance() -> bool:
         return False
 
 
+def _read_env_file_value(key: str) -> str:
+    """`.vm_runtime_env` 파일에서 key 값을 읽는다 (실행 중 프로세스 env에 없을 때 fallback)."""
+    env_file = REPO_DIR / ".vm_runtime_env"
+    if not env_file.exists():
+        return ""
+    try:
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith(f"{key}="):
+                val = line[len(key) + 1:]
+                # printf %q 포맷 해제: $'...' 또는 그대로
+                if val.startswith("$'") and val.endswith("'"):
+                    val = val[2:-1].encode().decode("unicode_escape")
+                return val.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _get_gh_pat() -> str:
+    """GH_PAT를 os.environ → .vm_runtime_env 순서로 조회."""
+    pat = os.environ.get("GH_PAT", "")
+    if not pat:
+        pat = _read_env_file_value("GH_PAT")
+    return pat
+
+
 def _push_balance_cache() -> bool:
-    """VM에서 직접 push 불가 (SSH key/PAT 없음).
-    push는 GH Actions vm_scheduler.yml ensure cron (5분)에서 SCP로 수행.
-    이 함수는 no-op으로 유지."""
-    return False
+    """VM에서 GitHub Actions workflow_dispatch를 트리거하여 잔고 캐시를 push.
+    GH_PAT(Classic PAT)가 설정되어 있어야 동작."""
+    global _LAST_BALANCE_PUSH
+    now_epoch = time.time()
+    if (now_epoch - _LAST_BALANCE_PUSH) < BALANCE_PUSH_INTERVAL_SEC:
+        return False
+
+    gh_pat = _get_gh_pat()
+    if not gh_pat:
+        return False
+
+    _LAST_BALANCE_PUSH = now_epoch
+
+    try:
+        import urllib.request
+        url = "https://api.github.com/repos/doukui7/UPbit/actions/workflows/vm_scheduler.yml/dispatches"
+        payload = json.dumps({"ref": "master", "inputs": {"run_job": "balance_sync"}}).encode()
+        req = urllib.request.Request(url, data=payload, method="POST")
+        req.add_header("Authorization", f"token {gh_pat}")
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("Content-Type", "application/json")
+        urllib.request.urlopen(req, timeout=15)
+        logging.info("잔고 동기화 workflow_dispatch 트리거 완료")
+        return True
+    except Exception as e:
+        logging.warning("잔고 동기화 workflow_dispatch 트리거 실패: %s", e)
+        return False
 
 
 def _touch_heartbeat(state: dict[str, str], now: datetime, *, force: bool = False) -> bool:

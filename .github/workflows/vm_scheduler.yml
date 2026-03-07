@@ -16,6 +16,7 @@ on:
           - vm_scheduler_ensure
           - vm_scheduler_status
           - vm_scheduler_stop
+          - balance_sync
 
 permissions:
   contents: write
@@ -32,7 +33,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 5m
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,HEALTHCHECK_UPBIT_RECOVERY
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,HEALTHCHECK_UPBIT_RECOVERY,GH_PAT
           script: |
             cd ~/upbit
             git remote set-url origin https://github.com/doukui7/UPbit.git 2>/dev/null || true
@@ -57,6 +58,7 @@ jobs:
               printf "TELEGRAM_BOT_TOKEN=%q\n" "${TELEGRAM_BOT_TOKEN}"
               printf "TELEGRAM_CHAT_ID=%q\n" "${TELEGRAM_CHAT_ID}"
               printf "HEALTHCHECK_UPBIT_RECOVERY=%q\n" "${HEALTHCHECK_UPBIT_RECOVERY}"
+              printf "GH_PAT=%q\n" "${GH_PAT}"
             } > .vm_runtime_env
             chmod 600 .vm_runtime_env
             bash scripts/vm_scheduler_manager.sh start
@@ -84,6 +86,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
           HEALTHCHECK_UPBIT_RECOVERY: '1'
+          GH_PAT: ${{ secrets.GH_PAT }}
 
   vm_scheduler_ensure:
     if: (github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'vm_scheduler_ensure') || github.event_name == 'schedule'
@@ -101,7 +104,7 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           command_timeout: 5m
-          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,HEALTHCHECK_UPBIT_RECOVERY
+          envs: UPBIT_ACCESS_KEY,UPBIT_SECRET_KEY,PORTFOLIO,KIWOOM_APP_KEY,KIWOOM_SECRET_KEY,KIWOOM_ACCOUNT,GOLD_PORTFOLIO,GOLD_BUY_PERIOD,GOLD_SELL_PERIOD,KIS_ISA_APP_KEY,KIS_ISA_APP_SECRET,KIS_ISA_ACCOUNT_NO,KIS_ISA_ETF_CODE,KIS_APP_KEY,KIS_APP_SECRET,KIS_PENSION_ACCOUNT_NO,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID,HEALTHCHECK_UPBIT_RECOVERY,GH_PAT
           script: |
             cd ~/upbit
             git remote set-url origin https://github.com/doukui7/UPbit.git 2>/dev/null || true
@@ -126,6 +129,7 @@ jobs:
               printf "TELEGRAM_BOT_TOKEN=%q\n" "${TELEGRAM_BOT_TOKEN}"
               printf "TELEGRAM_CHAT_ID=%q\n" "${TELEGRAM_CHAT_ID}"
               printf "HEALTHCHECK_UPBIT_RECOVERY=%q\n" "${HEALTHCHECK_UPBIT_RECOVERY}"
+              printf "GH_PAT=%q\n" "${GH_PAT}"
             } > .vm_runtime_env
             chmod 600 .vm_runtime_env
             bash scripts/vm_scheduler_manager.sh ensure
@@ -153,6 +157,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
           HEALTHCHECK_UPBIT_RECOVERY: '1'
+          GH_PAT: ${{ secrets.GH_PAT }}
 
       - name: Sync balance cache from VM
         env:
@@ -207,3 +212,37 @@ jobs:
           script: |
             cd ~/upbit
             bash scripts/vm_scheduler_manager.sh stop
+
+  # ── VM에서 트리거하는 경량 잔고 동기화 (SCP+push만) ──
+  balance_sync:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'balance_sync'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Sync balance from VM and push
+        env:
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_USER: ${{ secrets.VM_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "${VM_SSH_KEY}" > ~/.ssh/vm_key
+          chmod 600 ~/.ssh/vm_key
+          ssh-keyscan -H "${VM_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+          scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/balance_cache.json" ./balance_cache.json || echo "WARN: balance_cache.json not found"
+          scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/signal_state.json" ./signal_state.json || echo "WARN: signal_state.json not found"
+          rm -f ~/.ssh/vm_key
+          git config user.name "auto-trade-bot"
+          git config user.email "bot@auto-trade"
+          git add balance_cache.json signal_state.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "No changes to sync"
+          else
+            git commit -m "auto: VM 잔고/시그널 동기화"
+            git pull --rebase origin master || true
+            git push || echo "WARN: push failed"
+          fi
