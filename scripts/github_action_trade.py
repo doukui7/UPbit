@@ -934,8 +934,9 @@ def _is_coin_interval_due(interval: str, now_kst: datetime) -> bool:
     hour = int(now_kst.hour)
     minute = int(now_kst.minute)
 
-    # 정시 경계 실행은 네트워크/스케줄 지연을 고려해 10분 윈도우만 허용
-    due_window_min = 10
+    # 정시 경계 실행은 스케줄 지연을 고려해 55분 윈도우 허용
+    # (VM 스케줄러가 정시에 트리거하지만, 지연 시에도 실행되도록)
+    due_window_min = 55
     if iv == "day":
         return hour == 9 and minute <= due_window_min
     if iv == "minute240":
@@ -1404,7 +1405,8 @@ def run_auto_trade():
 
         # ── 보충 매수 ──
         for a in analyses:
-            if a['signal'] != 'HOLD' or a['position_state'] != 'BUY':
+            # HOLD 시그널 + 보유 중(BUY/HOLD) → 보충매수 대상
+            if a['signal'] != 'HOLD' or a['position_state'] not in ('BUY', 'HOLD'):
                 continue
             if a['coin_sym'] in topup_done:
                 continue
@@ -1523,6 +1525,9 @@ def run_auto_trade():
                     continue
                 skip_key = _make_signal_key(skip_item)
                 maint_state = signal_state.get(skip_key)
+                # HOLD는 현재 포지션 유지 → BUY로 취급 (보충매수 대상)
+                if maint_state == 'HOLD':
+                    maint_state = 'BUY'
                 if not maint_state or maint_state not in ('BUY', 'SELL'):
                     continue
                 skip_coin = skip_item['coin'].upper()
