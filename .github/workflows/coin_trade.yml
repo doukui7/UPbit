@@ -27,7 +27,8 @@ permissions:
 jobs:
   # ── 업비트 BTC 자동매매 (VM SSH 경유 - 고정 IP) ──
   trade:
-    if: (github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'trade') || github.event_name == 'schedule'
+    # schedule 제거: VM 스케줄러(minute==0)가 정시 실행 담당, GH Actions cron은 지연 발생하므로 수동 dispatch만
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.run_job == 'trade'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
