@@ -1,0 +1,389 @@
+"""예약 주문 탭 — 예정 주문 조건 상세 + 과거 주문 내역 + 보충 설정."""
+import json
+import os
+import subprocess
+import streamlit as st
+import pandas as pd
+from datetime import datetime, timedelta, timezone
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_KST = timezone(timedelta(hours=9))
+_SCHED_HOURS = [1, 5, 9, 13, 17, 21]
+
+
+def _load_json(filename: str):
+    fpath = os.path.join(_PROJECT_ROOT, filename)
+    if os.path.exists(fpath):
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
+
+
+def _safe_float(val, default=0.0):
+    try:
+        v = float(str(val).replace(",", ""))
+        return default if pd.isna(v) else v
+    except Exception:
+        return default
+
+
+def _normalize_interval(iv: str) -> str:
+    for alias, real in [("4h", "minute240"), ("1h", "minute60"), ("1d", "day")]:
+        if iv.lower() == alias:
+            return real
+    return iv
+
+
+def _make_signal_key(item: dict) -> str:
+    ticker = f"{item.get('market', 'KRW')}-{str(item.get('coin', '')).upper()}"
+    strategy = item.get("strategy", "SMA")
+    try:
+        param = int(float(item.get("parameter", 20) or 20))
+    except Exception:
+        param = 20
+    interval = _normalize_interval(item.get("interval", "day"))
+    return f"{ticker}_{strategy}_{param}_{interval}"
+
+
+def _iv_label(iv: str) -> str:
+    m = {"minute240": "4H", "minute60": "1H", "day": "1D",
+         "4h": "4H", "1h": "1H", "1d": "1D"}
+    return m.get(iv, iv)
+
+
+# ═══════════════════════════════════════════
+# 서브탭 1: 예정 주문 (향후 24시간 상세 조건)
+# ═══════════════════════════════════════════
+def _render_upcoming_orders(portfolio_list, initial_cap, config):
+    now_kst = datetime.now(_KST)
+
+    # ── 스케줄 슬롯 생성 ──
+    future_slots = []
+    for day_off in range(2):
+        for h in _SCHED_HOURS:
+            cand = (now_kst + timedelta(days=day_off)).replace(
+                hour=h, minute=0, second=0, microsecond=0
+            )
+            if now_kst < cand <= now_kst + timedelta(hours=24):
+                future_slots.append(cand)
+    future_slots.sort()
+    if not future_slots:
+        future_slots.append((now_kst + timedelta(days=1)).replace(hour=1, minute=0, second=0, microsecond=0))
+
+    # ── 데이터 로드 ──
+    sig_state = _load_json("signal_state.json") or {}
+    bc = _load_json("balance_cache.json") or {}
+    bals = bc.get("balances", {})
+    prices = bc.get("prices", {})
+    bc_time = bc.get("updated_at", "N/A")
+
+    tu_on = config.get("topup_enabled", False)
+    tu_buy = config.get("topup_buy_amount", 5000)
+    tu_sell = config.get("topup_sell_amount", 5000)
+
+    # ── 전략별 목표가 계산 ──
+    # SMA/Donchian feature 계산
+    strategy_targets = {}
+    try:
+        from src.strategy.sma import SMAStrategy
+        from src.strategy.donchian import DonchianStrategy
+        import src.engine.data_cache as data_cache
+
+        for pi in portfolio_list:
+            tk = f"{pi.get('market', 'KRW')}-{pi['coin'].upper()}"
+            strat_name = pi.get("strategy", "SMA").lower()
+            param = int(pi.get("parameter", 20) or 20)
+            sell_param = int(pi.get("sell_parameter", 0) or 0) or param
+            iv = _normalize_interval(pi.get("interval", "day"))
+            skey = _make_signal_key(pi)
+
+            try:
+                df = data_cache.get_ohlcv(tk, iv, count=200)
+                if df is None or len(df) < 2:
+                    continue
+
+                if strat_name.startswith("donchian"):
+                    strat = DonchianStrategy()
+                    df_feat = strat.create_features(df, buy_period=param, sell_period=sell_param)
+                    if df_feat is None or len(df_feat) < 2:
+                        continue
+                    eval_c = df_feat.iloc[-2]
+                    upper_key = f"Donchian_Upper_{param}"
+                    lower_key = f"Donchian_Lower_{sell_param}"
+                    strategy_targets[skey] = {
+                        "buy_target": _safe_float(eval_c.get(upper_key)),
+                        "sell_target": _safe_float(eval_c.get(lower_key)),
+                        "type": "donchian",
+                        "buy_label": f"상단밴드({param})",
+                        "sell_label": f"하단밴드({sell_param})",
+                    }
+                else:
+                    strat = SMAStrategy()
+                    df_feat = strat.create_features(df, periods=[param])
+                    if df_feat is None or len(df_feat) < 2:
+                        continue
+                    eval_c = df_feat.iloc[-2]
+                    sma_key = f"SMA_{param}"
+                    sma_val = _safe_float(eval_c.get(sma_key))
+                    strategy_targets[skey] = {
+                        "buy_target": sma_val,
+                        "sell_target": sma_val,
+                        "type": "sma",
+                        "buy_label": f"SMA({param})",
+                        "sell_label": f"SMA({param})",
+                    }
+            except Exception:
+                pass
+    except ImportError:
+        pass
+
+    # ── 코인별 weight 합산 ──
+    coin_wt_sum = {}
+    for pi in portfolio_list:
+        sym = pi["coin"].upper()
+        coin_wt_sum[sym] = coin_wt_sum.get(sym, 0) + float(pi.get("weight", 0))
+
+    # ── 총 포트폴리오 가치 ──
+    krw_bal = _safe_float(bals.get("KRW", 0))
+    total_coin_v = 0
+    seen = set()
+    for pi in portfolio_list:
+        sym = pi["coin"].upper()
+        if sym not in seen:
+            coin_b = _safe_float(bals.get(sym, 0))
+            tk = f"{pi.get('market', 'KRW')}-{sym}"
+            coin_p = _safe_float(prices.get(tk, 0))
+            total_coin_v += coin_b * coin_p
+            seen.add(sym)
+    total_pv = krw_bal + total_coin_v
+
+    # ── 다음 실행 표시 ──
+    next_dt = future_slots[0]
+    remain = next_dt - now_kst
+    hh = int(remain.total_seconds() // 3600)
+    mm = int((remain.total_seconds() % 3600) // 60)
+    st.info(f"다음 실행: **{next_dt.strftime('%Y-%m-%d %H:%M KST')}** ({hh}시간 {mm}분 후)")
+
+    # ── 각 슬롯별 상세 조건 표시 ──
+    for slot in future_slots:
+        sh = slot.hour
+        slot_remain = slot - now_kst
+        s_hh = int(slot_remain.total_seconds() // 3600)
+        s_mm = int((slot_remain.total_seconds() % 3600) // 60)
+        is_next = (slot == next_dt)
+
+        header = f"{'▶ ' if is_next else ''}{slot.strftime('%m월 %d일 %H:%M')} KST"
+        if is_next:
+            header += f" ({s_hh}시간 {s_mm}분 후)"
+
+        with st.expander(header, expanded=is_next):
+            for pi in portfolio_list:
+                sym = pi["coin"].upper()
+                tk = f"{pi.get('market', 'KRW')}-{sym}"
+                strat_name = pi.get("strategy", "SMA")
+                param = int(pi.get("parameter", 20) or 20)
+                iv = pi.get("interval", "day")
+                iv_norm = _normalize_interval(iv)
+                wt = float(pi.get("weight", 0))
+                skey = _make_signal_key(pi)
+
+                # interval 매칭
+                if iv_norm == "day" and sh != 9:
+                    st.caption(f"**[{strat_name} {param} / {_iv_label(iv)}]** — 스킵 (1D는 09시만 실행)")
+                    continue
+
+                state = sig_state.get(skey, "?")
+                # HOLD → 이전 상태 유지 (BUY)
+                if state == "HOLD":
+                    state = "BUY"
+                elif state == "?":
+                    state = "미확인"
+
+                close_now = _safe_float(prices.get(tk, 0))
+                coin_b = _safe_float(bals.get(sym, 0))
+                coin_v = coin_b * close_now
+
+                targets = strategy_targets.get(skey, {})
+                buy_target = targets.get("buy_target", 0)
+                sell_target = targets.get("sell_target", 0)
+                buy_label = targets.get("buy_label", "목표가")
+                sell_label = targets.get("sell_label", "목표가")
+
+                st.markdown(f"**[{strat_name} {param} / {_iv_label(iv)}]** 현재: {state} ({'보유' if state == 'BUY' else '현금'})")
+
+                if state == "BUY":
+                    # 보유 중 → 매도 조건 표시
+                    if sell_target > 0 and close_now > 0:
+                        dist = (close_now - sell_target) / sell_target * 100
+                        met = close_now < sell_target
+                        status = "**충족** → 매도 실행" if met else f"불충족 (이격도 {dist:+.2f}%)"
+                        st.markdown(
+                            f"  매도 조건: 종가 < {sell_label} = **{sell_target:,.0f}원**\n\n"
+                            f"  현재가: **{close_now:,.0f}원** → 조건 {status}"
+                        )
+                    if coin_b > 0:
+                        st.caption(f"  보유: {sym} {coin_b:.8g}개 ({coin_v:,.0f}원) → 조건 충족 시 전량 매도 예정")
+
+                    # 보충 매수
+                    if tu_on and wt > 0:
+                        target_v = total_pv * (wt / 100)
+                        cw_total = coin_wt_sum.get(sym, wt)
+                        my_hold = coin_v * (wt / cw_total) if cw_total > 0 else 0
+                        need = target_v - my_hold
+                        if need >= 5000:
+                            buy_amt = min(tu_buy, need)
+                            st.caption(
+                                f"  보충매수: 목표 {target_v:,.0f}원 - 보유 {my_hold:,.0f}원 = "
+                                f"부족 {need:,.0f}원 → **{buy_amt:,.0f}원 매수 예정**"
+                            )
+                        else:
+                            st.caption(f"  보충매수: 불필요 (보유 {my_hold:,.0f}원 / 목표 {target_v:,.0f}원)")
+
+                elif state == "SELL":
+                    # 현금 → 매수 조건 표시
+                    if buy_target > 0 and close_now > 0:
+                        dist = (close_now - buy_target) / buy_target * 100
+                        met = close_now > buy_target
+                        status = "**충족** → 매수 실행" if met else f"불충족 (이격도 {dist:+.2f}%)"
+                        st.markdown(
+                            f"  매수 조건: 종가 > {buy_label} = **{buy_target:,.0f}원**\n\n"
+                            f"  현재가: **{close_now:,.0f}원** → 조건 {status}"
+                        )
+                    if krw_bal > 5000 and wt > 0:
+                        target_v = total_pv * (wt / 100)
+                        est_qty = target_v / close_now if close_now > 0 else 0
+                        st.caption(
+                            f"  현금: {krw_bal:,.0f}원 → 조건 충족 시 "
+                            f"{sym} ~{est_qty:.8g}개 ({target_v:,.0f}원) 매수 예정"
+                        )
+                    # 보충 매도
+                    if tu_on and coin_v >= 5000:
+                        sell_amt = min(tu_sell, coin_v)
+                        st.caption(f"  보충매도: 잔량 {coin_v:,.0f}원 → **{sell_amt:,.0f}원 매도 예정**")
+                else:
+                    st.caption(f"  시그널 상태 미확인 — 전략 분석 후 결정")
+
+    st.caption(
+        f"잔고 KRW {krw_bal:,.0f}원 | 코인 {total_coin_v:,.0f}원 | "
+        f"총 {total_pv:,.0f}원 (캐시: {bc_time})"
+    )
+    st.caption("※ 예상 동작은 현재 시그널 상태 기준이며, 실제 전략 분석 결과에 따라 변경될 수 있습니다.")
+
+
+# ═══════════════════════════════════════════
+# 서브탭 2: 과거 주문 내역
+# ═══════════════════════════════════════════
+def _render_past_orders():
+    st.subheader("과거 주문 내역")
+
+    tl = _load_json("trade_log.json")
+    if not isinstance(tl, list) or not tl:
+        st.info("매매 로그 없음 (trade_log.json)")
+        return
+
+    # 필터
+    side_map = {"BUY": "매수", "SELL": "매도", "BUY_TOPUP": "보충매수", "SELL_TOPUP": "보충매도"}
+    fc1, fc2 = st.columns(2)
+    sides = fc1.multiselect("구분 필터", list(side_map.values()), default=list(side_map.values()), key="past_side_filter")
+    max_rows = fc2.number_input("표시 건수", min_value=10, max_value=200, value=50, step=10, key="past_max_rows")
+
+    reverse_map = {v: k for k, v in side_map.items()}
+    selected_keys = {reverse_map.get(s, s) for s in sides}
+
+    rows = []
+    for e in tl:
+        side = e.get("side", "")
+        if side not in selected_keys:
+            continue
+        result = e.get("result", "")
+        icon = "O" if result == "success" else "X"
+        rows.append({
+            "시간": e.get("time", ""),
+            "종목": e.get("ticker", ""),
+            "구분": side_map.get(side, side),
+            "금액": e.get("amount", ""),
+            "결과": icon,
+            "전략": e.get("strategy", ""),
+            "모드": e.get("mode", ""),
+        })
+        if len(rows) >= max_rows:
+            break
+
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.caption(f"총 {len(tl)}건 중 {len(rows)}건 표시")
+    else:
+        st.info("필터 조건에 맞는 기록이 없습니다.")
+
+
+# ═══════════════════════════════════════════
+# 서브탭 3: 보충 매수/매도 설정
+# ═══════════════════════════════════════════
+def _render_topup_settings(config, save_config):
+    st.subheader("보충 매수/매도 설정")
+    st.caption("BUY 시그널 유지 중 목표 미달 → 매 실행마다 설정 금액 추가 매수 / SELL 시그널 유지 중 잔량 보유 → 설정 금액 추가 매도")
+
+    topup_enabled = config.get("topup_enabled", False)
+    topup_buy_amt = config.get("topup_buy_amount", 5000)
+    topup_sell_amt = config.get("topup_sell_amount", 5000)
+
+    tu_on = st.checkbox("보충 매수/매도 활성화", value=topup_enabled, key="sched_topup_toggle")
+
+    if tu_on:
+        tc1, tc2 = st.columns(2)
+        tu_buy = tc1.number_input(
+            "보충 매수 금액 (KRW/회)", min_value=5000, max_value=1000000,
+            value=max(5000, topup_buy_amt), step=5000, key="sched_topup_buy",
+        )
+        tu_sell = tc2.number_input(
+            "보충 매도 금액 (KRW/회)", min_value=5000, max_value=1000000,
+            value=max(5000, topup_sell_amt), step=5000, key="sched_topup_sell",
+        )
+    else:
+        tu_buy = topup_buy_amt
+        tu_sell = topup_sell_amt
+
+    # 변경 감지 후 저장
+    if (tu_on != topup_enabled
+        or (tu_on and (tu_buy != topup_buy_amt or tu_sell != topup_sell_amt))):
+        new_cfg = config.copy()
+        new_cfg["topup_enabled"] = tu_on
+        new_cfg["topup_buy_amount"] = tu_buy
+        new_cfg["topup_sell_amount"] = tu_sell
+        save_config(new_cfg)
+        try:
+            subprocess.run(["git", "add", "user_config.json"],
+                           cwd=_PROJECT_ROOT, capture_output=True, timeout=10)
+            subprocess.run(["git", "commit", "-m", "auto: 보충 매수/매도 설정 변경"],
+                           cwd=_PROJECT_ROOT, capture_output=True, timeout=10)
+            subprocess.run(["git", "push"],
+                           cwd=_PROJECT_ROOT, capture_output=True, timeout=30)
+            st.success("보충 설정 저장 + Git 푸시 완료")
+        except Exception as e:
+            st.warning(f"설정 저장됨 (Git 푸시 실패: {e})")
+        st.rerun()
+
+
+# ═══════════════════════════════════════════
+# 메인 렌더 함수
+# ═══════════════════════════════════════════
+def render_scheduled_orders_tab(portfolio_list, initial_cap, config, save_config):
+    """예약 주문 탭 메인 렌더러."""
+    st.header("예약 주문")
+
+    sub1, sub2, sub3 = st.tabs(["📋 예정 주문", "📜 과거 내역", "⚙️ 보충 설정"])
+
+    with sub1:
+        if not portfolio_list:
+            st.warning("포트폴리오를 먼저 설정해주세요.")
+        else:
+            _render_upcoming_orders(portfolio_list, initial_cap, config)
+
+    with sub2:
+        _render_past_orders()
+
+    with sub3:
+        _render_topup_settings(config, save_config)
