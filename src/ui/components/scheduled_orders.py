@@ -190,13 +190,7 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
                 wt = float(pi.get("weight", 0))
                 skey = _make_signal_key(pi)
 
-                # interval 매칭
-                if iv_norm == "day" and sh != 9:
-                    st.caption(f"**[{strat_name} {param} / {_iv_label(iv)}]** — 스킵 (1D는 09시만 실행)")
-                    continue
-
                 state = sig_state.get(skey, "?")
-                # HOLD → 이전 상태 유지 (BUY)
                 if state == "HOLD":
                     state = "BUY"
                 elif state == "?":
@@ -212,22 +206,47 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
                 buy_label = targets.get("buy_label", "목표가")
                 sell_label = targets.get("sell_label", "목표가")
 
-                st.markdown(f"**[{strat_name} {param} / {_iv_label(iv)}]** 현재: {state} ({'보유' if state == 'BUY' else '현금'})")
+                # 1D 전략은 09시에만 시그널 분석, 보충 주문은 매 슬롯 실행
+                is_signal_skip = (iv_norm == "day" and sh != 9)
+                skip_note = " — 시그널 분석은 09시만" if is_signal_skip else ""
 
-                if state == "BUY":
-                    # 보유 중 → 매도 조건 표시
-                    if sell_target > 0 and close_now > 0:
+                st.markdown(
+                    f"**[{strat_name} {param} / {_iv_label(iv)}]** "
+                    f"현재: {state} ({'보유' if state == 'BUY' else '현금'}){skip_note}"
+                )
+
+                # 현재가 + 목표가 항상 표시
+                if close_now > 0:
+                    if state == "BUY" and sell_target > 0:
                         dist = (close_now - sell_target) / sell_target * 100
                         met = close_now < sell_target
-                        status = "**충족** → 매도 실행" if met else f"불충족 (이격도 {dist:+.2f}%)"
+                        cond = "충족 → 매도 실행" if met else f"미충족 ({dist:+.2f}%)"
                         st.markdown(
-                            f"  매도 조건: 종가 < {sell_label} = **{sell_target:,.0f}원**\n\n"
-                            f"  현재가: **{close_now:,.0f}원** → 조건 {status}"
+                            f"  현재가: **{close_now:,.0f}원** | "
+                            f"매도가: {sell_label} = **{sell_target:,.0f}원** | {cond}"
                         )
-                    if coin_b > 0:
-                        st.caption(f"  보유: {sym} {coin_b:.8g}개 ({coin_v:,.0f}원) → 조건 충족 시 전량 매도 예정")
+                    elif state == "SELL" and buy_target > 0:
+                        dist = (close_now - buy_target) / buy_target * 100
+                        met = close_now > buy_target
+                        cond = "충족 → 매수 실행" if met else f"미충족 ({dist:+.2f}%)"
+                        st.markdown(
+                            f"  현재가: **{close_now:,.0f}원** | "
+                            f"매수가: {buy_label} = **{buy_target:,.0f}원** | {cond}"
+                        )
+                    elif sell_target > 0 or buy_target > 0:
+                        tgt = sell_target or buy_target
+                        lbl = sell_label if sell_target > 0 else buy_label
+                        st.markdown(f"  현재가: **{close_now:,.0f}원** | 목표가: {lbl} = **{tgt:,.0f}원**")
+                    else:
+                        st.markdown(f"  현재가: **{close_now:,.0f}원**")
 
-                    # 보충 매수
+                if state == "BUY":
+                    if coin_b > 0 and not is_signal_skip:
+                        st.caption(f"  보유: {sym} {coin_b:.8g}개 ({coin_v:,.0f}원) → 조건 충족 시 전량 매도 예정")
+                    elif coin_b > 0:
+                        st.caption(f"  보유: {sym} {coin_b:.8g}개 ({coin_v:,.0f}원)")
+
+                    # 보충 매수 (1D 스킵 슬롯에서도 표시)
                     if tu_on and wt > 0:
                         target_v = total_pv * (wt / 100)
                         cw_total = coin_wt_sum.get(sym, wt)
@@ -243,23 +262,15 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
                             st.caption(f"  보충매수: 불필요 (보유 {my_hold:,.0f}원 / 목표 {target_v:,.0f}원)")
 
                 elif state == "SELL":
-                    # 현금 → 매수 조건 표시
-                    if buy_target > 0 and close_now > 0:
-                        dist = (close_now - buy_target) / buy_target * 100
-                        met = close_now > buy_target
-                        status = "**충족** → 매수 실행" if met else f"불충족 (이격도 {dist:+.2f}%)"
-                        st.markdown(
-                            f"  매수 조건: 종가 > {buy_label} = **{buy_target:,.0f}원**\n\n"
-                            f"  현재가: **{close_now:,.0f}원** → 조건 {status}"
-                        )
-                    if krw_bal > 5000 and wt > 0:
-                        target_v = total_pv * (wt / 100)
-                        est_qty = target_v / close_now if close_now > 0 else 0
-                        st.caption(
-                            f"  현금: {krw_bal:,.0f}원 → 조건 충족 시 "
-                            f"{sym} ~{est_qty:.8g}개 ({target_v:,.0f}원) 매수 예정"
-                        )
-                    # 보충 매도
+                    if not is_signal_skip:
+                        if krw_bal > 5000 and wt > 0:
+                            target_v = total_pv * (wt / 100)
+                            est_qty = target_v / close_now if close_now > 0 else 0
+                            st.caption(
+                                f"  현금: {krw_bal:,.0f}원 → 조건 충족 시 "
+                                f"{sym} ~{est_qty:.8g}개 ({target_v:,.0f}원) 매수 예정"
+                            )
+                    # 보충 매도 (1D 스킵 슬롯에서도 표시)
                     if tu_on and coin_v >= 5000:
                         sell_amt = min(tu_sell, coin_v)
                         st.caption(f"  보충매도: 잔량 {coin_v:,.0f}원 → **{sell_amt:,.0f}원 매도 예정**")
