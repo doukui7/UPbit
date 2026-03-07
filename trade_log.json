@@ -1,5 +1,23 @@
 [
   {
+    "mode": "signal",
+    "ticker": "KRW-BTC",
+    "side": "SKIP",
+    "strategy": "SMA(29, day)",
+    "reason": "주기 미도래(day)",
+    "detail": "interval=day, 보충매수/매도만 실행",
+    "time": "2026-03-08 01:20:16 KST"
+  },
+  {
+    "mode": "signal",
+    "ticker": "KRW-BTC",
+    "side": "SKIP",
+    "strategy": "Donchian(115, minute240)",
+    "reason": "주기 미도래(minute240)",
+    "detail": "interval=minute240, 보충매수/매도만 실행",
+    "time": "2026-03-08 01:20:16 KST"
+  },
+  {
     "mode": "auto",
     "ticker": "KRW-BTC",
     "side": "BUY",
