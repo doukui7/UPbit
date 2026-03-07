@@ -242,7 +242,23 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
 
                 if state == "BUY":
                     if coin_b > 0 and not is_signal_skip:
-                        st.caption(f"  보유: {sym} {coin_b:.8g}개 ({coin_v:,.0f}원) → 조건 충족 시 전량 매도 예정")
+                        # 비중별 매도: 동일 코인의 모든 전략이 SELL 전환 시에만 전량 매도
+                        cw_total = coin_wt_sum.get(sym, wt)
+                        sell_ratio = wt / cw_total if cw_total > 0 else 1
+                        sell_qty = coin_b * sell_ratio
+                        sell_val = sell_qty * close_now
+                        # 동일 코인 전 전략의 예상 매도 여부 확인
+                        all_sell = all(
+                            sig_state.get(_make_signal_key(p2), "BUY") in ("SELL", "?", "미확인")
+                            for p2 in portfolio_list if p2["coin"].upper() == sym
+                        )
+                        if all_sell:
+                            st.caption(f"  보유: {sym} {coin_b:.8g}개 ({coin_v:,.0f}원) → 전 전략 SELL 시 전량 매도 예정")
+                        else:
+                            st.caption(
+                                f"  보유: {sym} {coin_b:.8g}개 ({coin_v:,.0f}원) → "
+                                f"비중 {wt:.0f}%/{cw_total:.0f}% 매도 ({sell_qty:.8g}개, {sell_val:,.0f}원)"
+                            )
                     elif coin_b > 0:
                         st.caption(f"  보유: {sym} {coin_b:.8g}개 ({coin_v:,.0f}원)")
 
