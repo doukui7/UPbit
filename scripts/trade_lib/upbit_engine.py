@@ -583,6 +583,19 @@ def run_auto_trade():
         for _note in test_order_notes:
             logger.info(_note)
         if skipped_by_interval and not analyze_errors:
+            # 주기 미도래 전략의 목표가/이격도라도 signal_state에 반영
+            if skipped_analyses:
+                _skip_state = dict(signal_state)
+                for _sa in skipped_analyses:
+                    _sk = _sa.get("signal_key")
+                    if not _sk:
+                        continue
+                    _prev = str(_sa.get("prev_state", "")).upper() or "-"
+                    _pos = str(_sa.get("position_state", "")).upper()
+                    _ss = _prev if _prev not in ("-", "") else (_pos or "BUY")
+                    _skip_state[_sk] = build_signal_entry(_ss, _sa)
+                save_signal_state(_skip_state)
+                logger.info(f"signal_state 저장 완료 (주기스킵 {len(skipped_analyses)}개 분석만)")
             logger.info("이번 실행은 주기 미도래 전략만 존재하여 주문 없이 종료: "
                         + ", ".join(f"{t}({iv})" for t, iv in skipped_by_interval[:8]))
             return
@@ -940,6 +953,17 @@ def run_auto_trade():
 
     # ── 4단계: 포지션 상태 저장 ──
     next_signal_state = dict(signal_state)
+
+    # 주기 미도래(skipped) 전략도 목표가/이격도 업데이트 (상태는 이전값 유지)
+    for a in skipped_analyses:
+        key = a.get("signal_key")
+        if not key:
+            continue
+        prev = str(a.get("prev_state", "")).upper() or "-"
+        pos_state = str(a.get("position_state", "")).upper()
+        save_state = prev if prev not in ("-", "") else (pos_state or "BUY")
+        next_signal_state[key] = build_signal_entry(save_state, a)
+
     for a in analyses:
         key = a.get("signal_key")
         if not key:

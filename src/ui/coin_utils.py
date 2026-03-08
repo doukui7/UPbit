@@ -34,8 +34,18 @@ def clear_cache(*keys):
         st.session_state.pop(f"__t_{k}", None)
 
 
+def _auto_sync_from_github():
+    """자동 동기화: 2분마다 GitHub에서 캐시 파일 pull."""
+    _key = "__last_auto_sync"
+    now = time.time()
+    if now - st.session_state.get(_key, 0) > 120:
+        sync_account_cache_from_github()
+        st.session_state[_key] = now
+
+
 def load_balance_cache():
-    """최근 잔고 캐시 파일(balance_cache.json) 로드."""
+    """최근 잔고 캐시 파일(balance_cache.json) 로드. 2분마다 GitHub 자동 동기화."""
+    _auto_sync_from_github()
     try:
         cache_file = os.path.join(PROJECT_ROOT, "balance_cache.json")
         if os.path.exists(cache_file):
@@ -50,6 +60,7 @@ def load_balance_cache():
 
 def load_account_cache():
     """계좌 캐시 파일(account_cache.json) 로드. VM 경유 조회 결과."""
+    _auto_sync_from_github()
     try:
         cache_file = os.path.join(PROJECT_ROOT, "account_cache.json")
         if os.path.exists(cache_file):
@@ -61,7 +72,8 @@ def load_account_cache():
 
 
 def load_signal_state():
-    """최근 전략 포지션 상태(signal_state.json) 로드."""
+    """최근 전략 포지션 상태(signal_state.json) 로드. 2분마다 GitHub 자동 동기화."""
+    _auto_sync_from_github()
     try:
         state_file = os.path.join(PROJECT_ROOT, "signal_state.json")
         if os.path.exists(state_file):
