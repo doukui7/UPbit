@@ -1,0 +1,11 @@
+{
+  "coin_portfolio": true,
+  "coin_signal_state": true,
+  "coin_trade_yml": true,
+  "coin_vm_run_job": true,
+  "pen_yml_exists": true,
+  "pen_yml_schedule": true,
+  "pen_yml_checkout": true,
+  "pen_yml_scp": true,
+  "pen_orders_exist": true
+}

@@ -123,32 +123,56 @@ def _analyze_success_run(run_kst_str: str, workflow: str) -> str:
     date_part = run_kst_str[:5]   # "03-06"
     hour_part = run_kst_str[6:8]  # "21"
 
-    has_trade = False
-    trade_summary = ""
+    # mode별로 분리: signal(분석 판단) vs auto(실제 주문)
+    signal_entries = []  # 시그널 판단 기록
+    auto_entries = []    # 실제 주문 기록
     if isinstance(tl, list):
         for e in tl:
             t = e.get("time", "")
-            # "2026-03-06 09:02:19 KST" 형태
             if f"-{date_part}" in t:
                 t_hour = t[11:13] if len(t) > 13 else ""
-                # ±1시간 범위로 매칭 (GH Actions 시작 ~ 실행 완료)
                 try:
                     rh = int(hour_part)
                     th = int(t_hour)
                     if abs(rh - th) <= 1 or abs(rh - th) >= 23:
-                        has_trade = True
-                        side = {"BUY": "매수", "SELL": "매도",
-                                "BUY_TOPUP": "보충매수", "SELL_TOPUP": "보충매도"
-                                }.get(e.get("side", ""), e.get("side", ""))
-                        result = "성공" if e.get("result") == "success" else "실패"
-                        trade_summary += f"{side}({result}) "
+                        mode = e.get("mode", "")
+                        if mode in ("auto", "real"):
+                            auto_entries.append(e)
+                        elif mode == "signal":
+                            signal_entries.append(e)
                 except (ValueError, TypeError):
                     pass
 
-    if has_trade:
-        return f"매매 실행됨: {trade_summary.strip()}"
+    parts = []
 
-    # 매매 없음 → signal_state로 원인 분석
+    # 실제 주문 내역
+    if auto_entries:
+        side_map = {"BUY": "매수", "SELL": "매도",
+                    "BUY_TOPUP": "보충매수", "SELL_TOPUP": "보충매도"}
+        auto_parts = []
+        for e in auto_entries:
+            side = side_map.get(e.get("side", ""), e.get("side", ""))
+            result = "성공" if e.get("result") == "success" else "실패"
+            auto_parts.append(f"{side}({result})")
+        parts.append(f"주문: {' '.join(auto_parts)}")
+
+    # 시그널 판단 내역
+    if signal_entries:
+        sig_map = {"BUY": "매수", "SELL": "매도", "HOLD": "유지",
+                   "SKIP": "스킵"}
+        sig_parts = []
+        for e in signal_entries:
+            side = sig_map.get(e.get("side", ""), e.get("side", ""))
+            strat = e.get("strategy", "")
+            # 전략명 축약 (SMA(29, day) → SMA)
+            strat_short = strat.split("(")[0] if strat else ""
+            sig_parts.append(f"{strat_short}={side}")
+        parts.append(f"시그널: {' '.join(sig_parts)}")
+
+    if parts:
+        return " | ".join(parts)
+
+    # trade_log에 기록 없음 → signal_state로 원인 분석
     sig = _load_json("signal_state.json")
     if not isinstance(sig, dict):
         return "매매 없음 (signal_state 미확인)"
@@ -357,7 +381,7 @@ def _render_trade_log():
             continue
         side = e.get("side", "")
         side_kr = {"BUY": "매수", "SELL": "매도", "BUY_TOPUP": "보충매수", "SELL_TOPUP": "보충매도"}.get(side, side)
-        mode_kr = {"auto": "자동", "manual": "수동", "signal": "시그널"}.get(mode, mode)
+        mode_kr = {"real": "실매매", "auto": "실매매", "manual": "수동", "signal": "시그널"}.get(mode, mode)
         amount_str = e.get("amount", e.get("qty", ""))
         rows.append({
             "시간": e.get("time", ""),
@@ -630,7 +654,7 @@ def _render_system_status():
         for e in recent:
             side = e.get("side", "")
             side_kr = {"BUY": "매수", "SELL": "매도", "BUY_TOPUP": "보충매수", "SELL_TOPUP": "보충매도"}.get(side, side)
-            mode_kr = {"auto": "자동", "manual": "수동", "signal": "시그널"}.get(e.get("mode", ""), "")
+            mode_kr = {"real": "실매매", "auto": "실매매", "manual": "수동", "signal": "시그널"}.get(e.get("mode", ""), "")
             result = e.get("result", "")
             icon = "✅" if result == "success" else ("❌" if result == "error" else "ℹ️")
             st.caption(f"{icon} [{e.get('time', '')}] {mode_kr} {e.get('ticker', '')} {side_kr} | {result}")
@@ -741,7 +765,7 @@ def _render_verification():
                 if date_str in e.get("time", ""):
                     side = e.get("side", "")
                     side_kr = {"BUY": "매수", "SELL": "매도", "BUY_TOPUP": "보충매수", "SELL_TOPUP": "보충매도"}.get(side, side)
-                    mode_kr = {"auto": "자동", "manual": "수동", "signal": "시그널"}.get(e.get("mode", ""), e.get("mode", ""))
+                    mode_kr = {"real": "실매매", "auto": "실매매", "manual": "수동", "signal": "시그널"}.get(e.get("mode", ""), e.get("mode", ""))
                     result = e.get("result", "")
                     tl_entries.append({
                         "시간": e.get("time", "")[11:19] if len(e.get("time", "")) > 11 else e.get("time", ""),

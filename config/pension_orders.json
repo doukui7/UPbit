@@ -1,0 +1,62 @@
+[
+  {
+    "id": "pen-20260306125410-9040",
+    "etf_code": "453540",
+    "etf_name": "TIGER 미국채10년선물",
+    "side": "매수",
+    "qty": 1,
+    "method": "동시호가 (장마감)",
+    "price": 0,
+    "scheduled_kst": "2026-03-06 15:10",
+    "status": "실패",
+    "created_at": "2026-03-06 12:54:10",
+    "executed_at": "2026-03-06 15:19:18",
+    "result": "{'success': False, 'msg': '?꾩옱媛\\x80 議고쉶 ?ㅽ뙣'}",
+    "note": ""
+  },
+  {
+    "id": "pen-20260306180911-3218",
+    "etf_code": "453540",
+    "etf_name": "TIGER 미국채10년선물",
+    "side": "매수",
+    "qty": 1,
+    "method": "동시호가 (장마감)",
+    "price": 0,
+    "scheduled_kst": "2026-03-31 15:20",
+    "status": "취소",
+    "created_at": "2026-03-06 18:09:11",
+    "executed_at": "2026-03-06 18:10:35",
+    "result": "",
+    "note": "리밸런싱"
+  },
+  {
+    "id": "pen-20260306180911-6397",
+    "etf_code": "360750",
+    "etf_name": "TIGER 미국S&P500",
+    "side": "매수",
+    "qty": 6,
+    "method": "동시호가 (장마감)",
+    "price": 0,
+    "scheduled_kst": "2026-03-31 15:20",
+    "status": "취소",
+    "created_at": "2026-03-06 18:09:11",
+    "executed_at": "2026-03-06 18:10:40",
+    "result": "",
+    "note": "리밸런싱"
+  },
+  {
+    "id": "pen-20260306181106-3778",
+    "etf_code": "453540",
+    "etf_name": "TIGER 미국채10년선물",
+    "side": "매수",
+    "qty": 1,
+    "method": "동시호가 (장마감)",
+    "price": 0,
+    "scheduled_kst": "2026-03-09 15:20",
+    "status": "대기",
+    "created_at": "2026-03-06 18:11:06",
+    "executed_at": "",
+    "result": "",
+    "note": ""
+  }
+]

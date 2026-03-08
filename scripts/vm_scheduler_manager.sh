@@ -168,6 +168,56 @@ show_status() {
   fi
 }
 
+last_trade_age_sec() {
+  if [[ ! -f "${STATE_FILE}" ]]; then
+    echo ""
+    return 0
+  fi
+  local py
+  if ! py="$(choose_python)"; then
+    echo ""
+    return 0
+  fi
+  "${py}" - "${STATE_FILE}" <<'PY'
+import json, sys, time
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    raw = data.get("__last_trade_epoch")
+    if raw in (None, ""):
+        print("")
+        raise SystemExit(0)
+    ts = float(raw)
+    age = int(max(0, time.time() - ts))
+    print(age)
+except Exception:
+    print("")
+PY
+}
+
+consecutive_failures() {
+  if [[ ! -f "${STATE_FILE}" ]]; then
+    echo "0"
+    return 0
+  fi
+  local py
+  if ! py="$(choose_python)"; then
+    echo "0"
+    return 0
+  fi
+  "${py}" - "${STATE_FILE}" <<'PY'
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    print(data.get("__consecutive_failures", "0"))
+except Exception:
+    print("0")
+PY
+}
+
 ensure_scheduler() {
   if is_running; then
     local pid
@@ -175,6 +225,7 @@ ensure_scheduler() {
     local hb_age
     hb_age="$(heartbeat_age_sec)"
 
+    # 1) heartbeat가 stale이면 재시작
     if [[ -n "${hb_age}" ]] && [[ "${hb_age}" =~ ^[0-9]+$ ]] && (( hb_age > MAX_HEARTBEAT_AGE_SEC )); then
       echo "[warn] scheduler process is alive but heartbeat is stale (${hb_age}s > ${MAX_HEARTBEAT_AGE_SEC}s). restarting..."
       stop_scheduler
@@ -182,11 +233,35 @@ ensure_scheduler() {
       return 0
     fi
 
+    # 2) 연속 실패 5회 이상이면 재시작
+    local cons_fail
+    cons_fail="$(consecutive_failures)"
+    if [[ "${cons_fail}" =~ ^[0-9]+$ ]] && (( cons_fail >= 5 )); then
+      echo "[warn] ${cons_fail} consecutive failures detected. restarting..."
+      stop_scheduler
+      start_scheduler
+      return 0
+    fi
+
+    # 3) 마지막 trade 성공이 너무 오래됐으면 재시작 (6시간 = 21600초)
+    local trade_age
+    trade_age="$(last_trade_age_sec)"
+    if [[ -n "${trade_age}" ]] && [[ "${trade_age}" =~ ^[0-9]+$ ]] && (( trade_age > 21600 )); then
+      echo "[warn] last trade success was ${trade_age}s ago (>6h). restarting..."
+      stop_scheduler
+      start_scheduler
+      return 0
+    fi
+
     echo "[ok] scheduler already running (pid=${pid})"
     if [[ -n "${hb_age}" ]]; then
-      echo "[info] scheduler heartbeat age: ${hb_age}s"
-    else
-      echo "[warn] scheduler heartbeat unavailable (older scheduler state format)"
+      echo "[info] heartbeat age: ${hb_age}s"
+    fi
+    if [[ -n "${trade_age}" ]]; then
+      echo "[info] last trade age: ${trade_age}s"
+    fi
+    if [[ -n "${cons_fail}" ]] && [[ "${cons_fail}" != "0" ]]; then
+      echo "[warn] consecutive failures: ${cons_fail}"
     fi
     return 0
   fi

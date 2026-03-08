@@ -1,7 +1,9 @@
 import json
 import os
+import time
 import pandas as pd
 import streamlit as st
+from src.ui.coin_utils import trigger_and_wait_gh, sync_account_cache_from_github
 
 
 def _iv_label(iv: str) -> str:
@@ -329,3 +331,165 @@ def render_strategy_trigger_tab(mode: str, coin_portfolio: list | None = None):
     elif mode == "PENSION":
         st.subheader("연금저축 전략 트리거")
         st.info("매월 25~31일 평일 15:10 KST 주문 실행")
+
+    # ── VM 스케줄러 모니터링 (모든 모드 공통) ──
+    st.divider()
+    _render_scheduler_monitor()
+
+
+def _render_scheduler_monitor():
+    """VM 스케줄러 상태 표시 + 재시작/ensure 버튼."""
+    st.subheader("VM 스케줄러 모니터링")
+
+    # state 파일에서 상태 읽기
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+    # git에서 최신 상태 가져오기
+    sync_account_cache_from_github()
+
+    state_path = os.path.join(project_root, "logs", "vm_scheduler_state.json")
+    state = {}
+    if os.path.exists(state_path):
+        try:
+            with open(state_path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+        except Exception:
+            pass
+
+    # 핵심 지표 표시
+    col1, col2, col3, col4 = st.columns(4)
+
+    # 1) Heartbeat
+    hb_epoch = state.get("__heartbeat_epoch", "")
+    hb_age = ""
+    hb_status = "unknown"
+    if hb_epoch:
+        try:
+            age_sec = int(time.time() - float(hb_epoch))
+            hb_age = f"{age_sec}초 전"
+            if age_sec < 60:
+                hb_status = "healthy"
+            elif age_sec < 180:
+                hb_status = "warning"
+            else:
+                hb_status = "dead"
+        except Exception:
+            pass
+
+    status_emoji = {"healthy": "🟢", "warning": "🟡", "dead": "🔴"}.get(hb_status, "⚪")
+    col1.metric("Heartbeat", f"{status_emoji} {hb_age or '없음'}")
+
+    # 2) 마지막 Trade 성공
+    trade_kst = state.get("__last_trade_kst", "없음")
+    trade_mode = state.get("__last_trade_mode", "")
+    col2.metric("마지막 Trade", trade_kst[-14:] if len(trade_kst) > 14 else trade_kst,
+                delta=trade_mode if trade_mode else None)
+
+    # 3) 연속 실패
+    cons_fail = state.get("__consecutive_failures", "0")
+    fail_color = "normal" if cons_fail == "0" else "inverse"
+    col3.metric("연속 실패", f"{cons_fail}회", delta_color=fail_color)
+
+    # 4) 시작 시각
+    started = state.get("__started_at_kst", "없음")
+    col4.metric("시작 시각", started[-14:] if len(started) > 14 else started)
+
+    # 에러 표시
+    last_error = state.get("__last_error", "")
+    if last_error:
+        st.warning(f"마지막 에러: {last_error}")
+
+    # 스케줄 실행 기록
+    schedule_modes = ["upbit", "health_check", "daily_status", "kiwoom_gold", "kis_isa", "kis_pension"]
+    schedule_data = []
+    for m in schedule_modes:
+        val = state.get(m, "")
+        if val:
+            # YYYYMMDDHHMM 형식
+            try:
+                from datetime import datetime
+                dt = datetime.strptime(val, "%Y%m%d%H%M")
+                val_display = dt.strftime("%m/%d %H:%M")
+            except Exception:
+                val_display = val
+            schedule_data.append({"모드": m, "마지막 실행": val_display})
+    if schedule_data:
+        with st.expander("스케줄 실행 기록", expanded=False):
+            st.dataframe(pd.DataFrame(schedule_data), use_container_width=True, hide_index=True)
+
+    # 제어 버튼
+    btn_cols = st.columns(4)
+
+    if btn_cols[0].button("🔄 스케줄러 Ensure", key="vm_ensure_btn", use_container_width=True):
+        _status = st.empty()
+        _status.info("VM 스케줄러 ensure 실행 중...")
+        ok, msg = trigger_and_wait_gh(
+            "vm_once_add", _status,
+            extra_inputs={"run_job": "vm_scheduler_ensure"},
+        )
+        # vm_scheduler.yml 직접 트리거
+        import subprocess
+        try:
+            r = subprocess.run(
+                ["gh", "workflow", "run", "vm_scheduler.yml",
+                 "-f", "run_job=vm_scheduler_ensure"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode == 0:
+                _status.success("Ensure 트리거 완료")
+            else:
+                _status.warning(f"트리거 실패: {r.stderr[:200]}")
+        except Exception as e:
+            _status.error(f"트리거 오류: {e}")
+
+    if btn_cols[1].button("🚀 스케줄러 재시작", key="vm_restart_btn", type="primary", use_container_width=True):
+        _status = st.empty()
+        _status.info("VM 스케줄러 재시작 중...")
+        import subprocess
+        try:
+            # vm_scheduler_stop → vm_scheduler_start
+            r = subprocess.run(
+                ["gh", "workflow", "run", "vm_scheduler.yml",
+                 "-f", "run_job=vm_scheduler_start"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode == 0:
+                _status.success("재시작 트리거 완료 (1~2분 소요)")
+            else:
+                _status.warning(f"트리거 실패: {r.stderr[:200]}")
+        except Exception as e:
+            _status.error(f"트리거 오류: {e}")
+
+    if btn_cols[2].button("📊 상태 조회", key="vm_status_btn", use_container_width=True):
+        _status = st.empty()
+        _status.info("VM 스케줄러 상태 조회 중...")
+        import subprocess
+        try:
+            r = subprocess.run(
+                ["gh", "workflow", "run", "vm_scheduler.yml",
+                 "-f", "run_job=vm_scheduler_status"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode == 0:
+                _status.success("상태 조회 트리거 완료 — GH Actions 로그에서 확인")
+            else:
+                _status.warning(f"트리거 실패: {r.stderr[:200]}")
+        except Exception as e:
+            _status.error(f"트리거 오류: {e}")
+
+    if btn_cols[3].button("⛔ 스케줄러 중지", key="vm_stop_btn", use_container_width=True):
+        _status = st.empty()
+        _status.info("VM 스케줄러 중지 중...")
+        import subprocess
+        try:
+            r = subprocess.run(
+                ["gh", "workflow", "run", "vm_scheduler.yml",
+                 "-f", "run_job=vm_scheduler_stop"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode == 0:
+                _status.success("중지 트리거 완료")
+            else:
+                _status.warning(f"트리거 실패: {r.stderr[:200]}")
+        except Exception as e:
+            _status.error(f"트리거 오류: {e}")

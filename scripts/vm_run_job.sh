@@ -43,11 +43,15 @@ if [[ "${AUTO_UPDATE}" == "1" ]]; then
   cp signal_state.json /tmp/_signal_state_backup.json 2>/dev/null || true
   cp balance_cache.json /tmp/_balance_cache_backup.json 2>/dev/null || true
   cp trade_log.json /tmp/_trade_log_backup.json 2>/dev/null || true
+  cp signal_test_orders.json /tmp/_signal_test_orders_backup.json 2>/dev/null || true
+  cp logs/vm_scheduler_state.json /tmp/_vm_scheduler_state_backup.json 2>/dev/null || true
   git fetch origin --quiet 2>/dev/null || true
   git reset --hard origin/master --quiet 2>/dev/null || true
   cp /tmp/_signal_state_backup.json signal_state.json 2>/dev/null || true
   cp /tmp/_balance_cache_backup.json balance_cache.json 2>/dev/null || true
   cp /tmp/_trade_log_backup.json trade_log.json 2>/dev/null || true
+  cp /tmp/_signal_test_orders_backup.json signal_test_orders.json 2>/dev/null || true
+  cp /tmp/_vm_scheduler_state_backup.json logs/vm_scheduler_state.json 2>/dev/null || true
 fi
 
 if ! command -v python >/dev/null 2>&1; then
@@ -75,7 +79,7 @@ if TRADING_MODE="${MODE}" python scripts/github_action_trade.py 2>&1 | tee -a "$
       if [[ -n "${GH_PAT:-}" ]]; then
         git remote set-url origin "https://${GH_PAT}@github.com/doukui7/UPbit.git" 2>/dev/null || true
       fi
-      git add -f balance_cache.json signal_state.json trade_log.json config/pension_orders.json 2>/dev/null || true
+      git add -f balance_cache.json signal_state.json trade_log.json signal_test_orders.json config/pension_orders.json logs/vm_scheduler_state.json 2>/dev/null || true
       if ! git diff --cached --quiet 2>/dev/null; then
         git -c user.name="auto-trade-bot" -c user.email="bot@auto-trade" \
           commit -m "auto: VM ${MODE} 후 캐시 동기화" 2>/dev/null || true
@@ -99,7 +103,7 @@ try:
     now = datetime.now(ZoneInfo('Asia/Seoul'))
 except Exception:
     now = datetime.now()
-mk = now.strftime('%Y%m%d%H%M')
+mk = now.strftime('%Y%m%d%H')
 path = '${STATE_FILE}'
 state = {}
 if os.path.exists(path):

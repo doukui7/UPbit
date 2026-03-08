@@ -113,10 +113,12 @@ jobs:
             cp balance_cache.json /tmp/_bc_backup.json 2>/dev/null || true
             cp signal_state.json /tmp/_ss_backup.json 2>/dev/null || true
             cp trade_log.json /tmp/_tl_backup.json 2>/dev/null || true
+            cp logs/vm_scheduler_state.json /tmp/_sched_backup.json 2>/dev/null || true
             git fetch origin --quiet 2>/dev/null && git reset --hard origin/master --quiet 2>/dev/null || true
             cp /tmp/_bc_backup.json balance_cache.json 2>/dev/null || true
             cp /tmp/_ss_backup.json signal_state.json 2>/dev/null || true
             cp /tmp/_tl_backup.json trade_log.json 2>/dev/null || true
+            cp /tmp/_sched_backup.json logs/vm_scheduler_state.json 2>/dev/null || true
             {
               printf "UPBIT_ACCESS_KEY=%q\n" "${UPBIT_ACCESS_KEY}"
               printf "UPBIT_SECRET_KEY=%q\n" "${UPBIT_SECRET_KEY}"
@@ -180,14 +182,16 @@ jobs:
           scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/balance_cache.json" ./balance_cache.json || echo "WARN: balance_cache.json not found"
           scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/signal_state.json" ./signal_state.json || echo "WARN: signal_state.json not found"
           scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/trade_log.json" ./trade_log.json || echo "WARN: trade_log.json not found"
+          mkdir -p logs
+          scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/logs/vm_scheduler_state.json" ./logs/vm_scheduler_state.json || echo "WARN: vm_scheduler_state.json not found"
           rm -f ~/.ssh/vm_key
           git config user.name "auto-trade-bot"
           git config user.email "bot@auto-trade"
-          git add balance_cache.json signal_state.json trade_log.json 2>/dev/null || true
+          git add balance_cache.json signal_state.json trade_log.json logs/vm_scheduler_state.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "No changes to sync"
           else
-            git commit -m "auto: 잔고/시그널/거래로그 5분 동기화"
+            git commit -m "auto: 잔고/시그널/거래로그/스케줄러상태 동기화"
             git pull --rebase origin master || true
             git push || echo "WARN: push failed, will retry next run"
           fi
@@ -245,14 +249,16 @@ jobs:
           scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/balance_cache.json" ./balance_cache.json || echo "WARN: balance_cache.json not found"
           scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/signal_state.json" ./signal_state.json || echo "WARN: signal_state.json not found"
           scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/trade_log.json" ./trade_log.json || echo "WARN: trade_log.json not found"
+          mkdir -p logs
+          scp -i ~/.ssh/vm_key "${VM_USER}@${VM_HOST}:~/upbit/logs/vm_scheduler_state.json" ./logs/vm_scheduler_state.json || echo "WARN: vm_scheduler_state.json not found"
           rm -f ~/.ssh/vm_key
           git config user.name "auto-trade-bot"
           git config user.email "bot@auto-trade"
-          git add balance_cache.json signal_state.json trade_log.json 2>/dev/null || true
+          git add balance_cache.json signal_state.json trade_log.json logs/vm_scheduler_state.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "No changes to sync"
           else
-            git commit -m "auto: VM 잔고/시그널/거래로그 동기화"
+            git commit -m "auto: VM 잔고/시그널/거래로그/스케줄러상태 동기화"
             git pull --rebase origin master || true
             git push || echo "WARN: push failed"
           fi

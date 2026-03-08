@@ -1,6 +1,6 @@
 {
   "KRW-BTC_SMA_29_day": {
-    "state": "BUY",
+    "state": "SELL",
     "buy_target": 99948275.86206897,
     "sell_target": 99948275.86206897,
     "strategy_type": "sma",

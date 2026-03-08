@@ -31,6 +31,10 @@ def _compute_kis_balance_summary(bal):
     if "buyable_cash" in bal and "holdings" in bal:
         if "cash" not in bal:
             bal["cash"] = bal.get("buyable_cash", 0.0)
+        if "stock_eval" not in bal:
+            bal["stock_eval"] = sum(_safe_float(h.get("eval_amt", 0)) for h in bal.get("holdings", []))
+        if "total_eval" not in bal:
+            bal["total_eval"] = bal["cash"] + bal["stock_eval"]
         return bal
 
     if "output1" not in bal:

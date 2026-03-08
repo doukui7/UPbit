@@ -1,0 +1,61 @@
+{
+  "kis_pension_account_no": "80236061",
+  "kis_pension_prdt_cd": "22",
+  "kis_pension_start_date": "2026-01-01",
+  "kis_pension_initial_cap": 10000000,
+  "pension_portfolio": [
+    {
+      "strategy": "LAA",
+      "weight": 50
+    },
+    {
+      "strategy": "듀얼모멘텀",
+      "weight": 50
+    },
+    {
+      "strategy": "VAA",
+      "weight": 0
+    },
+    {
+      "strategy": "CDM",
+      "weight": 0
+    }
+  ],
+  "kr_etf_laa_spy": "360750",
+  "kr_etf_laa_iwd": "360750",
+  "kr_etf_laa_gld": "132030",
+  "kr_etf_laa_ief": "453540",
+  "kr_etf_laa_qqq": "133690",
+  "kr_etf_laa_shy": "114470",
+  "pen_dm_lookback": 12,
+  "pen_dm_trading_days": 22,
+  "pen_dm_offensive": "SPY,EFA",
+  "pen_dm_defensive": "AGG",
+  "pen_dm_canary": "BIL",
+  "pen_dm_w1": 12.0,
+  "pen_dm_w3": 4.0,
+  "pen_dm_w6": 2.0,
+  "pen_dm_w12": 1.0,
+  "pen_dm_kr_spy": "360750",
+  "pen_dm_kr_efa": "453850",
+  "pen_dm_kr_agg": "453540",
+  "pen_dm_kr_bil": "114470",
+  "pen_dm_agg_etf": "360750",
+  "pen_dm_def_etf": "453540",
+  "pen_vaa_kr_spy": "379800",
+  "pen_vaa_kr_efa": "195930",
+  "pen_vaa_kr_eem": "295820",
+  "pen_vaa_kr_agg": "305080",
+  "pen_vaa_kr_lqd": "329750",
+  "pen_vaa_kr_ief": "305080",
+  "pen_vaa_kr_shy": "329750",
+  "pen_cdm_kr_spy": "379800",
+  "pen_cdm_kr_veu": "195930",
+  "pen_cdm_kr_vnq": "352560",
+  "pen_cdm_kr_rem": "352560",
+  "pen_cdm_kr_lqd": "305080",
+  "pen_cdm_kr_hyg": "305080",
+  "pen_cdm_kr_tlt": "304660",
+  "pen_cdm_kr_gld": "411060",
+  "pen_cdm_kr_bil": "329750"
+}

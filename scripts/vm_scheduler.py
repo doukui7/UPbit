@@ -40,11 +40,15 @@ BALANCE_CACHE_FILE = REPO_DIR / "balance_cache.json"
 CHECK_INTERVAL_SEC = 5
 HEARTBEAT_INTERVAL_SEC = 30
 BALANCE_SYNC_INTERVAL_SEC = 30       # 잔고 조회 주기 (초)
-BALANCE_PUSH_INTERVAL_SEC = 30 * 60  # 잔고 git push 주기 (초) — 월 ~720분 (무료 2000분 내)
+BALANCE_PUSH_INTERVAL_SEC = 5 * 60   # 잔고 git push 주기 (초) — 5분마다
 HEARTBEAT_EPOCH_KEY = "__heartbeat_epoch"
 HEARTBEAT_KST_KEY = "__heartbeat_kst"
 STARTED_AT_KEY = "__started_at_kst"
 LAST_ERROR_KEY = "__last_error"
+LAST_TRADE_EPOCH_KEY = "__last_trade_epoch"
+LAST_TRADE_KST_KEY = "__last_trade_kst"
+LAST_TRADE_MODE_KEY = "__last_trade_mode"
+CONSECUTIVE_FAIL_KEY = "__consecutive_failures"
 _LAST_BALANCE_SYNC = 0.0  # 마지막 잔고 조회 시각 (epoch)
 _LAST_BALANCE_PUSH = 0.0  # 마지막 잔고 push 시각 (epoch)
 
@@ -57,32 +61,32 @@ RULES: list[ScheduleRule] = [
     ScheduleRule(
         mode="upbit",
         label="코인 자동매매",
-        is_due=lambda dt: dt.minute == 0 and dt.hour in (1, 5, 9, 13, 17, 21),
+        is_due=lambda dt: dt.minute <= 10 and dt.hour in (1, 5, 9, 13, 17, 21),
     ),
     ScheduleRule(
         mode="health_check",
         label="헬스체크",
-        is_due=lambda dt: dt.minute == 5 and dt.hour in (1, 5, 9, 13, 17, 21),
+        is_due=lambda dt: 5 <= dt.minute <= 15 and dt.hour in (1, 5, 9, 13, 17, 21),
     ),
     ScheduleRule(
         mode="daily_status",
         label="일일 자산 현황",
-        is_due=lambda dt: dt.minute == 0 and dt.hour == 9 and _is_weekday(dt),
+        is_due=lambda dt: dt.minute <= 10 and dt.hour == 9 and _is_weekday(dt),
     ),
     ScheduleRule(
         mode="kiwoom_gold",
         label="키움 금현물",
-        is_due=lambda dt: dt.minute == 5 and dt.hour == 15 and _is_weekday(dt),
+        is_due=lambda dt: 5 <= dt.minute <= 15 and dt.hour == 15 and _is_weekday(dt),
     ),
     ScheduleRule(
         mode="kis_isa",
         label="KIS ISA",
-        is_due=lambda dt: dt.minute == 10 and dt.hour == 15 and dt.weekday() == 4,
+        is_due=lambda dt: 10 <= dt.minute <= 20 and dt.hour == 15 and dt.weekday() == 4,
     ),
     ScheduleRule(
         mode="kis_pension",
         label="KIS 연금저축",
-        is_due=lambda dt: dt.minute == 20
+        is_due=lambda dt: 20 <= dt.minute <= 30
         and dt.hour == 15
         and _is_weekday(dt)
         and 25 <= dt.day <= 31,
@@ -195,7 +199,56 @@ def _now_kst() -> datetime:
     return datetime.now(KST)
 
 
-def _run_mode(mode: str, label: str) -> bool:
+def _self_heal(state: dict[str, str]) -> None:
+    """연속 실패 시 git pull → 코드 갱신 → 상태 초기화."""
+    logging.info("자가 복구 시작: git fetch + reset (상태 파일 보존)")
+    cwd = str(REPO_DIR)
+    try:
+        # 상태 파일 백업
+        for fn in ("signal_state.json", "balance_cache.json", "trade_log.json", "signal_test_orders.json"):
+            src = REPO_DIR / fn
+            if src.exists():
+                subprocess.run(
+                    ["cp", str(src), f"/tmp/_{fn.replace('.', '_')}_heal.json"],
+                    capture_output=True, timeout=5,
+                )
+        # git reset --hard (코드 갱신)
+        subprocess.run(["git", "fetch", "origin", "--quiet"], cwd=cwd, capture_output=True, timeout=15)
+        subprocess.run(["git", "reset", "--hard", "origin/master", "--quiet"], cwd=cwd, capture_output=True, timeout=15)
+        # 상태 파일 복원
+        for fn in ("signal_state.json", "balance_cache.json", "trade_log.json", "signal_test_orders.json"):
+            bak = f"/tmp/_{fn.replace('.', '_')}_heal.json"
+            subprocess.run(["cp", bak, str(REPO_DIR / fn)], capture_output=True, timeout=5)
+        state[CONSECUTIVE_FAIL_KEY] = "0"
+        state[LAST_ERROR_KEY] = f"{_now_kst().strftime('%Y-%m-%d %H:%M:%S')} | self-heal: git reset 완료"
+        logging.info("자가 복구 완료: 코드 갱신됨")
+    except Exception as e:
+        logging.error("자가 복구 실패: %s", e)
+
+
+def _send_scheduler_telegram(message: str) -> None:
+    """스케줄러 이벤트 텔레그램 알림."""
+    try:
+        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+        if not bot_token or not chat_id:
+            # .vm_runtime_env에서 로드 시도
+            bot_token = bot_token or _read_env_file_value("TELEGRAM_BOT_TOKEN")
+            chat_id = chat_id or _read_env_file_value("TELEGRAM_CHAT_ID")
+        if not bot_token or not chat_id:
+            return
+        import urllib.request
+        import urllib.parse
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        data = urllib.parse.urlencode({
+            "chat_id": chat_id, "text": message, "parse_mode": "HTML",
+        }).encode()
+        urllib.request.urlopen(url, data=data, timeout=10)
+    except Exception as e:
+        logging.debug("텔레그램 알림 실패: %s", e)
+
+
+def _run_mode(mode: str, label: str, state: dict[str, str] | None = None) -> bool:
     cmd = ["bash", "scripts/vm_run_job.sh", mode]
     logging.info("실행 시작: %s (%s)", label, mode)
     started = time.time()
@@ -211,6 +264,12 @@ def _run_mode(mode: str, label: str) -> bool:
         elapsed = time.time() - started
         if res.returncode == 0:
             logging.info("실행 완료: %s (%s) %.1fs", label, mode, elapsed)
+            if state is not None:
+                now = _now_kst()
+                state[LAST_TRADE_EPOCH_KEY] = f"{time.time():.3f}"
+                state[LAST_TRADE_KST_KEY] = now.strftime("%Y-%m-%d %H:%M:%S")
+                state[LAST_TRADE_MODE_KEY] = mode
+                state[CONSECUTIVE_FAIL_KEY] = "0"
             return True
         else:
             logging.error(
@@ -222,12 +281,21 @@ def _run_mode(mode: str, label: str) -> bool:
                 (res.stdout or "").strip()[:600],
                 (res.stderr or "").strip()[:600],
             )
+            if state is not None:
+                prev = int(state.get(CONSECUTIVE_FAIL_KEY, "0") or "0")
+                state[CONSECUTIVE_FAIL_KEY] = str(prev + 1)
             return False
     except subprocess.TimeoutExpired:
         logging.error("실행 타임아웃: %s (%s)", label, mode)
+        if state is not None:
+            prev = int(state.get(CONSECUTIVE_FAIL_KEY, "0") or "0")
+            state[CONSECUTIVE_FAIL_KEY] = str(prev + 1)
         return False
     except Exception as e:
         logging.exception("실행 예외: %s (%s): %s", label, mode, e)
+        if state is not None:
+            prev = int(state.get(CONSECUTIVE_FAIL_KEY, "0") or "0")
+            state[CONSECUTIVE_FAIL_KEY] = str(prev + 1)
         return False
 
 
@@ -285,7 +353,7 @@ def _run_due_oneoff_jobs(now: datetime, state: dict[str, str]) -> bool:
             continue
 
         label = RULE_LABELS.get(mode, mode)
-        ok = _run_mode(mode, f"1회성 예약: {label}")
+        ok = _run_mode(mode, f"1회성 예약: {label}", state)
         if ok:
             job["status"] = "done"
         else:
@@ -301,6 +369,11 @@ def _run_due_oneoff_jobs(now: datetime, state: dict[str, str]) -> bool:
 
 def _minute_key(dt: datetime) -> str:
     return dt.strftime("%Y%m%d%H%M")
+
+
+def _slot_key(dt: datetime) -> str:
+    """시간 슬롯 키 — 같은 시간대 재실행 방지 (10분 윈도우 대응)."""
+    return dt.strftime("%Y%m%d%H")
 
 
 # ═══════════════════════════════════════════
@@ -412,9 +485,10 @@ def _push_balance_cache() -> bool:
              f"https://{gh_pat}@github.com/doukui7/UPbit.git"],
             cwd=cwd, capture_output=True, timeout=10,
         )
-        # git add
+        # git add (잔고 + 시그널 + 거래로그 + 스케줄러 상태)
         subprocess.run(
-            ["git", "add", "-f", "balance_cache.json", "signal_state.json", "trade_log.json"],
+            ["git", "add", "-f", "balance_cache.json", "signal_state.json",
+             "trade_log.json", "logs/vm_scheduler_state.json"],
             cwd=cwd, capture_output=True, timeout=10,
         )
         # 변경 확인
@@ -511,7 +585,7 @@ def main() -> int:
     try:
         while RUNNING:
             now = _now_kst()
-            mk = _minute_key(now)
+            sk = _slot_key(now)
             state_dirty = False
             has_heavy_job = False
 
@@ -525,14 +599,32 @@ def main() -> int:
                 for rule in RULES:
                     if not rule.is_due(now):
                         continue
-                    if state.get(rule.mode) == mk:
+                    if state.get(rule.mode) == sk:
                         continue
-                    _run_mode(rule.mode, rule.label)
-                    state[rule.mode] = mk
+                    ok = _run_mode(rule.mode, rule.label, state)
+                    state[rule.mode] = sk
                     state_dirty = True
                     has_heavy_job = True
-                    if LAST_ERROR_KEY in state:
+                    if ok and LAST_ERROR_KEY in state:
                         state.pop(LAST_ERROR_KEY, None)
+                    # 연속 실패 시 텔레그램 알림 + 코드 갱신
+                    if not ok:
+                        cons_fail = int(state.get(CONSECUTIVE_FAIL_KEY, "0") or "0")
+                        if cons_fail == 2:
+                            _send_scheduler_telegram(
+                                f"⚠️ <b>VM 스케줄러 연속 {cons_fail}회 실패</b>\n"
+                                f"모드: {rule.mode} ({rule.label})\n"
+                                f"시각: {now.strftime('%m-%d %H:%M')}"
+                            )
+                        if cons_fail >= 3:
+                            logging.warning(
+                                "연속 %d회 실패 — git pull 후 재시도", cons_fail
+                            )
+                            _send_scheduler_telegram(
+                                f"🔄 <b>VM 스케줄러 자가 복구 시작</b>\n"
+                                f"연속 {cons_fail}회 실패 → git reset + 코드 갱신"
+                            )
+                            _self_heal(state)
             except Exception as e:
                 # 루프 전체가 죽지 않도록 방어하고 다음 tick에서 계속 진행한다.
                 logging.exception("스케줄 루프 예외: %s", e)
