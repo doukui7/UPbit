@@ -795,6 +795,12 @@ def _describe_upbit_signal_reason(analysis: dict) -> str:
     pos_state = str(analysis.get("position_state", "")).upper()
     prev_state = str(analysis.get("prev_state", "")).upper()
 
+    if signal == "SKIP":
+        iv = str(analysis.get("interval", ""))
+        iv_label = "1D→09시만" if iv == "day" else f"{iv}→해당 주기만"
+        if pos_state in {"BUY", "SELL"}:
+            return f"주기 미도래 ({iv_label}, 현재 판단={pos_state})"
+        return f"주기 미도래 ({iv_label})"
     if signal in {"BUY", "SELL"}:
         return f"주문조건 충족 ({signal} 전환)"
     if pos_state == "HOLD":
@@ -1149,16 +1155,31 @@ def run_auto_trade():
 
     logger.info(f"=== Portfolio Auto Trade ({len(portfolio)} assets) ===")
 
-    # ── 1단계: 전체 포지션 상태 분석 (전략 주기 필터 적용) ──
+    # ── 1단계: 전체 포지션 상태 분석 ──
     analyses = []
+    skipped_analyses = []  # 주기 미도래지만 분석은 수행 (텔레그램 표시용)
     analyze_errors = []
     skipped_by_interval = []
     for item in portfolio:
         ticker = f"{item.get('market', 'KRW')}-{str(item.get('coin', '')).upper()}"
         iv = _normalize_coin_interval(item.get("interval", "day"))
-        if not _is_coin_interval_due(iv, now_kst):
+        interval_due = _is_coin_interval_due(iv, now_kst)
+        if not interval_due:
             skipped_by_interval.append((ticker, iv))
-            logger.info(f"[{ticker}] 주기 미도래({iv}) - 이번 실행에서 스킵")
+            logger.info(f"[{ticker}] 주기 미도래({iv}) - 매매 스킵 (분석만 수행)")
+            # 주기 미도래여도 분석 수행 (텔레그램 표시용)
+            try:
+                skip_result = analyze_asset(trader, item)
+                if skip_result:
+                    key = _make_signal_key(item)
+                    prev = signal_state.get(key)
+                    skip_result['signal'] = 'SKIP'  # 매매 실행 안 함
+                    skip_result['prev_state'] = prev
+                    skip_result['signal_key'] = key
+                    skip_result['interval_due'] = False
+                    skipped_analyses.append(skip_result)
+            except Exception:
+                pass
             _strat_label = f"{item.get('strategy', 'SMA')}({item.get('parameter', 20)}, {item.get('interval', 'day')})"
             _append_trade_log({
                 "mode": "signal", "ticker": ticker,
@@ -1716,7 +1737,10 @@ def run_auto_trade():
 
     from collections import OrderedDict as _OD
     _tg_coin_groups = _OD()
+    # 실행 대상 + 주기 미도래 전략 모두 표시
     for a in analyses:
+        _tg_coin_groups.setdefault(a['coin_sym'], []).append(a)
+    for a in skipped_analyses:
         _tg_coin_groups.setdefault(a['coin_sym'], []).append(a)
 
     tg_lines = [f"<b>코인 자동매매 완료</b>"]
@@ -1766,9 +1790,13 @@ def run_auto_trade():
             _reason = _describe_upbit_signal_reason(_a)
             _prev = _a.get("prev_state")
             _prev_text = _prev if _prev not in (None, "") else "-"
+            _sig_display = _a.get('signal')
+            if _sig_display == 'SKIP':
+                _sig_display = f"SKIP (판단={_a.get('position_state')}, 이전={_prev_text})"
+            else:
+                _sig_display = f"실행={_sig_display} (판단={_a.get('position_state')}, 이전={_prev_text})"
             tg_lines.append(
-                f"{_a.get('strategy_label', '전략')} | 실행={_a.get('signal')} "
-                f"(판단={_a.get('position_state')}, 이전={_prev_text})"
+                f"{_a.get('strategy_label', '전략')} | {_sig_display}"
             )
             for _line in _compact_upbit_condition_lines(_a):
                 tg_lines.append(f"  {_line}")
