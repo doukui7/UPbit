@@ -1,5 +1,14 @@
 [
   {
+    "mode": "manual",
+    "ticker": "KRW-BTC",
+    "side": "SELL",
+    "pct": 50.0,
+    "detail": "시장가 매도 0.00042396 BTC (≈42,215원) | {'type': 'sell', 'ticker': 'KRW-BTC', 'filled_volume': 0.00042396, 'avg_price': 99438999.99999999, 'total_krw': 42158.15844, 'splits_used': 3, 'logs':",
+    "result": "success",
+    "time": "2026-03-09 01:14:39 KST"
+  },
+  {
     "mode": "signal",
     "ticker": "KRW-BTC",
     "side": "SKIP",
