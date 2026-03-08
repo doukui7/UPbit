@@ -5,6 +5,7 @@ import subprocess
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, timezone
+from src.ui.coin_utils import get_signal_entry
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 _KST = timezone(timedelta(hours=9))
@@ -61,61 +62,6 @@ def _fmt_krw(v):
     return "-"
 
 
-def _compute_strategy_targets(portfolio_list):
-    """전략별 목표가 계산 (SMA/Donchian)."""
-    targets = {}
-    try:
-        from src.strategy.sma import SMAStrategy
-        from src.strategy.donchian import DonchianStrategy
-        import src.engine.data_cache as data_cache
-
-        for pi in portfolio_list:
-            tk = f"{pi.get('market', 'KRW')}-{pi['coin'].upper()}"
-            strat_name = pi.get("strategy", "SMA").lower()
-            param = int(pi.get("parameter", 20) or 20)
-            sell_param = int(pi.get("sell_parameter", 0) or 0) or param
-            iv = _normalize_interval(pi.get("interval", "day"))
-            skey = _make_signal_key(pi)
-
-            try:
-                df = data_cache.get_ohlcv_local_first(tk, iv, count=max(200, param + 20))
-                if df is None or len(df) < 2:
-                    continue
-
-                if strat_name.startswith("donchian"):
-                    strat = DonchianStrategy()
-                    df_feat = strat.create_features(df, buy_period=param, sell_period=sell_param)
-                    if df_feat is None or len(df_feat) < 2:
-                        continue
-                    eval_c = df_feat.iloc[-2]
-                    targets[skey] = {
-                        "buy_target": _safe_float(eval_c.get(f"Donchian_Upper_{param}")),
-                        "sell_target": _safe_float(eval_c.get(f"Donchian_Lower_{sell_param}")),
-                        "type": "donchian",
-                        "buy_label": f"상단({param})",
-                        "sell_label": f"하단({sell_param})",
-                    }
-                else:
-                    strat = SMAStrategy()
-                    df_feat = strat.create_features(df, periods=[param])
-                    if df_feat is None or len(df_feat) < 2:
-                        continue
-                    eval_c = df_feat.iloc[-2]
-                    sma_val = _safe_float(eval_c.get(f"SMA_{param}"))
-                    targets[skey] = {
-                        "buy_target": sma_val,
-                        "sell_target": sma_val,
-                        "type": "sma",
-                        "buy_label": f"SMA({param})",
-                        "sell_label": f"SMA({param})",
-                    }
-            except Exception:
-                pass
-    except ImportError:
-        pass
-    return targets
-
-
 # ═══════════════════════════════════════════
 # 서브탭 1: 예정 주문 (테이블 형식)
 # ═══════════════════════════════════════════
@@ -146,9 +92,6 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
     tu_buy = config.get("topup_buy_amount", 5000)
     tu_sell = config.get("topup_sell_amount", 5000)
 
-    # ── 전략별 목표가 ──
-    strategy_targets = _compute_strategy_targets(portfolio_list)
-
     # ── 코인별 weight 합산 ──
     coin_wt_sum = {}
     for pi in portfolio_list:
@@ -174,9 +117,20 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
     remain = next_dt - now_kst
     hh = int(remain.total_seconds() // 3600)
     mm = int((remain.total_seconds() % 3600) // 60)
-    st.info(f"다음 실행: **{next_dt.strftime('%Y-%m-%d %H:%M KST')}** ({hh}시간 {mm}분 후) | 캐시: {bc_time}")
+    trading_mode = config.get("trading_mode", "real")
+    mode_label = "📡 Signal" if trading_mode == "signal" else "🔴 Real"
+    sig_updated = ""
+    # signal_state에서 최신 갱신 시각 표시
+    for _v in sig_state.values():
+        if isinstance(_v, dict) and _v.get("updated_at"):
+            sig_updated = _v["updated_at"]
+            break
+    st.info(
+        f"다음 실행: **{next_dt.strftime('%Y-%m-%d %H:%M KST')}** ({hh}시간 {mm}분 후) "
+        f"| 모드: **{mode_label}** | 시그널: {sig_updated or 'N/A'} | 캐시: {bc_time}"
+    )
 
-    # ── 테이블 데이터 생성 ──
+    # ── 테이블 데이터 생성 (VM signal_state 기반) ──
     rows = []
     for slot in future_slots:
         sh = slot.hour
@@ -192,12 +146,6 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
             wt = float(pi.get("weight", 0))
             skey = _make_signal_key(pi)
 
-            state = sig_state.get(skey, "?")
-            if state == "HOLD":
-                state = "BUY"
-            elif state == "?":
-                state = "미확인"
-
             close_now = _safe_float(prices.get(tk, 0))
             coin_b = _safe_float(bals.get(sym, 0))
             cw_total = coin_wt_sum.get(sym, wt)
@@ -205,9 +153,17 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
             my_qty = coin_b * sell_ratio
             my_val = my_qty * close_now
 
-            tgt = strategy_targets.get(skey, {})
-            buy_target = tgt.get("buy_target", 0)
-            sell_target = tgt.get("sell_target", 0)
+            # VM이 계산한 signal_state에서 목표가/상태 읽기
+            entry = get_signal_entry(sig_state, skey)
+            state = entry.get("state", "").upper()
+            buy_target = _safe_float(entry.get("buy_target", 0))
+            sell_target = _safe_float(entry.get("sell_target", 0))
+
+            # Donchian HOLD → 보유 여부로 판단
+            if state == "HOLD":
+                state = "BUY" if my_val >= 5000 else "SELL"
+            elif state not in ("BUY", "SELL"):
+                state = "미확인"
 
             is_signal_skip = (iv_norm == "day" and sh != 9)
             strat_label = f"{strat_name}({param}, {_iv_label(iv)})"
@@ -288,7 +244,7 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
         f"KRW {krw_bal:,.0f}원 | 코인 {total_coin_v:,.0f}원 | "
         f"총 {total_pv:,.0f}원"
     )
-    st.caption("※ 현재 시그널 기준 예상이며, 실제 전략 분석 결과에 따라 변경될 수 있습니다.")
+    st.caption("※ VM이 마지막 실행 시 계산한 시그널 기준 예상입니다.")
 
 
 # ═══════════════════════════════════════════
@@ -331,8 +287,11 @@ def _render_past_orders():
         cur_price = _safe_float(e.get("current_price", 0))
         sell_tgt = _safe_float(e.get("sell_target", 0))
         buy_tgt = _safe_float(e.get("buy_target", 0))
+        mode_raw = e.get("mode", "")
+        mode_label = {"signal": "Signal", "auto": "Real", "manual": "수동"}.get(mode_raw, mode_raw)
         rows.append({
             "시간": e.get("time", ""),
+            "모드": mode_label,
             "종목": e.get("ticker", ""),
             "판단": side_map.get(side, side),
             "현재가": _fmt_krw(cur_price),

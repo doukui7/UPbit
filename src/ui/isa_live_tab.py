@@ -1034,7 +1034,8 @@ def render_isa_live_tab(ctx: dict):
                             _live_shared_merged = _ws2[["close", "divergence"]].rename(columns={"close": "signal_close"}).join(
                                 _wt.rename(columns={"close": "trade_close"}), how="inner"
                             ).dropna(subset=["trade_close"])
-                    except Exception:
+                    except Exception as _merge_err:
+                        logging.getLogger(__name__).warning(f"shared_merged 계산 실패: {_merge_err}")
                         _live_shared_merged = None
                 st.session_state["isa_live_shared_merged"] = _live_shared_merged
 
@@ -1069,26 +1070,44 @@ def render_isa_live_tab(ctx: dict):
             else:
                 # DB 미스 → 캐시 데이터로 즉시 계산 후 DB 저장
                 if _live_sig_df is None or _live_trade_df is None or len(_live_sig_df) < 200 or len(_live_trade_df) < 60:
-                    st.warning(f"데이터 없음: {isa_trend_etf_code}/{isa_etf_code}")
+                    _sig_len = len(_live_sig_df) if _live_sig_df is not None else 0
+                    _trd_len = len(_live_trade_df) if _live_trade_df is not None else 0
+                    st.warning(f"데이터 부족: 시그널={isa_trend_etf_code}({_sig_len}행/200필요), 매매={isa_etf_code}({_trd_len}행/60필요)")
                     st.session_state["isa_live_bt_result"] = None
                 else:
                     _lse = str(live_start)
                     if _live_listing_date and _lse < _live_listing_date:
                         _lse = _live_listing_date
 
+                    # precomputed_merged가 빈 DataFrame이면 None으로 전환 (직접 계산 fallback)
+                    _merged_for_bt = _live_shared_merged
+                    if isinstance(_merged_for_bt, pd.DataFrame) and len(_merged_for_bt) < 5:
+                        _merged_for_bt = None
+
                     live_settings = dict(_live_settings_by_combo)
+                    live_settings.update({
+                        k: v for k, v in live_ratio_settings.items()
+                        if k not in live_settings
+                    })
                     live_strat = WDRStrategy(settings=live_settings, evaluation_mode=int(live_eval_mode))
-                    live_bt = live_strat.run_backtest(
-                        signal_daily_df=_live_sig_df,
-                        trade_daily_df=_live_trade_df,
-                        initial_balance=float(live_cap),
-                        start_date=_lse,
-                        fee_rate=float(live_fee) / 100.0,
-                        initial_stock_ratio=float(_ir_snap) / 100.0,
-                        precomputed_merged=_live_shared_merged,
-                    )
+                    try:
+                        live_bt = live_strat.run_backtest(
+                            signal_daily_df=_live_sig_df,
+                            trade_daily_df=_live_trade_df,
+                            initial_balance=float(live_cap),
+                            start_date=_lse,
+                            fee_rate=float(live_fee) / 100.0,
+                            initial_stock_ratio=float(_ir_snap) / 100.0,
+                            precomputed_merged=_merged_for_bt,
+                        )
+                    except Exception as _bt_err:
+                        logging.getLogger(__name__).error(f"run_backtest 예외: {_bt_err}")
+                        live_bt = None
                     st.session_state["isa_live_bt_result"] = live_bt
                     st.session_state["isa_live_bt_source"] = "실시간 계산 → DB 저장"
+                    if live_bt is None:
+                        _m_len = len(_merged_for_bt) if isinstance(_merged_for_bt, pd.DataFrame) else 0
+                        st.warning(f"백테스트 결과 없음 (시작일={_lse}, merged={_m_len}행, sig={len(_live_sig_df)}행, trd={len(_live_trade_df)}행)")
                     # 결과를 DB에 즉시 저장 (다음 조회 시 캐시 히트)
                     if isinstance(live_bt, dict):
                         _blob = _db_pack_obj(live_bt)
@@ -1102,7 +1121,10 @@ def render_isa_live_tab(ctx: dict):
         live_bt_res = st.session_state.get("isa_live_bt_result")
         _bt_source = st.session_state.get("isa_live_bt_source", "")
         if not isinstance(live_bt_res, dict):
-            st.info("다이얼을 조정하면 자동으로 계산됩니다.")
+            if st.session_state.get("isa_live_bt_sig") is not None:
+                st.warning("백테스트 계산이 실패했습니다. 위 경고 메시지를 확인하세요.")
+            else:
+                st.info("다이얼을 조정하면 자동으로 계산됩니다.")
         else:
             live_eq = live_bt_res.get("equity_df")
             if live_eq is None or len(live_eq) < 2:
