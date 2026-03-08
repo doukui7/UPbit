@@ -728,8 +728,8 @@ def _build_upbit_condition_info(
         buy_level = _safe_float(last_candle.get(buy_key), default=0.0)
         sell_level = _safe_float(last_candle.get(sell_key), default=0.0)
 
-        buy_cond = (close_price > buy_level) if buy_level > 0 else None
-        sell_cond = (close_price < sell_level) if sell_level > 0 else None
+        buy_cond = (current_price > buy_level) if buy_level > 0 else None
+        sell_cond = (current_price < sell_level) if sell_level > 0 else None
         buy_gap = _calc_gap_pct(current_price, buy_level)
         sell_gap = _calc_gap_pct(current_price, sell_level)
         buy_label = f"매수타점(상단 {param})"
@@ -742,8 +742,8 @@ def _build_upbit_condition_info(
         buy_level = sma_level
         sell_level = sma_level
 
-        buy_cond = (close_price > sma_level) if sma_level > 0 else None
-        sell_cond = (close_price < sma_level) if sma_level > 0 else None
+        buy_cond = (current_price > sma_level) if sma_level > 0 else None
+        sell_cond = (current_price < sma_level) if sma_level > 0 else None
         buy_gap = _calc_gap_pct(current_price, sma_level)
         sell_gap = buy_gap
         buy_label = f"매수타점(SMA_{param})"
@@ -1038,25 +1038,29 @@ def analyze_asset(trader, item):
         return None
 
     # 포지션 상태 계산 (전략이 반환하는 raw state)
-    last_candle = df.iloc[-2]  # 마지막 완성 봉
+    last_candle = df.iloc[-2]  # 마지막 완성 봉 (지표값 기준)
+    current_price = _get_upbit_price_local_first(ticker)
 
     sell_p = item.get("sell_parameter", 0) or max(5, int(param) // 2)
 
+    # 현재가 기준 시그널 판단: 지표(SMA/채널)는 완성봉 기준, 비교 대상은 현재가
     if strategy_name == "Donchian":
         strat = DonchianStrategy()
         buy_p = int(param)
         df = strat.create_features(df, buy_period=buy_p, sell_period=sell_p)
         last_candle = df.iloc[-2]
-        position_state = strat.get_signal(last_candle, buy_period=buy_p, sell_period=sell_p)
+        signal_row = last_candle.copy()
+        signal_row['close'] = current_price  # 현재가로 시그널 판단
+        position_state = strat.get_signal(signal_row, buy_period=buy_p, sell_period=sell_p)
         indicator_info = f"Upper={last_candle.get(f'Donchian_Upper_{buy_p}', 'N/A')}, Lower={last_candle.get(f'Donchian_Lower_{sell_p}', 'N/A')}"
     else:
         strat = SMAStrategy()
         df = strat.create_features(df, periods=[param])
         last_candle = df.iloc[-2]
-        position_state = strat.get_signal(last_candle, strategy_type='SMA_CROSS', ma_period=param)
+        signal_row = last_candle.copy()
+        signal_row['close'] = current_price  # 현재가로 시그널 판단
+        position_state = strat.get_signal(signal_row, strategy_type='SMA_CROSS', ma_period=param)
         indicator_info = f"SMA_{param}={last_candle.get(f'SMA_{param}', 'N/A')}"
-
-    current_price = _get_upbit_price_local_first(ticker)
     coin_sym = item['coin'].upper()
     _raw_balance = trader.get_balance(coin_sym)
     try:

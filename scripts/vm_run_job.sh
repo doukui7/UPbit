@@ -42,10 +42,12 @@ if [[ "${AUTO_UPDATE}" == "1" ]]; then
   # 로컬 상태 파일 보존 (git reset 덮어쓰기 방지)
   cp signal_state.json /tmp/_signal_state_backup.json 2>/dev/null || true
   cp balance_cache.json /tmp/_balance_cache_backup.json 2>/dev/null || true
+  cp trade_log.json /tmp/_trade_log_backup.json 2>/dev/null || true
   git fetch origin --quiet 2>/dev/null || true
   git reset --hard origin/master --quiet 2>/dev/null || true
   cp /tmp/_signal_state_backup.json signal_state.json 2>/dev/null || true
   cp /tmp/_balance_cache_backup.json balance_cache.json 2>/dev/null || true
+  cp /tmp/_trade_log_backup.json trade_log.json 2>/dev/null || true
 fi
 
 if ! command -v python >/dev/null 2>&1; then
