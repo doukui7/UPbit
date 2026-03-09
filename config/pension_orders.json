@@ -53,10 +53,10 @@
     "method": "동시호가 (장마감)",
     "price": 0,
     "scheduled_kst": "2026-03-09 15:20",
-    "status": "대기",
+    "status": "실패",
     "created_at": "2026-03-06 18:11:06",
-    "executed_at": "",
-    "result": "",
+    "executed_at": "2026-03-09 07:38:23",
+    "result": "{'success': False, 'method': '동시호가실패→시간외종가', 'closing_result': \"{'success': False, 'msg': '거래정지종목(주식)은 취소주문만 가능(정정불가)합니다.'}\", 'after_hours_result': \"{'success': False, 'msg': '거래정지종목(주식)은 취소주문만 가능(정정불",
     "note": ""
   }
 ]
