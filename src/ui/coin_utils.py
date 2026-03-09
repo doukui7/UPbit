@@ -112,7 +112,7 @@ def trigger_gh_workflow(job_name: str, extra_inputs: dict | None = None) -> tupl
 
 
 def sync_account_cache_from_github():
-    """GitHub에서 캐시 파일 pull (git fetch + 개별 checkout)."""
+    """GitHub에서 캐시 파일 pull + 로컬 브랜치 fast-forward."""
     try:
         r1 = subprocess.run(
             ["git", "fetch", "origin", "--quiet"],
@@ -135,6 +135,11 @@ def sync_account_cache_from_github():
             )
             if r.returncode == 0:
                 ok_count += 1
+        # 로컬 브랜치도 fast-forward (코드 업데이트)
+        subprocess.run(
+            ["git", "merge", "--ff-only", "origin/master"],
+            cwd=PROJECT_ROOT, capture_output=True, timeout=15,
+        )
         if ok_count == 0:
             print(f"[sync] 모든 파일 checkout 실패")
             return False
