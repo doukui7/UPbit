@@ -5,7 +5,7 @@ import subprocess
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, timezone
-from src.ui.coin_utils import get_signal_entry
+from src.ui.coin_utils import get_signal_entry, load_balance_cache, load_signal_state
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 _KST = timezone(timedelta(hours=9))
@@ -81,9 +81,9 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
     if not future_slots:
         future_slots.append((now_kst + timedelta(days=1)).replace(hour=1, minute=0, second=0, microsecond=0))
 
-    # ── 데이터 로드 ──
-    sig_state = _load_json("signal_state.json") or {}
-    bc = _load_json("balance_cache.json") or {}
+    # ── 데이터 로드 (GitHub 자동 동기화 포함) ──
+    sig_state = load_signal_state() or {}
+    bc = load_balance_cache() or {}
     bals = bc.get("balances", {})
     prices = bc.get("prices", {})
     bc_time = bc.get("updated_at", "N/A")

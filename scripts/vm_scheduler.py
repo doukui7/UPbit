@@ -51,6 +51,8 @@ LAST_TRADE_MODE_KEY = "__last_trade_mode"
 CONSECUTIVE_FAIL_KEY = "__consecutive_failures"
 _LAST_BALANCE_SYNC = 0.0  # 마지막 잔고 조회 시각 (epoch)
 _LAST_BALANCE_PUSH = 0.0  # 마지막 잔고 push 시각 (epoch)
+_LAST_CODE_PULL = 0.0     # 마지막 코드 pull 시각 (epoch)
+CODE_PULL_INTERVAL_SEC = 2 * 60  # 코드 pull 주기 (2분)
 
 
 def _is_weekday(dt: datetime) -> bool:
@@ -519,6 +521,54 @@ def _push_file_via_api(gh_pat: str, filepath: str, commit_msg: str) -> bool:
         return False
 
 
+def _pull_code_from_origin() -> bool:
+    """origin/master에서 코드 업데이트 수신 (git fetch + reset --hard)."""
+    global _LAST_CODE_PULL
+    now_epoch = time.time()
+    if (now_epoch - _LAST_CODE_PULL) < CODE_PULL_INTERVAL_SEC:
+        return False
+    try:
+        r1 = subprocess.run(
+            ["git", "fetch", "origin"], cwd=str(REPO_DIR),
+            capture_output=True, timeout=15,
+        )
+        if r1.returncode != 0:
+            logging.debug("git fetch 실패: %s", r1.stderr.decode()[:200])
+            return False
+        # 상태 파일 백업
+        _backup = {}
+        _state_files = [
+            "balance_cache.json", "signal_state.json",
+            "trade_log.json", "logs/vm_scheduler_state.json",
+        ]
+        for sf in _state_files:
+            fp = REPO_DIR / sf
+            if fp.exists():
+                try:
+                    _backup[sf] = fp.read_text(encoding="utf-8")
+                except Exception:
+                    pass
+        # reset --hard
+        subprocess.run(
+            ["git", "reset", "--hard", "origin/master"], cwd=str(REPO_DIR),
+            capture_output=True, timeout=15,
+        )
+        # 상태 파일 복원 (로컬 최신 상태 유지)
+        for sf, content in _backup.items():
+            fp = REPO_DIR / sf
+            try:
+                fp.parent.mkdir(parents=True, exist_ok=True)
+                fp.write_text(content, encoding="utf-8")
+            except Exception:
+                pass
+        _LAST_CODE_PULL = time.time()
+        logging.debug("코드 pull 완료 (origin/master)")
+        return True
+    except Exception as e:
+        logging.debug("코드 pull 예외: %s", e)
+        return False
+
+
 def _push_balance_cache() -> bool:
     """GitHub Contents API로 상태 파일 동기화. git 충돌 완전 회피."""
     global _LAST_BALANCE_PUSH
@@ -551,20 +601,10 @@ def _push_balance_cache() -> bool:
         # 전체 실패 시 60초 후 재시도 허용 (5분 대기 방지)
         _LAST_BALANCE_PUSH = now_epoch - BALANCE_PUSH_INTERVAL_SEC + 60
         logging.warning("Contents API push 전체 실패 (%d 파일) — 60초 후 재시도", len(_files))
-        # 로컬 git도 원격과 동기화 (코드 업데이트 수신)
-        try:
-            subprocess.run(
-                ["git", "fetch", "origin"], cwd=str(REPO_DIR),
-                capture_output=True, timeout=15,
-            )
-            subprocess.run(
-                ["git", "reset", "--hard", "origin/master"], cwd=str(REPO_DIR),
-                capture_output=True, timeout=15,
-            )
-        except Exception:
-            pass
-        return True
-    return False
+
+    # push 성공/실패 무관하게 로컬 git 동기화 (코드 업데이트 수신)
+    _pull_code_from_origin()
+    return ok_count > 0
 
 
 def _touch_heartbeat(state: dict[str, str], now: datetime, *, force: bool = False) -> bool:
@@ -657,6 +697,12 @@ def main() -> int:
                 _push_balance_cache()
             except Exception as e:
                 logging.debug("잔고 동기화 예외 (무시): %s", e)
+
+            # ── 코드 업데이트 수신 (2분마다 독립 실행) ──
+            try:
+                _pull_code_from_origin()
+            except Exception as e:
+                logging.debug("코드 pull 예외 (무시): %s", e)
 
             if _touch_heartbeat(state, now, force=state_dirty):
                 state_dirty = True
