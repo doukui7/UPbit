@@ -510,10 +510,47 @@ def _push_balance_cache() -> bool:
             cwd=cwd, capture_output=True, timeout=10,
         )
         # pull --rebase (충돌 방지)
-        subprocess.run(
+        rebase_r = subprocess.run(
             ["git", "pull", "--rebase", "origin", "master"],
             cwd=cwd, capture_output=True, timeout=30,
         )
+        if rebase_r.returncode != 0:
+            # rebase 충돌 → abort 후 상태 파일 백업/복원하고 reset
+            logging.warning("rebase 충돌 감지 → abort 후 복구 시도")
+            subprocess.run(["git", "rebase", "--abort"], cwd=cwd,
+                           capture_output=True, timeout=10)
+            # 상태 파일 백업
+            import shutil
+            _state_files = ["balance_cache.json", "signal_state.json",
+                            "trade_log.json", "logs/vm_scheduler_state.json"]
+            _backups = {}
+            for sf in _state_files:
+                sp = os.path.join(cwd, sf)
+                if os.path.exists(sp):
+                    bp = sp + ".bak"
+                    shutil.copy2(sp, bp)
+                    _backups[sf] = bp
+            # git reset + pull
+            subprocess.run(["git", "fetch", "origin"], cwd=cwd,
+                           capture_output=True, timeout=15)
+            subprocess.run(["git", "reset", "--hard", "origin/master"], cwd=cwd,
+                           capture_output=True, timeout=15)
+            # 상태 파일 복원
+            for sf, bp in _backups.items():
+                sp = os.path.join(cwd, sf)
+                shutil.copy2(bp, sp)
+                os.remove(bp)
+            # 다시 add + commit
+            subprocess.run(
+                ["git", "add", "-f"] + _state_files,
+                cwd=cwd, capture_output=True, timeout=10,
+            )
+            subprocess.run(
+                ["git", "-c", "user.name=auto-trade-bot", "-c", "user.email=bot@auto-trade",
+                 "commit", "-m", "auto: VM 잔고/시그널 동기화 (복구)"],
+                cwd=cwd, capture_output=True, timeout=10,
+            )
+            logging.info("rebase 충돌 복구 완료 → push 재시도")
         # push
         result = subprocess.run(
             ["git", "push", "origin", "master"],

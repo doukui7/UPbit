@@ -83,7 +83,22 @@ if TRADING_MODE="${MODE}" python scripts/github_action_trade.py 2>&1 | tee -a "$
       if ! git diff --cached --quiet 2>/dev/null; then
         git -c user.name="auto-trade-bot" -c user.email="bot@auto-trade" \
           commit -m "auto: VM ${MODE} 후 캐시 동기화" 2>/dev/null || true
-        git pull --rebase origin master 2>/dev/null || true
+        if ! git pull --rebase origin master 2>/dev/null; then
+          # rebase 충돌 → abort 후 상태 파일 보존하고 reset
+          git rebase --abort 2>/dev/null || true
+          for _sf in balance_cache.json signal_state.json trade_log.json signal_test_orders.json logs/vm_scheduler_state.json; do
+            [[ -f "$_sf" ]] && cp "$_sf" "${_sf}.bak" 2>/dev/null || true
+          done
+          git fetch origin 2>/dev/null || true
+          git reset --hard origin/master 2>/dev/null || true
+          for _sf in balance_cache.json signal_state.json trade_log.json signal_test_orders.json logs/vm_scheduler_state.json; do
+            [[ -f "${_sf}.bak" ]] && cp "${_sf}.bak" "$_sf" && rm "${_sf}.bak" 2>/dev/null || true
+          done
+          git add -f balance_cache.json signal_state.json trade_log.json signal_test_orders.json config/pension_orders.json logs/vm_scheduler_state.json 2>/dev/null || true
+          git -c user.name="auto-trade-bot" -c user.email="bot@auto-trade" \
+            commit -m "auto: VM ${MODE} 후 캐시 동기화 (복구)" 2>/dev/null || true
+          echo "[$(date '+%F %T')] rebase conflict recovered" >> "${LOG_FILE}"
+        fi
         git push origin master 2>/dev/null && echo "[$(date '+%F %T')] cache push OK" >> "${LOG_FILE}" \
           || echo "[$(date '+%F %T')] cache push SKIP (no GH_PAT?)" >> "${LOG_FILE}"
       fi
