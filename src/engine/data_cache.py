@@ -285,6 +285,32 @@ def _expected_latest_candle_start_kst(interval: str, now_kst=None):
         prev = now - pd.Timedelta(days=1)
         return prev.replace(hour=21, minute=0)
 
+    if iv == "minute60":
+        return now.replace(minute=0)
+
+    if iv == "minute30":
+        m = 30 if now.minute >= 30 else 0
+        return now.replace(minute=m)
+
+    if iv == "minute15":
+        m = (now.minute // 15) * 15
+        return now.replace(minute=m)
+
+    if iv == "minute10":
+        m = (now.minute // 10) * 10
+        return now.replace(minute=m)
+
+    if iv == "minute5":
+        m = (now.minute // 5) * 5
+        return now.replace(minute=m)
+
+    if iv == "minute3":
+        m = (now.minute // 3) * 3
+        return now.replace(minute=m)
+
+    if iv == "minute1":
+        return now
+
     return None
 
 

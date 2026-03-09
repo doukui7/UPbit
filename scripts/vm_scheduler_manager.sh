@@ -225,6 +225,24 @@ ensure_scheduler() {
     local hb_age
     hb_age="$(heartbeat_age_sec)"
 
+    # 0) 코드 변경 감지 → 자동 재시작 (git reset --hard 후 코드가 바뀌면)
+    local code_hash_file="${LOG_DIR}/vm_scheduler_code_hash"
+    local cur_hash
+    cur_hash="$(md5sum "${REPO_DIR}/scripts/vm_scheduler.py" 2>/dev/null | awk '{print $1}' || echo "")"
+    local prev_hash
+    prev_hash="$(cat "${code_hash_file}" 2>/dev/null || echo "")"
+    if [[ -n "${cur_hash}" ]] && [[ -n "${prev_hash}" ]] && [[ "${cur_hash}" != "${prev_hash}" ]]; then
+      echo "[warn] vm_scheduler.py code changed (${prev_hash:0:8}→${cur_hash:0:8}). restarting..."
+      echo "${cur_hash}" > "${code_hash_file}"
+      stop_scheduler
+      start_scheduler
+      return 0
+    fi
+    # 해시 기록 (첫 실행 또는 이전 기록 없을 때)
+    if [[ -n "${cur_hash}" ]]; then
+      echo "${cur_hash}" > "${code_hash_file}"
+    fi
+
     # 1) heartbeat가 stale이면 재시작
     if [[ -n "${hb_age}" ]] && [[ "${hb_age}" =~ ^[0-9]+$ ]] && (( hb_age > MAX_HEARTBEAT_AGE_SEC )); then
       echo "[warn] scheduler process is alive but heartbeat is stale (${hb_age}s > ${MAX_HEARTBEAT_AGE_SEC}s). restarting..."
