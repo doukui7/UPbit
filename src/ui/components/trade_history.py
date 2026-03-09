@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import src.engine.data_cache as data_cache
-from src.ui.coin_utils import load_account_cache, ttl_cache, PROJECT_ROOT
+from src.ui.coin_utils import load_balance_cache, ttl_cache, PROJECT_ROOT
 
 INTERVAL_MAP = {
     "1D": "day",
@@ -146,7 +146,7 @@ def render_trade_history_tab(trader, portfolio_list):
         with _hist_btn_col1:
             _do_query = st.button("조회", key="hist_query", type="primary")
         with _hist_btn_col2:
-            _acct_cache = load_account_cache()
+            _acct_cache = load_balance_cache()
             _cache_time = _acct_cache.get("updated_at", "")
             if _cache_time:
                 st.caption(f"마지막 동기화: {_cache_time}")

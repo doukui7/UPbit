@@ -44,31 +44,44 @@ def _auto_sync_from_github():
 
 
 def load_balance_cache():
-    """최근 잔고 캐시 파일(balance_cache.json) 로드. 2분마다 GitHub 자동 동기화."""
+    """통합 캐시 로드: balance_cache(잔고/가격) + account_cache(주문/체결).
+
+    - 잔고·가격·updated_at → balance_cache.json (VM 5분 push, 최신)
+    - orders·pending_orders·deposits·withdraws → account_cache.json (GH Actions)
+    두 파일을 합쳐 단일 dict 반환. 잔고는 더 최신 소스 우선.
+    """
     _auto_sync_from_github()
+    bal = {}
+    acct = {}
     try:
-        cache_file = os.path.join(PROJECT_ROOT, "balance_cache.json")
-        if os.path.exists(cache_file):
-            with open(cache_file, "r", encoding="utf-8") as f:
-                file_cached = json.load(f)
-            if isinstance(file_cached, dict) and file_cached.get("balances"):
-                return file_cached
+        bf = os.path.join(PROJECT_ROOT, "balance_cache.json")
+        if os.path.exists(bf):
+            with open(bf, "r", encoding="utf-8") as f:
+                bal = json.load(f) or {}
     except Exception:
         pass
-    return {}
+    try:
+        af = os.path.join(PROJECT_ROOT, "account_cache.json")
+        if os.path.exists(af):
+            with open(af, "r", encoding="utf-8") as f:
+                acct = json.load(f) or {}
+    except Exception:
+        pass
+
+    if not bal.get("balances"):
+        bal = acct  # balance_cache 없으면 account_cache 폴백
+
+    # account_cache의 주문/체결 데이터를 병합
+    for key in ("orders", "pending_orders", "deposits", "withdraws"):
+        if key in acct and key not in bal:
+            bal[key] = acct[key]
+
+    return bal
 
 
 def load_account_cache():
-    """계좌 캐시 파일(account_cache.json) 로드. VM 경유 조회 결과."""
-    _auto_sync_from_github()
-    try:
-        cache_file = os.path.join(PROJECT_ROOT, "account_cache.json")
-        if os.path.exists(cache_file):
-            with open(cache_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
+    """하위호환 래퍼 — load_balance_cache()로 통합."""
+    return load_balance_cache()
 
 
 def load_signal_state():

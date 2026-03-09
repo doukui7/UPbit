@@ -6,7 +6,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from src.ui.coin_utils import (
-    ttl_cache, clear_cache, load_account_cache,
+    ttl_cache, clear_cache, load_balance_cache,
     trigger_and_wait_gh, TOP_20_TICKERS,
 )
 
@@ -113,7 +113,7 @@ def render_manual_trade_tab(portfolio_list, trader=None):
     st.header("수동 주문")
 
     # ── 잔고 표시 ──
-    _acct = load_account_cache()
+    _acct = load_balance_cache()
     bals = _acct.get("balances", {}) if _acct.get("updated_at") else {}
     krw_balance = float(bals.get("KRW", 0) or 0)
     if bals:
@@ -486,7 +486,7 @@ document.querySelectorAll('.ob-row').forEach(row => {
             else:
                 _pend_status.warning(f"동기화 실패: {msg}")
 
-        _acct2 = load_account_cache()
+        _acct2 = load_balance_cache()
         pending_orders = _acct2.get("pending_orders", [])
         if pending_orders:
             for order in pending_orders:
@@ -511,7 +511,7 @@ document.querySelectorAll('.ob-row').forEach(row => {
     with done_col:
         st.markdown("**최근 체결 내역**")
         # account_cache에서 자동 로드 (잔고 동기화 시 함께 업데이트)
-        _acct3 = load_account_cache()
+        _acct3 = load_balance_cache()
         cached_orders = _acct3.get("orders", [])
         # 선택된 코인 필터링
         done_list = [
