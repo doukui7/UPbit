@@ -464,8 +464,63 @@ def _get_gh_pat() -> str:
     return pat
 
 
+def _push_file_via_api(gh_pat: str, filepath: str, commit_msg: str) -> bool:
+    """GitHub Contents API로 단일 파일 업데이트. git 작업 없이 atomic PUT."""
+    import base64
+    try:
+        import urllib.request
+        import urllib.error
+
+        repo = "doukui7/UPbit"
+        api_url = f"https://api.github.com/repos/{repo}/contents/{filepath}"
+        headers = {
+            "Authorization": f"token {gh_pat}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "auto-trade-bot",
+        }
+
+        local_path = REPO_DIR / filepath
+        if not local_path.exists():
+            return False
+        content = local_path.read_bytes()
+        encoded = base64.b64encode(content).decode()
+
+        # 1) GET: 현재 SHA 조회
+        req = urllib.request.Request(api_url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+                sha = data.get("sha", "")
+                # 내용 동일하면 스킵
+                remote_content = base64.b64decode(data.get("content", "").replace("\n", ""))
+                if remote_content == content:
+                    return False  # 변경 없음
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                sha = ""  # 파일 미존재 → 새 생성
+            else:
+                logging.warning("Contents API GET 실패 (%s): %s", filepath, e)
+                return False
+
+        # 2) PUT: 파일 업데이트 (atomic)
+        body = json.dumps({
+            "message": commit_msg,
+            "content": encoded,
+            "sha": sha,
+            "committer": {"name": "auto-trade-bot", "email": "bot@auto-trade"},
+        }).encode()
+        req = urllib.request.Request(api_url, data=body, headers=headers, method="PUT")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status in (200, 201):
+                return True
+        return False
+    except Exception as e:
+        logging.warning("Contents API PUT 실패 (%s): %s", filepath, e)
+        return False
+
+
 def _push_balance_cache() -> bool:
-    """VM에서 GH_PAT로 직접 git push. GH Actions 의존 없음."""
+    """GitHub Contents API로 상태 파일 동기화. git 충돌 완전 회피."""
     global _LAST_BALANCE_PUSH
     now_epoch = time.time()
     if (now_epoch - _LAST_BALANCE_PUSH) < BALANCE_PUSH_INTERVAL_SEC:
@@ -477,107 +532,36 @@ def _push_balance_cache() -> bool:
 
     _LAST_BALANCE_PUSH = now_epoch
 
-    try:
-        cwd = str(REPO_DIR)
-        # GH_PAT HTTPS URL 설정
-        subprocess.run(
-            ["git", "remote", "set-url", "origin",
-             f"https://{gh_pat}@github.com/doukui7/UPbit.git"],
-            cwd=cwd, capture_output=True, timeout=10,
-        )
-        # git add (잔고 + 시그널 + 거래로그 + 스케줄러 상태)
-        subprocess.run(
-            ["git", "add", "-f", "balance_cache.json", "signal_state.json",
-             "trade_log.json", "logs/vm_scheduler_state.json"],
-            cwd=cwd, capture_output=True, timeout=10,
-        )
-        # 변경 확인
-        diff = subprocess.run(
-            ["git", "diff", "--cached", "--quiet"],
-            cwd=cwd, capture_output=True, timeout=10,
-        )
-        if diff.returncode == 0:
-            # 변경 없음 → URL 원복 후 종료
-            subprocess.run(
-                ["git", "remote", "set-url", "origin", "https://github.com/doukui7/UPbit.git"],
-                cwd=cwd, capture_output=True, timeout=10,
-            )
-            return False
-        # commit
-        subprocess.run(
-            ["git", "-c", "user.name=auto-trade-bot", "-c", "user.email=bot@auto-trade",
-             "commit", "-m", "auto: VM 잔고/시그널 동기화"],
-            cwd=cwd, capture_output=True, timeout=10,
-        )
-        # pull --rebase (충돌 방지)
-        rebase_r = subprocess.run(
-            ["git", "pull", "--rebase", "origin", "master"],
-            cwd=cwd, capture_output=True, timeout=30,
-        )
-        if rebase_r.returncode != 0:
-            # rebase 충돌 → abort 후 상태 파일 백업/복원하고 reset
-            logging.warning("rebase 충돌 감지 → abort 후 복구 시도")
-            subprocess.run(["git", "rebase", "--abort"], cwd=cwd,
-                           capture_output=True, timeout=10)
-            # 상태 파일 백업
-            import shutil
-            _state_files = ["balance_cache.json", "signal_state.json",
-                            "trade_log.json", "logs/vm_scheduler_state.json"]
-            _backups = {}
-            for sf in _state_files:
-                sp = os.path.join(cwd, sf)
-                if os.path.exists(sp):
-                    bp = sp + ".bak"
-                    shutil.copy2(sp, bp)
-                    _backups[sf] = bp
-            # git reset + pull
-            subprocess.run(["git", "fetch", "origin"], cwd=cwd,
-                           capture_output=True, timeout=15)
-            subprocess.run(["git", "reset", "--hard", "origin/master"], cwd=cwd,
-                           capture_output=True, timeout=15)
-            # 상태 파일 복원
-            for sf, bp in _backups.items():
-                sp = os.path.join(cwd, sf)
-                shutil.copy2(bp, sp)
-                os.remove(bp)
-            # 다시 add + commit
-            subprocess.run(
-                ["git", "add", "-f"] + _state_files,
-                cwd=cwd, capture_output=True, timeout=10,
-            )
-            subprocess.run(
-                ["git", "-c", "user.name=auto-trade-bot", "-c", "user.email=bot@auto-trade",
-                 "commit", "-m", "auto: VM 잔고/시그널 동기화 (복구)"],
-                cwd=cwd, capture_output=True, timeout=10,
-            )
-            logging.info("rebase 충돌 복구 완료 → push 재시도")
-        # push
-        result = subprocess.run(
-            ["git", "push", "origin", "master"],
-            cwd=cwd, capture_output=True, timeout=30,
-        )
-        # 보안: URL 원복
-        subprocess.run(
-            ["git", "remote", "set-url", "origin", "https://github.com/doukui7/UPbit.git"],
-            cwd=cwd, capture_output=True, timeout=10,
-        )
-        if result.returncode == 0:
-            logging.info("잔고 동기화 git push 완료")
-            return True
-        else:
-            logging.warning("잔고 동기화 git push 실패: %s",
-                            (result.stderr or b"").decode()[:200])
-            return False
-    except Exception as e:
-        logging.warning("잔고 동기화 git push 예외: %s", e)
+    _files = [
+        "balance_cache.json",
+        "signal_state.json",
+        "trade_log.json",
+        "logs/vm_scheduler_state.json",
+    ]
+    ok_count = 0
+    for f in _files:
+        try:
+            if _push_file_via_api(gh_pat, f, f"auto: sync {f}"):
+                ok_count += 1
+        except Exception as e:
+            logging.debug("API push 예외 (%s): %s", f, e)
+
+    if ok_count > 0:
+        logging.info("Contents API push 완료 (%d/%d 파일)", ok_count, len(_files))
+        # 로컬 git도 원격과 동기화 (코드 업데이트 수신)
         try:
             subprocess.run(
-                ["git", "remote", "set-url", "origin", "https://github.com/doukui7/UPbit.git"],
-                cwd=str(REPO_DIR), capture_output=True, timeout=10,
+                ["git", "fetch", "origin"], cwd=str(REPO_DIR),
+                capture_output=True, timeout=15,
+            )
+            subprocess.run(
+                ["git", "reset", "--hard", "origin/master"], cwd=str(REPO_DIR),
+                capture_output=True, timeout=15,
             )
         except Exception:
             pass
-        return False
+        return True
+    return False
 
 
 def _touch_heartbeat(state: dict[str, str], now: datetime, *, force: bool = False) -> bool:

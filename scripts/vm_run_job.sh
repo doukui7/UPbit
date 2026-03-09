@@ -73,38 +73,61 @@ echo "[$(date '+%F %T')] start mode=${MODE}" >> "${LOG_FILE}"
 if TRADING_MODE="${MODE}" python scripts/github_action_trade.py 2>&1 | tee -a "${LOG_FILE}"; then
   echo "[$(date '+%F %T')] done mode=${MODE}" >> "${LOG_FILE}"
 
-  # balance_cache / signal_state 자동 push (GH_PAT HTTPS)
+  # balance_cache / signal_state → GitHub Contents API push (git 충돌 완전 회피)
   if [[ "${MODE}" == "upbit" || "${MODE}" == "manual_order" || "${MODE}" == "account_sync" || "${MODE}" == "kis_pension" ]]; then
-    (
-      if [[ -n "${GH_PAT:-}" ]]; then
-        git remote set-url origin "https://${GH_PAT}@github.com/doukui7/UPbit.git" 2>/dev/null || true
-      fi
-      git add -f balance_cache.json signal_state.json trade_log.json signal_test_orders.json config/pension_orders.json logs/vm_scheduler_state.json 2>/dev/null || true
-      if ! git diff --cached --quiet 2>/dev/null; then
-        git -c user.name="auto-trade-bot" -c user.email="bot@auto-trade" \
-          commit -m "auto: VM ${MODE} 후 캐시 동기화" 2>/dev/null || true
-        if ! git pull --rebase origin master 2>/dev/null; then
-          # rebase 충돌 → abort 후 상태 파일 보존하고 reset
-          git rebase --abort 2>/dev/null || true
-          for _sf in balance_cache.json signal_state.json trade_log.json signal_test_orders.json logs/vm_scheduler_state.json; do
-            [[ -f "$_sf" ]] && cp "$_sf" "${_sf}.bak" 2>/dev/null || true
-          done
-          git fetch origin 2>/dev/null || true
-          git reset --hard origin/master 2>/dev/null || true
-          for _sf in balance_cache.json signal_state.json trade_log.json signal_test_orders.json logs/vm_scheduler_state.json; do
-            [[ -f "${_sf}.bak" ]] && cp "${_sf}.bak" "$_sf" && rm "${_sf}.bak" 2>/dev/null || true
-          done
-          git add -f balance_cache.json signal_state.json trade_log.json signal_test_orders.json config/pension_orders.json logs/vm_scheduler_state.json 2>/dev/null || true
-          git -c user.name="auto-trade-bot" -c user.email="bot@auto-trade" \
-            commit -m "auto: VM ${MODE} 후 캐시 동기화 (복구)" 2>/dev/null || true
-          echo "[$(date '+%F %T')] rebase conflict recovered" >> "${LOG_FILE}"
-        fi
-        git push origin master 2>/dev/null && echo "[$(date '+%F %T')] cache push OK" >> "${LOG_FILE}" \
-          || echo "[$(date '+%F %T')] cache push SKIP (no GH_PAT?)" >> "${LOG_FILE}"
-      fi
-      # 보안: push 후 URL 원복 (토큰 노출 방지)
-      git remote set-url origin https://github.com/doukui7/UPbit.git 2>/dev/null || true
-    ) 2>/dev/null || true
+    if [[ -n "${GH_PAT:-}" ]]; then
+      python -c "
+import json, base64, os, sys
+try:
+    import urllib.request, urllib.error
+except ImportError:
+    sys.exit(0)
+
+PAT = os.environ.get('GH_PAT', '')
+if not PAT:
+    sys.exit(0)
+
+REPO = 'doukui7/UPbit'
+MODE = '${MODE}'
+FILES = [
+    'balance_cache.json', 'signal_state.json', 'trade_log.json',
+    'signal_test_orders.json', 'config/pension_orders.json',
+    'logs/vm_scheduler_state.json',
+]
+ok = 0
+for fpath in FILES:
+    if not os.path.exists(fpath):
+        continue
+    api = f'https://api.github.com/repos/{REPO}/contents/{fpath}'
+    hdrs = {'Authorization': f'token {PAT}', 'Accept': 'application/vnd.github+json', 'User-Agent': 'auto-trade-bot'}
+    content = open(fpath, 'rb').read()
+    encoded = base64.b64encode(content).decode()
+    # GET sha
+    sha = ''
+    try:
+        req = urllib.request.Request(api, headers=hdrs)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = json.loads(r.read().decode())
+            sha = d.get('sha', '')
+            remote = base64.b64decode(d.get('content', '').replace('\n', ''))
+            if remote == content:
+                continue  # 변경 없음
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            continue
+    # PUT
+    try:
+        body = json.dumps({'message': f'auto: VM {MODE} sync {fpath}', 'content': encoded, 'sha': sha, 'committer': {'name': 'auto-trade-bot', 'email': 'bot@auto-trade'}}).encode()
+        req = urllib.request.Request(api, data=body, headers=hdrs, method='PUT')
+        with urllib.request.urlopen(req, timeout=15) as r:
+            if r.status in (200, 201):
+                ok += 1
+    except Exception:
+        pass
+print(f'API push: {ok}/{len(FILES)} files')
+" 2>&1 | tee -a "${LOG_FILE}" && echo "[$(date '+%F %T')] API push done" >> "${LOG_FILE}" \
+        || echo "[$(date '+%F %T')] API push failed" >> "${LOG_FILE}"
+    fi
   fi
 
   # 상태 파일 업데이트 — 스케줄러 외부 실행(수동/GitHub Actions)도 헬스체크에서 인식

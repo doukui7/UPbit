@@ -84,7 +84,11 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "auto: trade 후 잔고/시그널 동기화"
-            git pull --rebase origin master || true
+            git pull --ff-only origin master || git pull --rebase origin master || {
+              git rebase --abort 2>/dev/null || true
+              git reset --hard origin/master 2>/dev/null || true
+              echo "WARN: merge conflict → reset to origin"
+            }
             git push || echo "WARN: push failed, will retry next run"
           fi
 
@@ -143,7 +147,11 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "auto: 수동주문 후 잔고/시그널 동기화"
-            git pull --rebase origin master || true
+            git pull --ff-only origin master || git pull --rebase origin master || {
+              git rebase --abort 2>/dev/null || true
+              git reset --hard origin/master 2>/dev/null || true
+              echo "WARN: merge conflict → reset to origin"
+            }
             git push || echo "WARN: push failed, will retry next run"
           fi
 
@@ -210,6 +218,10 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "auto: 계좌 데이터 동기화"
-            git pull --rebase origin master || true
+            git pull --ff-only origin master || git pull --rebase origin master || {
+              git rebase --abort 2>/dev/null || true
+              git reset --hard origin/master 2>/dev/null || true
+              echo "WARN: merge conflict → reset to origin"
+            }
             git push || echo "WARN: push failed, will retry next run"
           fi

@@ -192,7 +192,11 @@ jobs:
             echo "No changes to sync"
           else
             git commit -m "auto: 잔고/시그널/거래로그/스케줄러상태 동기화"
-            git pull --rebase origin master || true
+            git pull --ff-only origin master || git pull --rebase origin master || {
+              git rebase --abort 2>/dev/null || true
+              git reset --hard origin/master 2>/dev/null || true
+              echo "WARN: merge conflict → reset to origin"
+            }
             git push || echo "WARN: push failed, will retry next run"
           fi
 
@@ -259,6 +263,10 @@ jobs:
             echo "No changes to sync"
           else
             git commit -m "auto: VM 잔고/시그널/거래로그/스케줄러상태 동기화"
-            git pull --rebase origin master || true
+            git pull --ff-only origin master || git pull --rebase origin master || {
+              git rebase --abort 2>/dev/null || true
+              git reset --hard origin/master 2>/dev/null || true
+              echo "WARN: merge conflict → reset to origin"
+            }
             git push || echo "WARN: push failed"
           fi
