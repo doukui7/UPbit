@@ -756,8 +756,25 @@ def render_coin_mode(config, save_config):
         _c3.metric("손익 (P&L)", f"{_pnl:+,.0f}원 ({_pnl_pct:+.2f}%)")
         _c4.metric("현금 (KRW)", f"{_krw:,.0f}원")
         _note = f"가격: {_now}"
+        _cache_stale = False
         if _from_cache:
-            _note += f" | 잔고: VM캐시 {_cache_time}"
+            _cache_lag_str = ""
+            try:
+                # 캐시 시간 파싱 → 현재 시각과 차이 계산
+                _ct = _cache_time.replace(" KST", "").strip()
+                _cache_dt = datetime.strptime(_ct, "%Y-%m-%d %H:%M:%S")
+                _lag_sec = (datetime.now() - _cache_dt).total_seconds()
+                if _lag_sec < 0:
+                    _lag_sec = 0
+                _lag_min = int(_lag_sec // 60)
+                _lag_s = int(_lag_sec % 60)
+                _cache_lag_str = f" ({_lag_min}분 {_lag_s}초 전)"
+                # 10분 이상 지연이면 stale 표시
+                if _lag_sec > 600:
+                    _cache_stale = True
+            except Exception:
+                pass
+            _note += f" | 잔고: VM캐시 {_cache_time}{_cache_lag_str}"
         # 워커 상태도 같은 줄에 표시
         try:
             _w_msg, _w_time = worker.get_status()
@@ -765,6 +782,19 @@ def render_coin_mode(config, save_config):
         except Exception:
             pass
         st.caption(_note)
+
+        # ── 캐시 지연 자동 복구: 10분 초과 시 강제 재동기화 ──
+        if _cache_stale:
+            _recovery_key = "__cache_recovery_ts"
+            _last_recovery = st.session_state.get(_recovery_key, 0)
+            if time.time() - _last_recovery > 120:  # 복구 시도 간격: 2분
+                st.session_state[_recovery_key] = time.time()
+                # 강제 git fetch + checkout + ff-only
+                _sync_account_cache_from_github()
+                # 동기화 타이머도 리셋
+                st.session_state["__last_auto_sync"] = time.time()
+                st.toast("⚠️ 잔고 캐시 10분+ 지연 → 강제 재동기화 실행", icon="🔄")
+                st.rerun()
 
     _render_live_ticker()
 
