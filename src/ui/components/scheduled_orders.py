@@ -174,6 +174,8 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
             expected = ""
             note = ""
 
+            _skip_tag = " [09시]" if is_signal_skip else ""
+
             if close_now <= 0:
                 expected = "가격 조회 실패"
             elif state == "BUY":
@@ -182,14 +184,12 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
                     cond_price = _fmt_krw(sell_target)
                     dist = (close_now - sell_target) / sell_target * 100
                     gap_str = f"{dist:+.1f}%"
-                    if is_signal_skip:
-                        expected = "HOLD (1D→09시만)"
-                    elif close_now < sell_target:
-                        expected = f"SELL ({my_qty:.8g}개, {_fmt_krw(my_val)}원)"
+                    if close_now < sell_target:
+                        expected = f"SELL ({my_qty:.8g}개, {_fmt_krw(my_val)}원){_skip_tag}"
                     else:
                         expected = "HOLD"
                 else:
-                    expected = "HOLD (1D→09시만)" if is_signal_skip else "HOLD (미산출)"
+                    expected = "HOLD (미산출)"
 
                 # 보충 매수
                 if tu_on and wt > 0:
@@ -205,15 +205,13 @@ def _render_upcoming_orders(portfolio_list, initial_cap, config):
                     cond_price = _fmt_krw(buy_target)
                     dist = (close_now - buy_target) / buy_target * 100
                     gap_str = f"{dist:+.1f}%"
-                    if is_signal_skip:
-                        expected = "HOLD (1D→09시만)"
-                    elif close_now > buy_target:
+                    if close_now > buy_target:
                         target_v = total_pv * (wt / 100)
-                        expected = f"BUY (~{_fmt_krw(target_v)}원)"
+                        expected = f"BUY (~{_fmt_krw(target_v)}원){_skip_tag}"
                     else:
                         expected = "HOLD"
                 else:
-                    expected = "HOLD (1D→09시만)" if is_signal_skip else "HOLD (미산출)"
+                    expected = "HOLD (미산출)"
 
                 # 보충 매도
                 if tu_on and my_val >= 5000:

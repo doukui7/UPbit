@@ -39,7 +39,7 @@ class VAAStrategy:
         'kr_etf_map': {
             'SPY': '379800',
             'EFA': '195930',
-            'EEM': '295820',
+            'EEM': '195980',
             'AGG': '305080',
             'LQD': '329750',
             'IEF': '305080',
@@ -198,6 +198,7 @@ class VAAStrategy:
         current_shares = 0.0
         equity_rows = []
         position_rows = []
+        trade_rows = []
 
         for i in range(12, len(monthly)):
             date = monthly.index[i]
@@ -219,9 +220,21 @@ class VAAStrategy:
                 if current_ticker and current_shares > 0:
                     sell_price = float(monthly.loc[date, current_ticker])
                     balance = current_shares * sell_price * (1 - fee)
+                    trade_rows.append({
+                        'date': date, 'action': '매도', 'ticker': current_ticker,
+                        'price': round(sell_price, 2),
+                        'shares': round(current_shares, 4),
+                        'equity': round(balance, 0),
+                    })
                 current_shares = (balance * (1 - fee)) / price_now if price_now > 0 else 0
                 balance = 0
                 current_ticker = target
+                trade_rows.append({
+                    'date': date, 'action': '매수', 'ticker': target,
+                    'price': round(price_now, 2),
+                    'shares': round(current_shares, 4),
+                    'equity': round(current_shares * price_now, 0),
+                })
 
             current_eval = current_shares * price_now
             equity_rows.append({"date": date, "equity": current_eval})
@@ -251,6 +264,7 @@ class VAAStrategy:
         return {
             "equity_df": eq,
             "positions": pd.DataFrame(position_rows),
+            "trades": pd.DataFrame(trade_rows) if trade_rows else pd.DataFrame(),
             "metrics": {
                 "total_return": total_return,
                 "cagr": cagr,

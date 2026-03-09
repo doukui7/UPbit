@@ -530,8 +530,6 @@ def _push_balance_cache() -> bool:
     if not gh_pat:
         return False
 
-    _LAST_BALANCE_PUSH = now_epoch
-
     _files = [
         "balance_cache.json",
         "signal_state.json",
@@ -547,7 +545,12 @@ def _push_balance_cache() -> bool:
             logging.debug("API push 예외 (%s): %s", f, e)
 
     if ok_count > 0:
+        _LAST_BALANCE_PUSH = now_epoch
         logging.info("Contents API push 완료 (%d/%d 파일)", ok_count, len(_files))
+    else:
+        # 전체 실패 시 60초 후 재시도 허용 (5분 대기 방지)
+        _LAST_BALANCE_PUSH = now_epoch - BALANCE_PUSH_INTERVAL_SEC + 60
+        logging.warning("Contents API push 전체 실패 (%d 파일) — 60초 후 재시도", len(_files))
         # 로컬 git도 원격과 동기화 (코드 업데이트 수신)
         try:
             subprocess.run(
@@ -608,12 +611,9 @@ def main() -> int:
             now = _now_kst()
             sk = _slot_key(now)
             state_dirty = False
-            has_heavy_job = False
-
             try:
                 if _run_due_oneoff_jobs(now, state):
                     state_dirty = True
-                    has_heavy_job = True
                     if LAST_ERROR_KEY in state:
                         state.pop(LAST_ERROR_KEY, None)
 
@@ -625,7 +625,6 @@ def main() -> int:
                     ok = _run_mode(rule.mode, rule.label, state)
                     state[rule.mode] = sk
                     state_dirty = True
-                    has_heavy_job = True
                     if ok and LAST_ERROR_KEY in state:
                         state.pop(LAST_ERROR_KEY, None)
                     # 연속 실패 시 텔레그램 알림 + 코드 갱신
@@ -652,13 +651,12 @@ def main() -> int:
                 state[LAST_ERROR_KEY] = f"{now.strftime('%Y-%m-%d %H:%M:%S')} | {type(e).__name__}: {e}"
                 state_dirty = True
 
-            # ── 잔고 실시간 동기화 (다른 작업이 없을 때) ──
-            if not has_heavy_job:
-                try:
-                    _sync_balance()
-                    _push_balance_cache()
-                except Exception as e:
-                    logging.debug("잔고 동기화 예외 (무시): %s", e)
+            # ── 잔고 실시간 동기화 (항상 실행 — heavy job 여부 무관) ──
+            try:
+                _sync_balance()
+                _push_balance_cache()
+            except Exception as e:
+                logging.debug("잔고 동기화 예외 (무시): %s", e)
 
             if _touch_heartbeat(state, now, force=state_dirty):
                 state_dirty = True

@@ -26,7 +26,7 @@ class LAAStrategy:
         "kr_etf_map": {
             "IWD": "360750",   # 대체: S&P500
             "GLD": "411060",   # ACE KRX금현물
-            "IEF": "453540",   # TIGER 미국채10년선물
+            "IEF": "305080",   # TIGER 미국채10년선물
             "QQQ": "133690",   # TIGER 미국나스닥100
             "SHY": "114470",   # KODEX 국고채3년
         },
@@ -136,7 +136,9 @@ class LAAStrategy:
         balance = float(initial_balance)
         equity_rows = []
         alloc_rows = []
+        trade_rows = []
         current_weights = None
+        prev_risk_asset = None
 
         start_idx = max(12, int(np.ceil(s["risk_signal_sma_days"] / 22)))
         for i in range(start_idx, len(monthly)):
@@ -163,6 +165,40 @@ class LAAStrategy:
                 continue
 
             current_weights = sig["target_weights"]
+            risk_asset = sig["selected_risk_asset"]
+
+            # 리스크 자산 변경 시 매매 기록
+            if prev_risk_asset is None:
+                # 초기 배분
+                for a, w in current_weights.items():
+                    price = float(monthly.loc[cur_date, a])
+                    if price > 0 and w > 0:
+                        trade_rows.append({
+                            'date': cur_date, 'action': '매수', 'ticker': a,
+                            'price': round(price, 2),
+                            'shares': round((balance * w) / price, 4),
+                            'equity': round(balance, 0),
+                        })
+            elif risk_asset != prev_risk_asset:
+                sell_price = float(monthly.loc[cur_date, prev_risk_asset])
+                buy_price = float(monthly.loc[cur_date, risk_asset])
+                risk_w = s["risk_weight"]
+                if sell_price > 0:
+                    trade_rows.append({
+                        'date': cur_date, 'action': '매도', 'ticker': prev_risk_asset,
+                        'price': round(sell_price, 2),
+                        'shares': round((balance * risk_w) / sell_price, 4),
+                        'equity': round(balance, 0),
+                    })
+                if buy_price > 0:
+                    trade_rows.append({
+                        'date': cur_date, 'action': '매수', 'ticker': risk_asset,
+                        'price': round(buy_price, 2),
+                        'shares': round((balance * risk_w) / buy_price, 4),
+                        'equity': round(balance, 0),
+                    })
+            prev_risk_asset = risk_asset
+
             equity_rows.append({"date": cur_date, "equity": balance})
             alloc_rows.append({
                 "date": cur_date,
@@ -189,6 +225,7 @@ class LAAStrategy:
         return {
             "equity_df": eq,
             "allocations": pd.DataFrame(alloc_rows),
+            "trades": pd.DataFrame(trade_rows) if trade_rows else pd.DataFrame(),
             "metrics": {
                 "total_return": total_return,
                 "cagr": cagr,

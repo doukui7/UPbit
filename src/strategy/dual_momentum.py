@@ -103,8 +103,8 @@ class DualMomentumStrategy:
         # 한국 ETF 매핑 (연금저축/ISA에서 실제 매매할 종목코드)
         'kr_etf_map': {
             'SPY': '360750',   # TIGER 미국S&P500
-            'EFA': '453850',   # TIGER 선진국MSCI World
-            'AGG': '453540',   # TIGER 미국채10년선물
+            'EFA': '195930',   # TIGER 유로스탁스50(합성 H)
+            'AGG': '305080',   # TIGER 미국채10년선물
             'BIL': None,       # 카나리아 시그널용
         },
     }
@@ -249,7 +249,8 @@ class DualMomentumStrategy:
         balance = initial_balance
         equity_curve = []
         positions = []
-        
+        trades = []
+
         current_ticker = None
         current_shares = 0
         
@@ -275,14 +276,25 @@ class DualMomentumStrategy:
             if target_ticker != current_ticker:
                 # 전량 매도 후 전량 매수
                 if current_ticker:
-                    # 매도 (이전 티커 가격)
                     prev_price = monthly_df.iloc[i][current_ticker]
                     balance = current_shares * prev_price * (1 - fee)
-                
+                    trades.append({
+                        'date': date, 'action': '매도', 'ticker': current_ticker,
+                        'price': round(float(prev_price), 2),
+                        'shares': round(current_shares, 4),
+                        'equity': round(balance, 0),
+                    })
+
                 # 매수
                 current_shares = (balance * (1 - fee)) / price_current
                 balance = 0
                 current_ticker = target_ticker
+                trades.append({
+                    'date': date, 'action': '매수', 'ticker': target_ticker,
+                    'price': round(float(price_current), 2),
+                    'shares': round(current_shares, 4),
+                    'equity': round(current_shares * price_current, 0),
+                })
             
             # 자산 평가
             current_eval = current_shares * price_current
@@ -312,6 +324,7 @@ class DualMomentumStrategy:
         return {
             'equity_df': res_df,
             'positions': pd.DataFrame(positions),
+            'trades': pd.DataFrame(trades) if trades else pd.DataFrame(),
             'metrics': {
                 'total_return': total_return,
                 'cagr': cagr,

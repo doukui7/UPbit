@@ -204,6 +204,7 @@ class CDMStrategy:
         prev_weights = None
         equity_rows = []
         alloc_rows = []
+        trade_rows = []
 
         for i in range(12, len(monthly)):
             date = monthly.index[i]
@@ -229,12 +230,44 @@ class CDMStrategy:
             if not sig:
                 continue
 
-            prev_weights = sig['target_weights']
+            new_weights = sig['target_weights']
+
+            # 가중치 변경 시 매매 기록
+            if prev_weights is None:
+                for tkr, w in new_weights.items():
+                    if w > 0:
+                        price = float(monthly.loc[date, tkr])
+                        if price > 0:
+                            trade_rows.append({
+                                'date': date, 'action': '매수', 'ticker': tkr,
+                                'price': round(price, 2),
+                                'shares': round((balance * w) / price, 4),
+                                'equity': round(balance, 0),
+                            })
+            else:
+                all_tkrs = set(list(prev_weights.keys()) + list(new_weights.keys()))
+                for tkr in all_tkrs:
+                    old_w = prev_weights.get(tkr, 0)
+                    new_w = new_weights.get(tkr, 0)
+                    if abs(new_w - old_w) > 0.001:
+                        price = float(monthly.loc[date, tkr])
+                        if price > 0:
+                            delta_val = balance * abs(new_w - old_w)
+                            trade_rows.append({
+                                'date': date,
+                                'action': '매수' if new_w > old_w else '매도',
+                                'ticker': tkr,
+                                'price': round(price, 2),
+                                'shares': round(delta_val / price, 4),
+                                'equity': round(balance, 0),
+                            })
+
+            prev_weights = new_weights
             equity_rows.append({"date": date, "equity": balance})
             alloc_rows.append({
                 "date": date,
                 "offensive_count": sig['offensive_count'],
-                "weights": dict(sig['target_weights']),
+                "weights": dict(new_weights),
             })
 
         if not equity_rows:
@@ -258,6 +291,7 @@ class CDMStrategy:
         return {
             "equity_df": eq,
             "allocations": pd.DataFrame(alloc_rows),
+            "trades": pd.DataFrame(trade_rows) if trade_rows else pd.DataFrame(),
             "metrics": {
                 "total_return": total_return,
                 "cagr": cagr,
