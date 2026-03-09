@@ -542,11 +542,21 @@ def run_auto_trade():
             except Exception:
                 pass
             _strat_label = f"{item.get('strategy', 'SMA')}({item.get('parameter', 20)}, {item.get('interval', 'day')})"
-            append_trade_log({
+            _skip_log = {
                 "mode": "signal", "ticker": ticker, "side": "SKIP",
                 "strategy": _strat_label, "reason": f"주기 미도래({iv})",
                 "detail": f"interval={iv}, 보충매수/매도만 실행",
-            })
+            }
+            if skip_result:
+                _skip_log["current_price"] = skip_result.get("current_price", 0)
+                _skip_log["buy_target"] = skip_result.get("buy_level", 0)
+                _skip_log["sell_target"] = skip_result.get("sell_level", 0)
+                _skip_log["buy_gap"] = skip_result.get("buy_gap_pct", 0)
+                _skip_log["sell_gap"] = skip_result.get("sell_gap_pct", 0)
+                _pos = skip_result.get("position_state", "")
+                _skip_log["position_state"] = _pos
+                _skip_log["condition"] = skip_result.get("condition_summary", "")
+            append_trade_log(_skip_log)
             continue
         try:
             result = analyze_asset(trader, item)

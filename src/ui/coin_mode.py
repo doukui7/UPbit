@@ -768,6 +768,13 @@ def render_coin_mode(config, save_config):
 
     _render_live_ticker()
 
+    # ── 60초마다 전체 페이지 자동 갱신 (모든 탭에서 동작) ──
+    try:
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=60_000, limit=None, key="coin_page_refresh")
+    except ImportError:
+        pass
+
     # --- Tabs ---
     tab1, tab_orders, tab5, tab3, tab4, tab6, tab7 = st.tabs(["🚀 실시간 포트폴리오", "📋 예약 주문", "🛒 수동 주문", "📜 거래 내역", "📊 백테스트", "⏰ 트리거", "📝 운영 로그"])
 

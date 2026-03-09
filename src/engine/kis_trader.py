@@ -112,6 +112,33 @@ class KISTrader:
         """동시호가 시장가 매도 (01)"""
         return self.send_order("SELL", stock_code, qty, price=0, ord_dvsn="01")
 
+    def get_orderable_cash(self, stock_code: str, price: int = 0, ord_dvsn: str = "01") -> float | None:
+        """주문 가능 현금 조회."""
+        return self.account.get_orderable_cash(stock_code, price, ord_dvsn)
+
+    def _get_limit_price(self, stock_code: str, order_type: str) -> int:
+        """동시호가 체결 보장을 위한 상한가(BUY)/하한가(SELL) 계산."""
+        price = self.get_current_price(stock_code)
+        if not price or price <= 0:
+            return 0
+        # 호가 단위 (KRX 규정)
+        def _tick(p):
+            if p < 2000: return 1
+            if p < 5000: return 5
+            if p < 20000: return 10
+            if p < 50000: return 50
+            if p < 200000: return 100
+            if p < 500000: return 500
+            return 1000
+        if order_type == "BUY":
+            raw = int(price * 1.30)
+            t = _tick(raw)
+            return (raw // t) * t
+        else:
+            raw = int(price * 0.70)
+            t = _tick(raw)
+            return ((raw + t - 1) // t) * t
+
     def smart_buy_krw(self, stock_code: str, target_krw: float) -> dict | None:
         """목표 금액(KRW) 만큼 시장가 매수"""
         cur_price = self.get_current_price(stock_code)

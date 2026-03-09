@@ -112,20 +112,35 @@ def trigger_gh_workflow(job_name: str, extra_inputs: dict | None = None) -> tupl
 
 
 def sync_account_cache_from_github():
-    """GitHub에서 account_cache.json을 pull (git fetch + checkout)."""
+    """GitHub에서 캐시 파일 pull (git fetch + 개별 checkout)."""
     try:
-        subprocess.run(
+        r1 = subprocess.run(
             ["git", "fetch", "origin", "--quiet"],
             cwd=PROJECT_ROOT, capture_output=True, timeout=15,
         )
-        subprocess.run(
-            ["git", "checkout", "origin/master", "--",
-             "account_cache.json", "balance_cache.json", "signal_state.json",
-             "trade_log.json", "logs/vm_scheduler_state.json"],
-            cwd=PROJECT_ROOT, capture_output=True, timeout=15,
-        )
+        if r1.returncode != 0:
+            print(f"[sync] git fetch failed: {r1.stderr.decode()[:200]}")
+            return False
+        # 각 파일을 개별 checkout — 일부 파일이 없어도 나머지는 정상 동기화
+        _files = [
+            "balance_cache.json", "signal_state.json",
+            "trade_log.json", "account_cache.json",
+            "logs/vm_scheduler_state.json",
+        ]
+        ok_count = 0
+        for f in _files:
+            r = subprocess.run(
+                ["git", "checkout", "origin/master", "--", f],
+                cwd=PROJECT_ROOT, capture_output=True, timeout=10,
+            )
+            if r.returncode == 0:
+                ok_count += 1
+        if ok_count == 0:
+            print(f"[sync] 모든 파일 checkout 실패")
+            return False
         return True
-    except Exception:
+    except Exception as e:
+        print(f"[sync] exception: {e}")
         return False
 
 

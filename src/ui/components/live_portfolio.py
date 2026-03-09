@@ -404,6 +404,22 @@ def render_live_portfolio_tab(
 
     st.write(f"### 📋 자산 상세 (현금 예비: {reserved_cash:,.0f} KRW)")
 
+    # 같은 코인을 공유하는 전략의 시그널 상태별 비중 합산 (잔고 분할용)
+    # BUY/HOLD 전략만 코인을 "소유", SELL 전략은 현금 보유로 간주
+    _sig_state_for_split = load_signal_state() or {}
+    _coin_buy_weight: dict[str, float] = {}   # BUY/HOLD 전략 비중 합
+    _coin_total_weight: dict[str, float] = {}  # 전체 전략 비중 합
+    for _it in portfolio_list:
+        _csym = _it['coin'].upper()
+        _w = float(_it.get('weight', 0) or 0)
+        _coin_total_weight[_csym] = _coin_total_weight.get(_csym, 0) + _w
+        _skey = make_signal_key(_it)
+        _sentry = get_signal_entry(_sig_state_for_split, _skey)
+        _sstate = _sentry.get("state", "").upper()
+        # SELL이 아닌 상태(BUY/HOLD/미확인) → 코인 보유 전략
+        if _sstate != "SELL":
+            _coin_buy_weight[_csym] = _coin_buy_weight.get(_csym, 0) + _w
+
     # 포트폴리오 합산용 에쿼티 수집
     portfolio_equity_data = []
 
@@ -471,7 +487,26 @@ def render_live_portfolio_tab(
                 curr_price = float(_cp) if pd.notna(_cp) else 0.0
                 coin_sym = item['coin'].upper()
                 _cb = pd.to_numeric(all_balances.get(coin_sym, 0), errors="coerce")
-                coin_bal = float(_cb) if pd.notna(_cb) else 0.0
+                coin_bal_total = float(_cb) if pd.notna(_cb) else 0.0
+                # 같은 코인 다전략 → 시그널 상태 기반 잔고 분할
+                # SELL 전략은 코인 0, BUY/HOLD 전략만 비중 비율로 분배
+                _this_skey = make_signal_key(item)
+                _this_sentry = get_signal_entry(_sig_state_for_split, _this_skey)
+                _this_state = _this_sentry.get("state", "").upper()
+                buy_w = _coin_buy_weight.get(coin_sym, 0)
+                if _this_state == "SELL":
+                    # SELL 전략 → 코인 미보유 (현금 보유)
+                    share_ratio = 0.0
+                    coin_bal = 0.0
+                elif buy_w > 0:
+                    # BUY/HOLD 전략 → BUY 전략들 비중 비율로 분배
+                    share_ratio = weight / buy_w
+                    coin_bal = coin_bal_total * share_ratio
+                else:
+                    # 모든 전략이 SELL → 잔여 코인은 균등 분배
+                    total_w = _coin_total_weight.get(coin_sym, weight)
+                    share_ratio = weight / total_w if total_w > 0 else 1.0
+                    coin_bal = coin_bal_total * share_ratio
                 coin_value_krw = coin_bal * curr_price
 
                 # Theo Backtest
@@ -535,7 +570,8 @@ def render_live_portfolio_tab(
                 match = (real_status == theo_status)
                 match_color = "green" if match else "red"
                 c4.markdown(f"**동기화**: :{match_color}[{'일치' if match else '불일치'}]")
-                c4.caption(f"실제: {coin_bal:,.4f} {coin_sym} ({real_status})")
+                _share_pct = f" ({share_ratio:.0%})" if share_ratio < 1.0 else ""
+                c4.caption(f"실제: {coin_bal:,.4f} {coin_sym}{_share_pct} ({real_status})")
 
                 st.divider()
 

@@ -130,11 +130,14 @@ def render_manual_trade_tab(portfolio_list, trader=None):
     port_tickers = [f"{r['market']}-{r['coin'].upper()}" for r in portfolio_list]
     manual_options = list(dict.fromkeys(port_tickers + TOP_20_TICKERS))
     mt_ticker = st.selectbox("코인 선택", manual_options, key="mt_ticker_chart")
-    import pyupbit as _pyupbit
+    import src.engine.data_cache as data_cache
 
     df_30m = ttl_cache(
         f"m30_{mt_ticker}",
-        lambda: _pyupbit.get_ohlcv(mt_ticker, interval="minute30", count=48),
+        lambda: data_cache.get_ohlcv_local_first(
+            mt_ticker, interval="minute30", count=48,
+            allow_api_fallback=True,
+        ),
         ttl=10,
     )
     if df_30m is not None and len(df_30m) > 0:
@@ -176,8 +179,8 @@ def render_manual_trade_tab(portfolio_list, trader=None):
 
     # 보유 수량/금액 조회
     coin_holding = float(bals.get(mt_coin, 0) or 0)
-    ob_data = ttl_cache(f"ob_{mt_ticker}", lambda: _pyupbit.get_orderbook(mt_ticker), ttl=5)
-    cur_price = ttl_cache(f"price_{mt_ticker}", lambda: _pyupbit.get_current_price(mt_ticker) or 0, ttl=5)
+    ob_data = ttl_cache(f"ob_{mt_ticker}", lambda: data_cache.get_orderbook_cached(mt_ticker, ttl_sec=3.0), ttl=5)
+    cur_price = ttl_cache(f"price_{mt_ticker}", lambda: data_cache.get_current_price_local_first(mt_ticker, ttl_sec=3.0) or 0, ttl=5)
     coin_value = coin_holding * cur_price if cur_price > 0 else 0
 
     # 주문 가능 정보 (수수료율 등)

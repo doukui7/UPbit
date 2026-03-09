@@ -164,10 +164,26 @@ def _analyze_success_run(run_kst_str: str, workflow: str) -> str:
         for e in signal_entries:
             side = sig_map.get(e.get("side", ""), e.get("side", ""))
             strat = e.get("strategy", "")
-            # 전략명 축약 (SMA(29, day) → SMA)
             strat_short = strat.split("(")[0] if strat else ""
-            sig_parts.append(f"{strat_short}={side}")
-        parts.append(f"시그널: {' '.join(sig_parts)}")
+            # 상세 정보 추가
+            detail_items = [f"{strat_short}={side}"]
+            reason = e.get("reason", "")
+            if reason:
+                detail_items.append(reason)
+            cp = e.get("current_price")
+            if cp:
+                detail_items.append(f"현재가:{cp:,.0f}")
+            bg = e.get("buy_gap")
+            sg = e.get("sell_gap")
+            if bg is not None:
+                detail_items.append(f"매수이격:{bg:+.1f}%")
+            if sg is not None:
+                detail_items.append(f"매도이격:{sg:+.1f}%")
+            cond = e.get("condition", "")
+            if cond and not reason:
+                detail_items.append(cond)
+            sig_parts.append(" ".join(detail_items))
+        parts.append(f"시그널: {' / '.join(sig_parts)}")
 
     if parts:
         return " | ".join(parts)
@@ -181,12 +197,24 @@ def _analyze_success_run(run_kst_str: str, workflow: str) -> str:
     for key, val in sig.items():
         if key.startswith("__"):
             continue
-        if val == "BUY":
-            reasons.append(f"{key}: BUY 유지 → 전환 없어 매매 불필요")
-        elif val == "SELL":
-            reasons.append(f"{key}: SELL 유지 → 전환 없어 매매 불필요")
-        elif val == "HOLD":
-            reasons.append(f"{key}: HOLD → 돈치안 채널 내부, 매매 없음")
+        # 확장 dict 포맷 지원
+        if isinstance(val, dict):
+            state = val.get("state", "")
+            cp = val.get("current_price", 0)
+            bd = val.get("buy_dist", 0)
+            sd = val.get("sell_dist", 0)
+            # 전략 키 축약 (KRW-BTC_SMA_29_day → SMA29/1D)
+            parts_k = key.split("_")
+            strat_label = key
+            if len(parts_k) >= 3:
+                strat_label = f"{parts_k[1]}{parts_k[2]}"
+            price_info = f"현재가:{cp:,.0f}" if cp else ""
+            gap_info = f"매수이격:{bd:+.1f}% 매도이격:{sd:+.1f}%" if cp else ""
+            reasons.append(f"{strat_label}={state} {price_info} {gap_info}".strip())
+        elif isinstance(val, str):
+            state = val.upper()
+            if state in ("BUY", "SELL", "HOLD"):
+                reasons.append(f"{key}={state}")
 
     if reasons:
         return "매매 없음 — " + "; ".join(reasons)
@@ -380,9 +408,43 @@ def _render_trade_log():
         if sel_mode != "전체" and mode != sel_mode:
             continue
         side = e.get("side", "")
-        side_kr = {"BUY": "매수", "SELL": "매도", "BUY_TOPUP": "보충매수", "SELL_TOPUP": "보충매도"}.get(side, side)
+        side_kr = {"BUY": "매수", "SELL": "매도", "BUY_TOPUP": "보충매수",
+                   "SELL_TOPUP": "보충매도", "SKIP": "스킵", "HOLD": "유지"}.get(side, side)
         mode_kr = {"real": "실매매", "auto": "실매매", "manual": "수동", "signal": "시그널"}.get(mode, mode)
         amount_str = e.get("amount", e.get("qty", ""))
+
+        # 상세 정보 조합
+        detail_parts = []
+        reason = e.get("reason", "")
+        if reason:
+            detail_parts.append(reason)
+        cp = e.get("current_price")
+        if cp:
+            detail_parts.append(f"현재가:{cp:,.0f}")
+        bt = e.get("buy_target")
+        st_ = e.get("sell_target")
+        if bt:
+            detail_parts.append(f"매수목표:{bt:,.0f}")
+        if st_:
+            detail_parts.append(f"매도목표:{st_:,.0f}")
+        bg = e.get("buy_gap")
+        sg = e.get("sell_gap")
+        if bg is not None and bg != "" and bg != 0:
+            detail_parts.append(f"매수이격:{bg:+.1f}%")
+        if sg is not None and sg != "" and sg != 0:
+            detail_parts.append(f"매도이격:{sg:+.1f}%")
+        pos = e.get("position_state", "")
+        if pos:
+            detail_parts.append(f"판단:{pos}")
+        cond = e.get("condition", "")
+        if cond and not reason:
+            detail_parts.append(cond)
+        raw_detail = e.get("detail", "")
+        if raw_detail and not detail_parts:
+            detail_parts.append(str(raw_detail)[:120])
+        elif raw_detail and side in ("BUY", "SELL", "BUY_TOPUP", "SELL_TOPUP"):
+            detail_parts.append(str(raw_detail)[:120])
+
         rows.append({
             "시간": e.get("time", ""),
             "모드": mode_kr,
@@ -391,7 +453,7 @@ def _render_trade_log():
             "전략": e.get("strategy", ""),
             "금액/수량": str(amount_str),
             "결과": e.get("result", ""),
-            "상세": str(e.get("detail", ""))[:80],
+            "상세": " | ".join(detail_parts) if detail_parts else "",
         })
 
     if not rows:
