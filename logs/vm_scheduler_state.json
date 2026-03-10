@@ -1,15 +1,15 @@
 {
   "upbit": "2026031021",
-  "health_check": "2026031017",
+  "health_check": "2026031021",
   "daily_status": "2026031009",
   "kiwoom_gold": "2026031015",
   "__started_at_kst": "2026-03-09 20:51:15",
-  "__heartbeat_epoch": "1773144161.126",
-  "__heartbeat_kst": "2026-03-10 21:02:39",
+  "__heartbeat_epoch": "1773144320.369",
+  "__heartbeat_kst": "2026-03-10 21:05:01",
   "once::once-kis_pension-20260305152000-8452": "202603051520",
   "kis_isa": "202603061510",
-  "__last_trade_epoch": "1773144032.685",
-  "__last_trade_kst": "2026-03-10 21:00:32",
-  "__last_trade_mode": "upbit",
+  "__last_trade_epoch": "1773144318.779",
+  "__last_trade_kst": "2026-03-10 21:05:18",
+  "__last_trade_mode": "health_check",
   "__consecutive_failures": "0"
 }
