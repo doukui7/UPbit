@@ -19,8 +19,8 @@ class VAAStrategy:
 
     한국 ETF 대체 (연금저축/ISA):
       - SPY → 379800 KODEX 미국S&P500TR
-      - EFA → 195930 TIGER 선진국MSCI World
-      - EEM → 295820 TIGER MSCI EM
+      - EFA → 195930 TIGER 유로스탁스50(합성 H)
+      - EEM → 195980 PLUS 신흥국MSCI(합성 H)
       - AGG → 305080 TIGER 미국채10년선물
       - LQD → 329750 TIGER 미국달러선물
       - IEF → 305080 TIGER 미국채10년선물

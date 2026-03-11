@@ -40,9 +40,8 @@ class DualMomentumStrategy:
     ├─────────────────────────────┼──────────┼──────────┼─────────────┤
     │ TIGER 미국S&P500             │ 0.07%    │ 360750   │ SPY 대용     │
     │ KODEX 미국S&P500TR           │ 0.045%   │ 379800   │ SPY 대용(TR) │
-    │ TIGER 선진국MSCI World       │ 0.19%    │ 453850   │ EFA 대용     │
     │ KODEX 선진국MSCI World       │ 0.18%    │ 251350   │ EFA 대용     │
-    │ TIGER 미국채10년선물          │ 0.10%    │ 453540   │ AGG 대용     │
+    │ TIGER 미국채10년선물          │ 0.10%    │ 305080   │ AGG 대용     │
     │ KODEX 미국채10년선물          │ 0.09%    │ 308620   │ AGG 대용     │
     │ ACE 미국30년국채액티브        │ 0.05%    │ 471460   │ 장기채 대안   │
     └─────────────────────────────┴──────────┴──────────┴─────────────┘
@@ -81,8 +80,8 @@ class DualMomentumStrategy:
     3. 한국 시장 변경 (Adaptation for KR)
        - 연금저축/ISA 계좌는 해외 ETF 직접 매매가 불가능하므로 지수 수익률이 유사한 국내 상장 ETF로 대체합니다.
        - SPY 대용: TIGER 미국S&P500 (360750) 또는 KODEX 미국S&P500TR (379800)
-       - EFA 대용: TIGER 선진국MSCI World (453850) 또는 KODEX 선진국MSCI World (251350)
-       - AGG 대용: TIGER 미국채10년선물 (453540) 또는 KODEX 미국채10년선물 (308620)
+       - EFA 대용: KODEX 선진국MSCI World (251350)
+       - AGG 대용: TIGER 미국채10년선물 (305080) 또는 KODEX 미국채10년선물 (308620)
        - 시그널: 해외 원지수(SPY, EFA, BIL) 시세를 그대로 사용하여 판단하되, 실제 집행만 국내 ETF로 수행합니다.
     """
 
@@ -103,7 +102,7 @@ class DualMomentumStrategy:
         # 한국 ETF 매핑 (연금저축/ISA에서 실제 매매할 종목코드)
         'kr_etf_map': {
             'SPY': '360750',   # TIGER 미국S&P500
-            'EFA': '195930',   # TIGER 유로스탁스50(합성 H)
+            'EFA': '251350',   # KODEX 선진국MSCI World
             'AGG': '305080',   # TIGER 미국채10년선물
             'BIL': None,       # 카나리아 시그널용
         },

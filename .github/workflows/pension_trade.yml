@@ -2,8 +2,8 @@ name: "Pension Trade"
 
 on:
   schedule:
-    # 매월 25~31일 평일 KST 15:45 (UTC 06:45) — 시간외 종가 리밸런싱
-    - cron: "45 6 25-31 * 1-5"
+    # 매 평일 KST 15:45 (UTC 06:45) — 대기주문 있으면 실행 (VM 스케줄러 백업)
+    - cron: "45 6 * * 1-5"
   workflow_dispatch:
     inputs:
       run_job:

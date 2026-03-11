@@ -72,7 +72,7 @@ def render_kis_isa_mode(config, save_config):
         return out
 
     _isa_trade_options = _build_etf_options(list(ISA_WDR_TRADE_ETF_CODES))
-    _isa_trend_options = _build_etf_options(["133690", "360750", "453850", "251350", "418660", "409820", "423920", "465610", "461910"])
+    _isa_trend_options = _build_etf_options(["133690", "360750", "251350", "418660", "409820", "423920", "465610", "461910"])
 
     _saved_trade_raw = str(_isa_cfg.get("kis_isa_etf_code", _get_runtime_value("KIS_ISA_ETF_CODE", "418660")))
     _saved_trade_etf = _sanitize_isa_trade_etf(_saved_trade_raw, default="418660")

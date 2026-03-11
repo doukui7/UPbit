@@ -42,7 +42,6 @@ def render_strategy_detail_tabs(
     laa_res: dict | None,
     dm_res: dict | None,
     vaa_res: dict | None,
-    cdm_res: dict | None,
     bal: dict | None,
     pen_bt_start_raw: str,
     pen_bt_cap: float,
@@ -64,10 +63,6 @@ def render_strategy_detail_tabs(
     if "VAA" in active_strategies:
         _detail_tab_names.append("VAA 전략")
         _detail_tab_keys.append("VAA")
-    if "CDM" in active_strategies:
-        _detail_tab_names.append("CDM 전략")
-        _detail_tab_keys.append("CDM")
-
     if _detail_tab_names:
         _detail_tabs = st.tabs(_detail_tab_names)
         _detail_tab_map = dict(zip(_detail_tab_keys, _detail_tabs))
@@ -87,10 +82,6 @@ def render_strategy_detail_tabs(
     if "VAA" in _detail_tab_map:
         with _detail_tab_map["VAA"]:
             _render_vaa_detail(vaa_res, auto_signal_strategies)
-
-    if "CDM" in _detail_tab_map:
-        with _detail_tab_map["CDM"]:
-            _render_cdm_detail(cdm_res, auto_signal_strategies)
 
 
 def _guide_button_js(components, key: str):
@@ -149,17 +140,21 @@ def _render_laa_detail(res, bal, pen_bt_start_raw, pen_bt_cap, auto_signal_strat
             _mode_label = "공격 (Risk-On)" if sig.get("risk_on") else "방어 (Risk-Off)"
             _mode_color = "#16a34a" if sig.get("risk_on") else "#dc2626"
 
-            st.subheader("TIGER 미국S&P500 + 200일선")
+            _is_us_spy = "US" in str(_risk_chart_code)
+            _chart_title = "SPY (미국 S&P500) + 200일선" if _is_us_spy else "TIGER 미국S&P500 + 200일선"
+            _unit = "USD" if _is_us_spy else "KRW"
+            st.subheader(_chart_title)
             cc1, cc2, cc3 = st.columns(3)
-            cc1.metric("현재가", f"{_last_close:,.0f} KRW")
-            cc2.metric("200일선", f"{_last_ma200:,.0f} KRW")
+            cc1.metric("현재가", f"{_last_close:,.2f} {_unit}" if _is_us_spy else f"{_last_close:,.0f} {_unit}")
+            cc2.metric("200일선", f"{_last_ma200:,.2f} {_unit}" if _is_us_spy else f"{_last_ma200:,.0f} {_unit}")
             cc3.metric("이격도(200일)", f"{_last_div:+.2f}%")
-            st.caption(f"현재 모드: {_mode_label} | 기준 ETF: {_fmt_etf_code_name(_risk_chart_code)}")
+            _chart_label = "SPY (미국 원본)" if _is_us_spy else _fmt_etf_code_name(_risk_chart_code)
+            st.caption(f"현재 모드: {_mode_label} | 기준: {_chart_label}")
 
             fig_risk = go.Figure()
             fig_risk.add_trace(go.Scatter(
                 x=_plot_df.index, y=_plot_df["close"],
-                name=f"{_fmt_etf_code_name(_risk_chart_code)} 종가",
+                name=f"{'SPY (미국 원본)' if _is_us_spy else _fmt_etf_code_name(_risk_chart_code)} 종가",
                 line=dict(color="royalblue", width=2),
             ))
             fig_risk.add_trace(go.Scatter(
@@ -174,7 +169,7 @@ def _render_laa_detail(res, bal, pen_bt_start_raw, pen_bt_cap, auto_signal_strat
                 font=dict(color=_mode_color, size=13),
             )
             fig_risk.update_layout(
-                height=430, xaxis_title="날짜", yaxis_title="가격 (KRW)",
+                height=430, xaxis_title="날짜", yaxis_title=f"가격 ({_unit})",
                 legend=dict(orientation="h", yanchor="bottom", y=1.06),
             )
             st.plotly_chart(fig_risk, use_container_width=True)
@@ -468,46 +463,3 @@ def _render_vaa_detail(vaa_res, auto_signal_strategies):
         st.dataframe(_vaa_alloc, use_container_width=True, hide_index=True)
 
 
-def _render_cdm_detail(cdm_res, auto_signal_strategies):
-    """CDM 전략 상세."""
-    st.subheader("CDM 전략 포트폴리오")
-    st.caption("4모듈 듀얼모멘텀 — 각 모듈 상대+절대 모멘텀 (12개월 수익률)")
-
-    if not cdm_res:
-        if "CDM" not in auto_signal_strategies:
-            st.info("CDM 비중이 0%라 자동 시그널 계산을 생략했습니다.")
-        else:
-            st.info("CDM 시그널이 계산되지 않았습니다.")
-        return
-
-    if cdm_res.get("error"):
-        st.error(str(cdm_res["error"]))
-        return
-
-    _cs = cdm_res.get("signal", {})
-    _c1, _c2, _c3, _c4 = st.columns(4)
-    _c1.metric("공격 모듈 수", f"{_cs.get('offensive_count', 0)}/{_cs.get('total_modules', 4)}")
-    _c2.metric("방어자산 12M수익률", f"{_cs.get('defensive_return', 0):+.2f}%")
-    _c3.metric("권장 동작", str(cdm_res.get("action", "HOLD")))
-    _tw_kr = _cs.get("target_weights_kr", {})
-    _top_etf = max(_tw_kr, key=_tw_kr.get) if _tw_kr else "-"
-    _c4.metric("최대 비중 ETF", _fmt_etf_code_name(_top_etf) if _top_etf != "-" else "-")
-    st.info(str(_cs.get("reason", "")))
-
-    _mod_results = _cs.get("module_results", [])
-    if _mod_results:
-        _mod_rows = []
-        for m in _mod_results:
-            _mod_rows.append({
-                "모듈": f"M{m['module']}",
-                "페어": " vs ".join(m['pair']),
-                "승자": m['winner'],
-                "12M수익률(%)": m['winner_return'],
-                "포지션": "공격" if m['is_offensive'] else "방어",
-            })
-        st.dataframe(pd.DataFrame(_mod_rows), use_container_width=True, hide_index=True)
-
-    _cdm_alloc = cdm_res.get("alloc_df")
-    if isinstance(_cdm_alloc, pd.DataFrame) and not _cdm_alloc.empty:
-        st.markdown("**목표 배분 vs 현재 보유**")
-        st.dataframe(_cdm_alloc, use_container_width=True, hide_index=True)

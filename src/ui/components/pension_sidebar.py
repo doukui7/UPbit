@@ -6,7 +6,7 @@ from src.constants import IS_CLOUD
 from src.utils.formatting import _code_only, _etf_name_kr, _fmt_etf_code_name
 from src.utils.helpers import _get_runtime_value
 
-PEN_STRATEGIES = ["LAA", "듀얼모멘텀", "VAA", "CDM"]
+PEN_STRATEGIES = ["LAA", "듀얼모멘텀", "VAA"]
 
 
 def _sidebar_etf_code_input(title: str, code_value: str, key: str, disabled: bool = False) -> str:
@@ -50,10 +50,8 @@ def _normalize_pen_portfolio_df(df: pd.DataFrame) -> pd.DataFrame:
         out = pd.concat([out, pd.DataFrame([{"strategy": "듀얼모멘텀", "weight": 0}])], ignore_index=True)
     if not (out["strategy"] == "VAA").any():
         out = pd.concat([out, pd.DataFrame([{"strategy": "VAA", "weight": 0}])], ignore_index=True)
-    if not (out["strategy"] == "CDM").any():
-        out = pd.concat([out, pd.DataFrame([{"strategy": "CDM", "weight": 0}])], ignore_index=True)
 
-    out = out[out["strategy"] != "정적배분"].reset_index(drop=True)
+    out = out[~out["strategy"].isin(["정적배분", "CDM"])].reset_index(drop=True)
     return out
 
 
@@ -182,7 +180,7 @@ def render_pension_sidebar(config: dict, save_config) -> dict | None:
     _active_strategies = list(_pen_port_edited["strategy"].unique()) if not _pen_port_edited.empty else []
     _auto_signal_strategies = list(_pen_port_edited["strategy"].unique()) if not _pen_port_edited.empty else []
 
-    _panel_options = ["접기", "LAA 전략 설정", "듀얼모멘텀 설정", "VAA 전략 설정", "CDM 전략 설정"]
+    _panel_options = ["접기", "LAA 전략 설정", "듀얼모멘텀 설정", "VAA 전략 설정"]
     _panel_key = "pen_strategy_settings_panel"
     if st.session_state.get(_panel_key) not in _panel_options:
         st.session_state[_panel_key] = _panel_options[0]
@@ -191,19 +189,44 @@ def render_pension_sidebar(config: dict, save_config) -> dict | None:
         "전략 상세 설정", _panel_options, key=_panel_key, label_visibility="collapsed",
     )
 
+    # ── deprecated ETF 코드 자동 교체 (config 변경 반영) ──
+    _deprecated_etf_map = {
+        "114470": "329750",  # KODEX 국고채3년 → TIGER 미국달러단기채권액티브
+        "453540": "305080",  # TIGER 회사채 → TIGER 미국채10년선물
+        "453850": "251350",  # ACE 미국30년국채 → KODEX 선진국MSCI World
+        "295820": "195980",  # PLUS 200동일가중 → PLUS 신흥국MSCI
+        "132030": "411060",  # KODEX Gold선물 → ACE KRX금현물
+    }
+    _etf_session_keys = [
+        "pen_laa_spy", "pen_laa_iwd", "pen_laa_gld", "pen_laa_ief", "pen_laa_qqq", "pen_laa_shy",
+        "pen_dm_kr_spy", "pen_dm_kr_efa", "pen_dm_kr_agg", "pen_dm_kr_bil",
+        "pen_vaa_kr_spy", "pen_vaa_kr_efa", "pen_vaa_kr_eem", "pen_vaa_kr_agg",
+        "pen_vaa_kr_lqd", "pen_vaa_kr_ief", "pen_vaa_kr_shy",
+    ]
+    for _sk in _etf_session_keys:
+        _sv = str(st.session_state.get(_sk, "")).strip()
+        if _sv in _deprecated_etf_map:
+            # del로 삭제해야 Streamlit 위젯이 config 기본값으로 재초기화됨
+            # (재할당은 위젯 렌더 시 브라우저 캐시 값으로 다시 덮어써짐)
+            del st.session_state[_sk]
+
     # ── LAA 전략 설정 ──
     _kr_iwd_default = _code_only(pen_cfg.get("kr_etf_laa_iwd", _get_runtime_value("KR_ETF_LAA_IWD", _get_runtime_value("KR_ETF_SPY", "360750"))))
     _kr_spy_default = _code_only(pen_cfg.get("kr_etf_laa_spy", _get_runtime_value("KR_ETF_LAA_SPY", _get_runtime_value("KR_ETF_SPY", _kr_iwd_default or "360750"))))
-    _kr_gld_default = _code_only(pen_cfg.get("kr_etf_laa_gld", _get_runtime_value("KR_ETF_LAA_GLD", "132030")))
-    _kr_ief_default = _code_only(pen_cfg.get("kr_etf_laa_ief", _get_runtime_value("KR_ETF_LAA_IEF", _get_runtime_value("KR_ETF_AGG", "453540"))))
+    _kr_gld_default = _code_only(pen_cfg.get("kr_etf_laa_gld", _get_runtime_value("KR_ETF_LAA_GLD", "411060")))
+    _kr_ief_default = _code_only(pen_cfg.get("kr_etf_laa_ief", _get_runtime_value("KR_ETF_LAA_IEF", _get_runtime_value("KR_ETF_AGG", "305080"))))
     _kr_qqq_default = _code_only(pen_cfg.get("kr_etf_laa_qqq", _get_runtime_value("KR_ETF_LAA_QQQ", "133690")))
-    _kr_shy_default = _code_only(pen_cfg.get("kr_etf_laa_shy", _get_runtime_value("KR_ETF_LAA_SHY", "114470")))
-    kr_spy = _code_only(st.session_state.get("pen_laa_spy", _kr_spy_default))
-    kr_iwd = _code_only(st.session_state.get("pen_laa_iwd", _kr_iwd_default))
-    kr_gld = _code_only(st.session_state.get("pen_laa_gld", _kr_gld_default))
-    kr_ief = _code_only(st.session_state.get("pen_laa_ief", _kr_ief_default))
-    kr_qqq = _code_only(st.session_state.get("pen_laa_qqq", _kr_qqq_default))
-    kr_shy = _code_only(st.session_state.get("pen_laa_shy", _kr_shy_default))
+    _kr_shy_default = _code_only(pen_cfg.get("kr_etf_laa_shy", _get_runtime_value("KR_ETF_LAA_SHY", "329750")))
+    def _safe_etf(key, default):
+        v = _code_only(st.session_state.get(key, default))
+        return _deprecated_etf_map.get(v, v)
+
+    kr_spy = _safe_etf("pen_laa_spy", _kr_spy_default)
+    kr_iwd = _safe_etf("pen_laa_iwd", _kr_iwd_default)
+    kr_gld = _safe_etf("pen_laa_gld", _kr_gld_default)
+    kr_ief = _safe_etf("pen_laa_ief", _kr_ief_default)
+    kr_qqq = _safe_etf("pen_laa_qqq", _kr_qqq_default)
+    kr_shy = _safe_etf("pen_laa_shy", _kr_shy_default)
 
     if ("LAA" in _active_strategies) and (_selected_panel == "LAA 전략 설정"):
         with st.sidebar.expander("LAA 전략 설정", expanded=True):
@@ -216,6 +239,7 @@ def render_pension_sidebar(config: dict, save_config) -> dict | None:
             kr_shy = _sidebar_etf_code_input("SHY 대체 ETF", kr_shy, key="pen_laa_shy", disabled=IS_CLOUD)
 
     _kr_etf_map = {"SPY": str(kr_spy), "IWD": str(kr_iwd), "GLD": str(kr_gld), "IEF": str(kr_ief), "QQQ": str(kr_qqq), "SHY": str(kr_shy)}
+    _kr_etf_map = {k: _deprecated_etf_map.get(v, v) for k, v in _kr_etf_map.items()}
 
     # ── 듀얼모멘텀 전략 설정 ──
     _dm_offensive = ["SPY", "EFA"]
@@ -229,13 +253,13 @@ def render_pension_sidebar(config: dict, save_config) -> dict | None:
     _dm_w12 = float(st.session_state.get("pen_dm_w12", pen_cfg.get("pen_dm_w12", 1.0)))
 
     _dm_kr_spy_default = _code_only(pen_cfg.get("pen_dm_kr_spy", pen_cfg.get("pen_dm_agg_etf", _get_runtime_value("KR_ETF_SPY", "360750"))))
-    _dm_kr_efa_default = _code_only(pen_cfg.get("pen_dm_kr_efa", _get_runtime_value("KR_ETF_EFA", "453850")))
-    _dm_kr_agg_default = _code_only(pen_cfg.get("pen_dm_kr_agg", pen_cfg.get("pen_dm_def_etf", _get_runtime_value("KR_ETF_AGG", "453540"))))
-    _dm_kr_bil_default = _code_only(pen_cfg.get("pen_dm_kr_bil", _get_runtime_value("KR_ETF_BIL", _get_runtime_value("KR_ETF_SHY", "114470"))))
-    _dm_kr_spy = _code_only(st.session_state.get("pen_dm_kr_spy", _dm_kr_spy_default))
-    _dm_kr_efa = _code_only(st.session_state.get("pen_dm_kr_efa", _dm_kr_efa_default))
-    _dm_kr_agg = _code_only(st.session_state.get("pen_dm_kr_agg", _dm_kr_agg_default))
-    _dm_kr_bil = _code_only(st.session_state.get("pen_dm_kr_bil", _dm_kr_bil_default))
+    _dm_kr_efa_default = _code_only(pen_cfg.get("pen_dm_kr_efa", _get_runtime_value("KR_ETF_EFA", "251350")))
+    _dm_kr_agg_default = _code_only(pen_cfg.get("pen_dm_kr_agg", pen_cfg.get("pen_dm_def_etf", _get_runtime_value("KR_ETF_AGG", "305080"))))
+    _dm_kr_bil_default = _code_only(pen_cfg.get("pen_dm_kr_bil", _get_runtime_value("KR_ETF_BIL", _get_runtime_value("KR_ETF_SHY", "329750"))))
+    _dm_kr_spy = _safe_etf("pen_dm_kr_spy", _dm_kr_spy_default)
+    _dm_kr_efa = _safe_etf("pen_dm_kr_efa", _dm_kr_efa_default)
+    _dm_kr_agg = _safe_etf("pen_dm_kr_agg", _dm_kr_agg_default)
+    _dm_kr_bil = _safe_etf("pen_dm_kr_bil", _dm_kr_bil_default)
 
     if ("듀얼모멘텀" in _active_strategies) and (_selected_panel == "듀얼모멘텀 설정"):
         with st.sidebar.expander("듀얼모멘텀 설정", expanded=True):
@@ -266,19 +290,19 @@ def render_pension_sidebar(config: dict, save_config) -> dict | None:
         "offensive": _dm_offensive, "defensive": _dm_defensive, "canary": _dm_canary,
         "lookback": int(_dm_lookback), "trading_days_per_month": int(_dm_td),
         "momentum_weights": {"m1": float(_dm_w1), "m3": float(_dm_w3), "m6": float(_dm_w6), "m12": float(_dm_w12)},
-        "kr_etf_map": {"SPY": str(_dm_kr_spy), "EFA": str(_dm_kr_efa), "AGG": str(_dm_kr_agg), "BIL": str(_dm_kr_bil)},
+        "kr_etf_map": {k: _deprecated_etf_map.get(v, v) for k, v in {"SPY": str(_dm_kr_spy), "EFA": str(_dm_kr_efa), "AGG": str(_dm_kr_agg), "BIL": str(_dm_kr_bil)}.items()},
     }
 
     # ── VAA 전략 설정 ──
     from src.strategy.vaa import VAAStrategy as _VAAStrategy
     _vaa_defaults = _VAAStrategy.DEFAULT_SETTINGS
-    _vaa_kr_spy = _code_only(st.session_state.get("pen_vaa_kr_spy", pen_cfg.get("pen_vaa_kr_spy", _vaa_defaults['kr_etf_map']['SPY'])))
-    _vaa_kr_efa = _code_only(st.session_state.get("pen_vaa_kr_efa", pen_cfg.get("pen_vaa_kr_efa", _vaa_defaults['kr_etf_map']['EFA'])))
-    _vaa_kr_eem = _code_only(st.session_state.get("pen_vaa_kr_eem", pen_cfg.get("pen_vaa_kr_eem", _vaa_defaults['kr_etf_map']['EEM'])))
-    _vaa_kr_agg = _code_only(st.session_state.get("pen_vaa_kr_agg", pen_cfg.get("pen_vaa_kr_agg", _vaa_defaults['kr_etf_map']['AGG'])))
-    _vaa_kr_lqd = _code_only(st.session_state.get("pen_vaa_kr_lqd", pen_cfg.get("pen_vaa_kr_lqd", _vaa_defaults['kr_etf_map']['LQD'])))
-    _vaa_kr_ief = _code_only(st.session_state.get("pen_vaa_kr_ief", pen_cfg.get("pen_vaa_kr_ief", _vaa_defaults['kr_etf_map']['IEF'])))
-    _vaa_kr_shy = _code_only(st.session_state.get("pen_vaa_kr_shy", pen_cfg.get("pen_vaa_kr_shy", _vaa_defaults['kr_etf_map']['SHY'])))
+    _vaa_kr_spy = _safe_etf("pen_vaa_kr_spy", pen_cfg.get("pen_vaa_kr_spy", _vaa_defaults['kr_etf_map']['SPY']))
+    _vaa_kr_efa = _safe_etf("pen_vaa_kr_efa", pen_cfg.get("pen_vaa_kr_efa", _vaa_defaults['kr_etf_map']['EFA']))
+    _vaa_kr_eem = _safe_etf("pen_vaa_kr_eem", pen_cfg.get("pen_vaa_kr_eem", _vaa_defaults['kr_etf_map']['EEM']))
+    _vaa_kr_agg = _safe_etf("pen_vaa_kr_agg", pen_cfg.get("pen_vaa_kr_agg", _vaa_defaults['kr_etf_map']['AGG']))
+    _vaa_kr_lqd = _safe_etf("pen_vaa_kr_lqd", pen_cfg.get("pen_vaa_kr_lqd", _vaa_defaults['kr_etf_map']['LQD']))
+    _vaa_kr_ief = _safe_etf("pen_vaa_kr_ief", pen_cfg.get("pen_vaa_kr_ief", _vaa_defaults['kr_etf_map']['IEF']))
+    _vaa_kr_shy = _safe_etf("pen_vaa_kr_shy", pen_cfg.get("pen_vaa_kr_shy", _vaa_defaults['kr_etf_map']['SHY']))
 
     if ("VAA" in _active_strategies) and (_selected_panel == "VAA 전략 설정"):
         with st.sidebar.expander("VAA 전략 설정", expanded=True):
@@ -297,51 +321,10 @@ def render_pension_sidebar(config: dict, save_config) -> dict | None:
         'offensive': ['SPY', 'EFA', 'EEM', 'AGG'], 'defensive': ['LQD', 'IEF', 'SHY'],
         'lookback': 12, 'top_n': 1, 'trading_days_per_month': 22,
         'momentum_weights': {'m1': 12.0, 'm3': 4.0, 'm6': 2.0, 'm12': 1.0},
-        'kr_etf_map': {
+        'kr_etf_map': {k: _deprecated_etf_map.get(v, v) for k, v in {
             'SPY': str(_vaa_kr_spy), 'EFA': str(_vaa_kr_efa), 'EEM': str(_vaa_kr_eem),
             'AGG': str(_vaa_kr_agg), 'LQD': str(_vaa_kr_lqd), 'IEF': str(_vaa_kr_ief), 'SHY': str(_vaa_kr_shy),
-        },
-    }
-
-    # ── CDM 전략 설정 ──
-    from src.strategy.cdm import CDMStrategy as _CDMStrategy
-    _cdm_defaults = _CDMStrategy.DEFAULT_SETTINGS
-    _cdm_kr_spy = _code_only(st.session_state.get("pen_cdm_kr_spy", pen_cfg.get("pen_cdm_kr_spy", _cdm_defaults['kr_etf_map']['SPY'])))
-    _cdm_kr_veu = _code_only(st.session_state.get("pen_cdm_kr_veu", pen_cfg.get("pen_cdm_kr_veu", _cdm_defaults['kr_etf_map']['VEU'])))
-    _cdm_kr_vnq = _code_only(st.session_state.get("pen_cdm_kr_vnq", pen_cfg.get("pen_cdm_kr_vnq", _cdm_defaults['kr_etf_map']['VNQ'])))
-    _cdm_kr_rem = _code_only(st.session_state.get("pen_cdm_kr_rem", pen_cfg.get("pen_cdm_kr_rem", _cdm_defaults['kr_etf_map']['REM'])))
-    _cdm_kr_lqd = _code_only(st.session_state.get("pen_cdm_kr_lqd", pen_cfg.get("pen_cdm_kr_lqd", _cdm_defaults['kr_etf_map']['LQD'])))
-    _cdm_kr_hyg = _code_only(st.session_state.get("pen_cdm_kr_hyg", pen_cfg.get("pen_cdm_kr_hyg", _cdm_defaults['kr_etf_map']['HYG'])))
-    _cdm_kr_tlt = _code_only(st.session_state.get("pen_cdm_kr_tlt", pen_cfg.get("pen_cdm_kr_tlt", _cdm_defaults['kr_etf_map']['TLT'])))
-    _cdm_kr_gld = _code_only(st.session_state.get("pen_cdm_kr_gld", pen_cfg.get("pen_cdm_kr_gld", _cdm_defaults['kr_etf_map']['GLD'])))
-    _cdm_kr_bil = _code_only(st.session_state.get("pen_cdm_kr_bil", pen_cfg.get("pen_cdm_kr_bil", _cdm_defaults['kr_etf_map']['BIL'])))
-
-    if ("CDM" in _active_strategies) and (_selected_panel == "CDM 전략 설정"):
-        with st.sidebar.expander("CDM 전략 설정", expanded=True):
-            st.caption("CDM (Composite Dual Momentum) 4모듈 전략")
-            st.markdown("**모듈 1: 미국 vs 해외**")
-            _cdm_kr_spy = _sidebar_etf_code_input("SPY 대체", _cdm_kr_spy, key="pen_cdm_kr_spy", disabled=IS_CLOUD)
-            _cdm_kr_veu = _sidebar_etf_code_input("VEU 대체", _cdm_kr_veu, key="pen_cdm_kr_veu", disabled=IS_CLOUD)
-            st.markdown("**모듈 2: 부동산**")
-            _cdm_kr_vnq = _sidebar_etf_code_input("VNQ 대체", _cdm_kr_vnq, key="pen_cdm_kr_vnq", disabled=IS_CLOUD)
-            _cdm_kr_rem = _sidebar_etf_code_input("REM 대체", _cdm_kr_rem, key="pen_cdm_kr_rem", disabled=IS_CLOUD)
-            st.markdown("**모듈 3: 채권**")
-            _cdm_kr_lqd = _sidebar_etf_code_input("LQD 대체", _cdm_kr_lqd, key="pen_cdm_kr_lqd", disabled=IS_CLOUD)
-            _cdm_kr_hyg = _sidebar_etf_code_input("HYG 대체", _cdm_kr_hyg, key="pen_cdm_kr_hyg", disabled=IS_CLOUD)
-            st.markdown("**모듈 4: 장기채 vs 금**")
-            _cdm_kr_tlt = _sidebar_etf_code_input("TLT 대체", _cdm_kr_tlt, key="pen_cdm_kr_tlt", disabled=IS_CLOUD)
-            _cdm_kr_gld = _sidebar_etf_code_input("GLD 대체", _cdm_kr_gld, key="pen_cdm_kr_gld", disabled=IS_CLOUD)
-            st.markdown("**방어자산**")
-            _cdm_kr_bil = _sidebar_etf_code_input("BIL 대체", _cdm_kr_bil, key="pen_cdm_kr_bil", disabled=IS_CLOUD)
-
-    _cdm_settings = {
-        'offensive': ['SPY', 'VEU', 'VNQ', 'REM', 'LQD', 'HYG', 'TLT', 'GLD'],
-        'defensive': ['BIL'], 'lookback': 12, 'trading_days_per_month': 22,
-        'kr_etf_map': {
-            'SPY': str(_cdm_kr_spy), 'VEU': str(_cdm_kr_veu), 'VNQ': str(_cdm_kr_vnq),
-            'REM': str(_cdm_kr_rem), 'LQD': str(_cdm_kr_lqd), 'HYG': str(_cdm_kr_hyg),
-            'TLT': str(_cdm_kr_tlt), 'GLD': str(_cdm_kr_gld), 'BIL': str(_cdm_kr_bil),
-        },
+        }.items()},
     }
 
     # ── 설정 저장 ──
@@ -371,26 +354,18 @@ def render_pension_sidebar(config: dict, save_config) -> dict | None:
                 "pen_dm_w1": float(_dmw.get("m1", 12.0)), "pen_dm_w3": float(_dmw.get("m3", 4.0)),
                 "pen_dm_w6": float(_dmw.get("m6", 2.0)), "pen_dm_w12": float(_dmw.get("m12", 1.0)),
                 "pen_dm_kr_spy": str(_dm_kr_map.get("SPY", "360750")),
-                "pen_dm_kr_efa": str(_dm_kr_map.get("EFA", "453850")),
-                "pen_dm_kr_agg": str(_dm_kr_map.get("AGG", "453540")),
-                "pen_dm_kr_bil": str(_dm_kr_map.get("BIL", "114470")),
+                "pen_dm_kr_efa": str(_dm_kr_map.get("EFA", "251350")),
+                "pen_dm_kr_agg": str(_dm_kr_map.get("AGG", "305080")),
+                "pen_dm_kr_bil": str(_dm_kr_map.get("BIL", "329750")),
                 "pen_dm_agg_etf": str(_dm_kr_map.get("SPY", "360750")),
-                "pen_dm_def_etf": str(_dm_kr_map.get("AGG", "453540")),
+                "pen_dm_def_etf": str(_dm_kr_map.get("AGG", "305080")),
             })
         _vaa_kr = _vaa_settings.get("kr_etf_map", {})
         pen_data.update({
             "pen_vaa_kr_spy": str(_vaa_kr.get("SPY", "379800")), "pen_vaa_kr_efa": str(_vaa_kr.get("EFA", "195930")),
-            "pen_vaa_kr_eem": str(_vaa_kr.get("EEM", "295820")), "pen_vaa_kr_agg": str(_vaa_kr.get("AGG", "305080")),
+            "pen_vaa_kr_eem": str(_vaa_kr.get("EEM", "195980")), "pen_vaa_kr_agg": str(_vaa_kr.get("AGG", "305080")),
             "pen_vaa_kr_lqd": str(_vaa_kr.get("LQD", "329750")), "pen_vaa_kr_ief": str(_vaa_kr.get("IEF", "305080")),
             "pen_vaa_kr_shy": str(_vaa_kr.get("SHY", "329750")),
-        })
-        _cdm_kr = _cdm_settings.get("kr_etf_map", {})
-        pen_data.update({
-            "pen_cdm_kr_spy": str(_cdm_kr.get("SPY", "379800")), "pen_cdm_kr_veu": str(_cdm_kr.get("VEU", "195930")),
-            "pen_cdm_kr_vnq": str(_cdm_kr.get("VNQ", "352560")), "pen_cdm_kr_rem": str(_cdm_kr.get("REM", "352560")),
-            "pen_cdm_kr_lqd": str(_cdm_kr.get("LQD", "305080")), "pen_cdm_kr_hyg": str(_cdm_kr.get("HYG", "305080")),
-            "pen_cdm_kr_tlt": str(_cdm_kr.get("TLT", "304660")), "pen_cdm_kr_gld": str(_cdm_kr.get("GLD", "132030")),
-            "pen_cdm_kr_bil": str(_cdm_kr.get("BIL", "329750")),
         })
         save_mode_config("pension", pen_data)
         new_cfg = config.copy()
@@ -418,5 +393,4 @@ def render_pension_sidebar(config: dict, save_config) -> dict | None:
         "kr_etf_map": _kr_etf_map,
         "dm_settings": _dm_settings,
         "vaa_settings": _vaa_settings,
-        "cdm_settings": _cdm_settings,
     }

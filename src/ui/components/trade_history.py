@@ -68,10 +68,18 @@ def render_trade_history_tab(trader, portfolio_list):
                 side = r.get('side', '')
                 side_kr = "매수" if side == 'bid' else ("매도" if side == 'ask' else side)
                 state = r.get('state', '')
-                state_kr = {"done": "체결완료", "cancel": "취소", "wait": "대기"}.get(state, state)
+                executed_vol = float(r.get('executed_volume', 0) or 0)
+                total_vol = float(r.get('volume', 0) or 0)
+                # 부분체결 구분: cancel이지만 체결수량이 있으면 "부분체결"
+                if state == 'cancel' and executed_vol > 0:
+                    fill_pct = (executed_vol / total_vol * 100) if total_vol > 0 else 0
+                    state_kr = f"부분체결({fill_pct:.0f}%)"
+                elif state == 'cancel':
+                    state_kr = "취소"
+                else:
+                    state_kr = {"done": "체결완료", "wait": "대기"}.get(state, state)
                 price = float(r.get('price', 0) or 0)
                 avg_price = float(r.get('avg_price', 0) or 0)
-                executed_vol = float(r.get('executed_volume', 0) or 0)
                 paid_fee = float(r.get('paid_fee', 0) or 0)
                 unit_price = avg_price if avg_price > 0 else price
                 if unit_price > 0 and executed_vol > 0:
@@ -86,7 +94,13 @@ def render_trade_history_tab(trader, portfolio_list):
                 if pd.notna(created):
                     try: created = pd.to_datetime(created).strftime('%Y-%m-%d %H:%M')
                     except: pass
-                vol_str = f"{executed_vol:,.8f}" if executed_vol < 1 else f"{executed_vol:,.4f}"
+                # 주문수량 vs 체결수량 표시
+                if total_vol > 0 and executed_vol != total_vol and executed_vol > 0:
+                    exec_str = f"{executed_vol:,.8f}" if executed_vol < 1 else f"{executed_vol:,.4f}"
+                    ord_str = f"{total_vol:,.8f}" if total_vol < 1 else f"{total_vol:,.4f}"
+                    vol_str = f"{exec_str} / {ord_str}"
+                else:
+                    vol_str = f"{executed_vol:,.8f}" if executed_vol < 1 else f"{executed_vol:,.4f}"
                 price_str = f"{unit_price:,.0f}" if unit_price > 0 else "-"
                 rows.append({
                     "거래일시": created, "유형": f"체결({type_kr})",

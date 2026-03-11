@@ -28,7 +28,7 @@ class LAAStrategy:
             "GLD": "411060",   # ACE KRX금현물
             "IEF": "305080",   # TIGER 미국채10년선물
             "QQQ": "133690",   # TIGER 미국나스닥100
-            "SHY": "114470",   # KODEX 국고채3년
+            "SHY": "329750",   # TIGER 미국달러단기채권액티브
         },
     }
 

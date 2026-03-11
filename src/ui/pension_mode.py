@@ -54,7 +54,6 @@ def render_kis_pension_mode(config, save_config):
     _kr_etf_map = _sb["kr_etf_map"]
     _dm_settings = _sb["dm_settings"]
     _vaa_settings = _sb["vaa_settings"]
-    _cdm_settings = _sb["cdm_settings"]
 
     # ── 트레이더 초기화 ──
     trader = KISTrader(is_mock=False)
@@ -92,7 +91,7 @@ def render_kis_pension_mode(config, save_config):
     _pen_now_min = datetime.now().strftime("%Y-%m-%d %H:%M")
     if _pen_last_check != _pen_now_min:
         st.session_state[_pen_exec_key] = _pen_now_min
-        _exec_results = _execute_pending_pen_orders(trader)
+        _exec_results = execute_pending_pen_orders(trader)
         if _exec_results:
             for _er in _exec_results:
                 st.toast(_er)
@@ -113,8 +112,6 @@ def render_kis_pension_mode(config, save_config):
         st.session_state.pop("pen_dm_signal_params", None)
         st.session_state.pop("pen_vaa_signal_result", None)
         st.session_state.pop("pen_vaa_signal_params", None)
-        st.session_state.pop("pen_cdm_signal_result", None)
-        st.session_state.pop("pen_cdm_signal_params", None)
 
     def _fetch_pen_balance_with_retry(retries: int = 3, delay_sec: float = 0.45):
         _tries = max(1, int(retries))
@@ -311,7 +308,7 @@ def render_kis_pension_mode(config, save_config):
 
         _resolved = _c
         _msg = ""
-        _legacy_map = {"453540": "305080"}
+        _legacy_map = {"453540": "305080", "453850": "251350", "295820": "195980", "114470": "329750"}
 
         if _pen_api_fallback:
             _base_live = 0.0
@@ -416,7 +413,6 @@ def render_kis_pension_mode(config, save_config):
             kr_etf_map=_kr_etf_map,
             dm_settings=_dm_settings,
             vaa_settings=_vaa_settings,
-            cdm_settings=_cdm_settings,
             pen_bt_start_raw=_pen_bt_start_raw,
             pen_bt_cap=_pen_bt_cap,
             pen_bt_start_ts=_pen_bt_start_ts,
@@ -440,7 +436,6 @@ def render_kis_pension_mode(config, save_config):
             kr_ief=kr_ief, kr_qqq=kr_qqq, kr_shy=kr_shy,
             dm_settings=_dm_settings,
             vaa_settings=_vaa_settings,
-            cdm_settings=_cdm_settings,
             get_pen_daily_chart=_get_pen_daily_chart,
             pen_local_first=_pen_local_first,
         )
@@ -453,9 +448,6 @@ def render_kis_pension_mode(config, save_config):
     if _vaa_settings:
         _vaa_map_t = _vaa_settings.get("kr_etf_map", {}) or {}
         _all_etf_codes.extend([str(v) for v in _vaa_map_t.values() if str(v).strip()])
-    if _cdm_settings:
-        _cdm_map_t = _cdm_settings.get("kr_etf_map", {}) or {}
-        _all_etf_codes.extend([str(v) for v in _cdm_map_t.values() if str(v).strip()])
     _all_etf_codes = list(dict.fromkeys(c.strip() for c in _all_etf_codes if str(c).strip()))
     if not _all_etf_codes:
         _all_etf_codes = ["360750"]
@@ -487,7 +479,7 @@ def render_kis_pension_mode(config, save_config):
     # Tab 5-8: 가이드 / 주문방식 / 수수료 / 트리거
     # ══════════════════════════════════════════════════════════════
     with tab_p5:
-        render_pension_guide_tab(_dm_settings, _vaa_settings, _cdm_settings, _pen_cfg)
+        render_pension_guide_tab(_dm_settings, _vaa_settings, _pen_cfg)
     with tab_p6:
         render_pension_order_info_tab()
     with tab_p7:

@@ -16,7 +16,6 @@ from src.ui.components.pension_signals import (
     compute_laa_signal,
     compute_dm_signal,
     compute_vaa_signal,
-    compute_cdm_signal,
 )
 
 
@@ -36,7 +35,6 @@ def render_monitoring_tab(
     kr_etf_map,
     dm_settings,
     vaa_settings,
-    cdm_settings,
     pen_bt_start_raw,
     pen_bt_cap,
     pen_bt_start_ts,
@@ -93,13 +91,13 @@ def render_monitoring_tab(
     st.divider()
 
     # ── 시그널 캐싱 + 트리거 ──
-    res, _dm_res, _vaa_res, _cdm_res = _run_signal_caching(
+    res, _dm_res, _vaa_res = _run_signal_caching(
         auto_signal_strategies=auto_signal_strategies,
         kis_acct=kis_acct, kis_prdt=kis_prdt,
         kr_spy=kr_spy, kr_iwd=kr_iwd, kr_gld=kr_gld,
         kr_ief=kr_ief, kr_qqq=kr_qqq, kr_shy=kr_shy,
         kr_etf_map=kr_etf_map,
-        dm_settings=dm_settings, vaa_settings=vaa_settings, cdm_settings=cdm_settings,
+        dm_settings=dm_settings, vaa_settings=vaa_settings,
         pen_bt_start_raw=pen_bt_start_raw, pen_bt_cap=pen_bt_cap, pen_bt_start_ts=pen_bt_start_ts,
         pen_live_auto_backtest=pen_live_auto_backtest, pen_api_fallback=pen_api_fallback,
         pen_bal_key=pen_bal_key,
@@ -111,7 +109,7 @@ def render_monitoring_tab(
     # ── 전체 포트폴리오 합산 ──
     _render_portfolio_aggregation(
         active_strategies=active_strategies,
-        res=res, dm_res=_dm_res, vaa_res=_vaa_res, cdm_res=_cdm_res,
+        res=res, dm_res=_dm_res, vaa_res=_vaa_res,
         pen_bal_key=pen_bal_key,
         get_current_price=get_current_price,
         get_daily_chart=get_daily_chart,
@@ -121,7 +119,7 @@ def render_monitoring_tab(
     render_strategy_detail_tabs(
         active_strategies=active_strategies,
         auto_signal_strategies=auto_signal_strategies,
-        laa_res=res, dm_res=_dm_res, vaa_res=_vaa_res, cdm_res=_cdm_res,
+        laa_res=res, dm_res=_dm_res, vaa_res=_vaa_res,
         bal=bal, pen_bt_start_raw=pen_bt_start_raw, pen_bt_cap=pen_bt_cap,
         dm_settings=dm_settings,
     )
@@ -136,7 +134,7 @@ def _run_signal_caching(
     auto_signal_strategies,
     kis_acct, kis_prdt,
     kr_spy, kr_iwd, kr_gld, kr_ief, kr_qqq, kr_shy,
-    kr_etf_map, dm_settings, vaa_settings, cdm_settings,
+    kr_etf_map, dm_settings, vaa_settings,
     pen_bt_start_raw, pen_bt_cap, pen_bt_start_ts,
     pen_live_auto_backtest, pen_api_fallback,
     pen_bal_key, trader,
@@ -185,6 +183,14 @@ def _run_signal_caching(
     # ── 듀얼모멘텀 ──
     _dm_res = None
     if "듀얼모멘텀" in auto_signal_strategies and dm_settings:
+        _dm_data_source = st.radio(
+            "듀얼모멘텀 데이터 소스",
+            options=["US (미국 원본)", "KR (국내 ETF)"],
+            index=0,
+            horizontal=True,
+            key="pen_dm_data_source",
+        )
+        _dm_src_key = "US" if "US" in _dm_data_source else "KR"
         _dm_weights = dm_settings.get("momentum_weights", {})
         _dm_params = {
             "acct": str(kis_acct), "prdt": str(kis_prdt),
@@ -202,6 +208,7 @@ def _run_signal_caching(
             "kr_agg": str((dm_settings.get("kr_etf_map", {}) or {}).get("AGG", "")),
             "kr_bil": str((dm_settings.get("kr_etf_map", {}) or {}).get("BIL", "")),
             "bt_start": str(pen_bt_start_raw), "bt_cap": float(pen_bt_cap),
+            "data_source": _dm_src_key,
         }
         if st.session_state.get("pen_dm_signal_result") is None or st.session_state.get("pen_dm_signal_params") != _dm_params:
             with st.spinner("듀얼모멘텀 시그널을 자동 계산하는 중입니다..."):
@@ -214,6 +221,7 @@ def _run_signal_caching(
                     pen_bt_start_raw=pen_bt_start_raw, pen_bt_cap=pen_bt_cap,
                     pen_bt_start_ts=pen_bt_start_ts,
                     pen_live_auto_backtest=pen_live_auto_backtest,
+                    data_source=_dm_src_key,
                 )
                 st.session_state["pen_dm_signal_params"] = _dm_params
                 _dm_res_cache = st.session_state["pen_dm_signal_result"]
@@ -243,26 +251,7 @@ def _run_signal_caching(
         st.session_state.pop("pen_vaa_signal_result", None)
         st.session_state.pop("pen_vaa_signal_params", None)
 
-    # ── CDM ──
-    _cdm_res = None
-    if "CDM" in auto_signal_strategies:
-        _cdm_sig_params = {"acct": str(kis_acct), "cdm_settings": str(cdm_settings)}
-        if (st.session_state.get("pen_cdm_signal_params") != _cdm_sig_params
-                or "pen_cdm_signal_result" not in st.session_state):
-            with st.spinner("CDM 시그널 계산 중..."):
-                st.session_state["pen_cdm_signal_result"] = compute_cdm_signal(
-                    cdm_settings=cdm_settings,
-                    get_current_price=get_current_price,
-                    bal=st.session_state.get(pen_bal_key) or {},
-                    pen_port_edited=pen_port_edited,
-                )
-                st.session_state["pen_cdm_signal_params"] = _cdm_sig_params
-        _cdm_res = st.session_state.get("pen_cdm_signal_result")
-    else:
-        st.session_state.pop("pen_cdm_signal_result", None)
-        st.session_state.pop("pen_cdm_signal_params", None)
-
-    return res, _dm_res, _vaa_res, _cdm_res
+    return res, _dm_res, _vaa_res
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +261,7 @@ def _run_signal_caching(
 def _render_portfolio_aggregation(
     *,
     active_strategies,
-    res, dm_res, vaa_res, cdm_res,
+    res, dm_res, vaa_res,
     pen_bal_key,
     get_current_price,
     get_daily_chart,
@@ -288,9 +277,6 @@ def _render_portfolio_aggregation(
         _strat_col_map["DM"] = "DM 목표(주)"
     if "VAA" in active_strategies:
         _strat_col_map["VAA"] = "VAA 목표(주)"
-    if "CDM" in active_strategies:
-        _strat_col_map["CDM"] = "CDM 목표(주)"
-
     _combined_rows = {}
 
     def _ensure_combined_row(code, etf_name, cur_qty):
@@ -342,20 +328,6 @@ def _render_portfolio_aggregation(
                 if "VAA 목표(주)" in _combined_rows[code]:
                     _combined_rows[code]["VAA 목표(주)"] = int(row.get("목표수량(주)", 0))
 
-    # CDM
-    _cdm_action_val = None
-    if cdm_res and not cdm_res.get("error"):
-        _cdm_action_val = cdm_res.get("action")
-        _cdm_df = cdm_res.get("alloc_df")
-        if isinstance(_cdm_df, pd.DataFrame) and not _cdm_df.empty:
-            for _, row in _cdm_df.iterrows():
-                code = str(row.get("ETF 코드", "")).strip()
-                if not code:
-                    continue
-                _ensure_combined_row(code, row.get("ETF", _fmt_etf_code_name(code)), row.get("현재수량(주)", 0))
-                if "CDM 목표(주)" in _combined_rows[code]:
-                    _combined_rows[code]["CDM 목표(주)"] = int(row.get("목표수량(주)", 0))
-
     if not _combined_rows:
         st.info("시그널 계산 결과가 없습니다. 잔고를 새로고침해주세요.")
         st.session_state.pop("pen_combined_rebal_data", None)
@@ -372,8 +344,6 @@ def _render_portfolio_aggregation(
         _rebal_strategies += 1
     if _vaa_action_val == "REBALANCE":
         _rebal_strategies += 1
-    if _cdm_action_val == "REBALANCE":
-        _rebal_strategies += 1
 
     _bal_combo = st.session_state.get(pen_bal_key) or {}
     _holdings_combo = _bal_combo.get("holdings", []) or []
@@ -385,14 +355,26 @@ def _render_portfolio_aggregation(
 
     _hold_eval_map = {}
     _hold_px_map = {}
+    _hold_qty_map = {}
     for _h in _holdings_combo:
         _code = str(_h.get("code", "")).strip()
         if not _code:
             continue
         _hold_eval_map[_code] = _hold_eval_map.get(_code, 0.0) + float(_h.get("eval_amt", 0.0) or 0.0)
+        _hold_qty_map[_code] = _hold_qty_map.get(_code, 0) + int(float(_h.get("qty", 0) or 0))
         _cur_px = float(_h.get("cur_price", 0.0) or 0.0)
         if _cur_px > 0:
             _hold_px_map[_code] = _cur_px
+
+    # 레거시 ETF 평가금액 합산 (132030 → 411060)
+    from src.constants import ETF_LEGACY_MERGE
+    _legacy_sell_qty = {}  # {legacy_code: qty} — 매도 우선순위용
+    for _leg_code, _pri_code in ETF_LEGACY_MERGE.items():
+        _leg_eval = _hold_eval_map.pop(_leg_code, 0.0)
+        _leg_qty = _hold_qty_map.pop(_leg_code, 0)
+        if _leg_eval > 0 or _leg_qty > 0:
+            _hold_eval_map[_pri_code] = _hold_eval_map.get(_pri_code, 0.0) + _leg_eval
+            _legacy_sell_qty[_leg_code] = _leg_qty
 
     _combo_price_cache = {}
 
@@ -482,5 +464,33 @@ def _render_portfolio_aggregation(
     _sm2.metric("리밸런싱 필요 전략", f"{_rebal_strategies}개")
     _sm3.metric("매수 예정 종목", f"{_total_buy_count}개")
     _sm4.metric("매도 예정 종목", f"{_total_sell_count}개")
-    st.dataframe(pd.DataFrame(_combo_list), use_container_width=True, hide_index=True)
-    st.session_state["pen_combined_rebal_data"] = _combo_list
+    # 레거시 ETF 우선 매도 분리 (132030 보유 시 411060 매도를 132030 우선으로 분할)
+    _final_combo = []
+    for _row in _combo_list:
+        _rc = str(_row.get("ETF코드", "")).strip()
+        _sell_q = int(_row.get("매도 예정(주)", 0))
+        if _rc in ETF_LEGACY_MERGE.values() and _sell_q > 0 and _legacy_sell_qty:
+            # 현행 ETF 매도 → 레거시 우선 매도 분할
+            for _leg_c, _leg_q in list(_legacy_sell_qty.items()):
+                if ETF_LEGACY_MERGE.get(_leg_c) != _rc or _leg_q <= 0:
+                    continue
+                _leg_sell = min(_leg_q, _sell_q)
+                if _leg_sell > 0:
+                    _final_combo.append({
+                        **_row,
+                        "ETF": _fmt_etf_code_name(_leg_c) + " (우선매도)",
+                        "ETF코드": _leg_c,
+                        "매도 예정(주)": _leg_sell,
+                        "매수 예정(주)": 0,
+                        "주문 상태": "매도",
+                    })
+                    _sell_q -= _leg_sell
+            if _sell_q > 0:
+                _final_combo.append({**_row, "매도 예정(주)": _sell_q})
+            else:
+                _final_combo.append({**_row, "매도 예정(주)": 0, "주문 상태": "유지"})
+        else:
+            _final_combo.append(_row)
+
+    st.dataframe(pd.DataFrame(_final_combo), use_container_width=True, hide_index=True)
+    st.session_state["pen_combined_rebal_data"] = _final_combo

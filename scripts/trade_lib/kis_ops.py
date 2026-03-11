@@ -28,18 +28,19 @@ def get_kr_order_phase(now_kst: datetime | None = None) -> str:
 
     regular: 09:00~15:20
     closing_auction: 15:20~15:30
-    after_hours: 16:00~18:00 (시간외종가)
+    after_hours: 15:40~16:00 (시간외종가)
     closed: 장 외 시간/주말
     """
     now = now_kst or datetime.now(KST)
     if now.weekday() >= 5:
         return "closed"
     t = now.time()
-    if datetime.strptime("09:00", "%H:%M").time() <= t < datetime.strptime("15:20", "%H:%M").time():
+    from datetime import time as _time
+    if _time(9, 0) <= t < _time(15, 20):
         return "regular"
-    if datetime.strptime("15:20", "%H:%M").time() <= t < datetime.strptime("15:30", "%H:%M").time():
+    if _time(15, 20) <= t < _time(15, 30):
         return "closing_auction"
-    if datetime.strptime("16:00", "%H:%M").time() <= t < datetime.strptime("18:00", "%H:%M").time():
+    if _time(15, 40) <= t < _time(16, 0):
         return "after_hours"
     return "closed"
 

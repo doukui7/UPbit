@@ -49,9 +49,9 @@ def _collect_tickers(cfg: dict) -> list[str]:
             _code_only(cfg.get("kr_etf_laa_spy", "360750")),
             _code_only(cfg.get("kr_etf_laa_iwd", "360750")),
             _normalize_gold_kr_etf(cfg.get("kr_etf_laa_gld", GOLD_KRX_ETF_CODE)),
-            _code_only(cfg.get("kr_etf_laa_ief", "453540")),
+            _code_only(cfg.get("kr_etf_laa_ief", "305080")),
             _code_only(cfg.get("kr_etf_laa_qqq", "133690")),
-            _code_only(cfg.get("kr_etf_laa_shy", "114470")),
+            _code_only(cfg.get("kr_etf_laa_shy", "329750")),
         ]
     )
 
@@ -59,9 +59,9 @@ def _collect_tickers(cfg: dict) -> list[str]:
     tickers.extend(
         [
             _code_only(cfg.get("pen_dm_kr_spy", "360750")),
-            _code_only(cfg.get("pen_dm_kr_efa", "453850")),
-            _code_only(cfg.get("pen_dm_kr_agg", "453540")),
-            _code_only(cfg.get("pen_dm_kr_bil", "114470")),
+            _code_only(cfg.get("pen_dm_kr_efa", "251350")),
+            _code_only(cfg.get("pen_dm_kr_agg", "305080")),
+            _code_only(cfg.get("pen_dm_kr_bil", "329750")),
         ]
     )
 

@@ -84,7 +84,6 @@ def render_pension_backtest_tab(
     kr_ief: str, kr_qqq: str, kr_shy: str,
     dm_settings: dict | None,
     vaa_settings: dict | None,
-    cdm_settings: dict | None,
     get_pen_daily_chart,
     pen_local_first: bool,
 ):
@@ -95,8 +94,8 @@ def render_pension_backtest_tab(
     if pen_local_first:
         st.info("백테스트 가격 데이터: 로컬 파일(cache/data) 우선, 부족 시 API 보강 모드입니다.")
 
-    _bt_candidates = [s for s in ["LAA", "듀얼모멘텀", "VAA", "CDM"] if s in active_strategies]
-    for _s in ["듀얼모멘텀", "VAA", "CDM"]:
+    _bt_candidates = [s for s in ["LAA", "듀얼모멘텀", "VAA"] if s in active_strategies]
+    for _s in ["듀얼모멘텀", "VAA"]:
         if _s not in _bt_candidates:
             _bt_candidates.append(_s)
 
@@ -117,8 +116,6 @@ def render_pension_backtest_tab(
                          pen_bt_fee, _filter_ts, get_pen_daily_chart)
     elif _bt_strategy == "VAA":
         _run_vaa_backtest(vaa_settings, pen_bt_cap_input, pen_bt_fee, _filter_ts)
-    elif _bt_strategy == "CDM":
-        _run_cdm_backtest(cdm_settings, pen_bt_cap_input, pen_bt_fee, _filter_ts)
     else:
         st.info("선택된 전략의 백테스트를 준비 중입니다.")
 
@@ -350,63 +347,3 @@ def _run_vaa_backtest(vaa_settings, cap, fee, filter_ts):
         _render_trade_history_table(vaa_bt_res, key_prefix="bt_vaa")
 
 
-def _run_cdm_backtest(cdm_settings, cap, fee, filter_ts):
-    """CDM 백테스트."""
-    st.header("CDM 백테스트")
-    st.caption("4모듈 듀얼모멘텀, yfinance 미국 원본 데이터 사용")
-
-    if st.button("CDM 백테스트 실행", key="pen_bt_run_cdm", type="primary"):
-        with st.spinner("CDM 백테스트 실행 중..."):
-            cdm_tickers = list(set(cdm_settings.get("offensive", []) + cdm_settings.get("defensive", [])))
-            cdm_price_data = {}
-            for ticker in cdm_tickers:
-                df_t = data_cache.fetch_and_cache_yf(ticker, start="2000-01-01")
-                if df_t is None or df_t.empty:
-                    st.error(f"{ticker} yfinance 데이터 조회 실패")
-                    cdm_price_data = None
-                    break
-                df_t = df_t.copy().sort_index()
-                df_t = df_t[df_t.index >= filter_ts]
-                if df_t.empty:
-                    st.error(f"{ticker} 시작일 이후 데이터가 없습니다.")
-                    cdm_price_data = None
-                    break
-                cdm_price_data[ticker] = df_t
-
-            if cdm_price_data:
-                from src.strategy.cdm import CDMStrategy
-                cdm_strategy = CDMStrategy(settings=cdm_settings)
-                cdm_bt_result = cdm_strategy.run_backtest(cdm_price_data, initial_balance=float(cap), fee=float(fee))
-                if cdm_bt_result:
-                    st.session_state["pen_bt_cdm_result"] = cdm_bt_result
-                    if "SPY" in cdm_price_data:
-                        st.session_state["pen_bt_cdm_benchmark_series"] = _normalize_numeric_series(
-                            cdm_price_data.get("SPY"), preferred_cols=("close", "Close"))
-                        st.session_state["pen_bt_cdm_benchmark_label"] = "SPY Buy & Hold"
-                else:
-                    st.error("CDM 백테스트 실행 실패 (데이터 부족)")
-
-    cdm_bt_res = st.session_state.get("pen_bt_cdm_result")
-    if cdm_bt_res:
-        _eq = cdm_bt_res.get("equity_df")
-        metrics = cdm_bt_res["metrics"]
-        _render_bt_metrics(metrics)
-
-        _bm_series = st.session_state.get("pen_bt_cdm_benchmark_series")
-        _bm_label = str(st.session_state.get("pen_bt_cdm_benchmark_label", "SPY Buy & Hold"))
-        if isinstance(_eq, pd.DataFrame) and not _eq.empty:
-            _render_performance_analysis(
-                equity_series=_eq.get("equity"),
-                benchmark_series=_bm_series,
-                strategy_metrics=metrics,
-                strategy_label="CDM 전략",
-                benchmark_label=_bm_label,
-                show_drawdown=True, show_weight=True, equity_df=_eq,
-            )
-
-        alloc_df = cdm_bt_res.get("allocations")
-        if isinstance(alloc_df, pd.DataFrame) and not alloc_df.empty:
-            st.subheader("월별 배분 이력")
-            st.dataframe(alloc_df.tail(36), use_container_width=True, hide_index=True)
-
-        _render_trade_history_table(cdm_bt_res, key_prefix="bt_cdm")

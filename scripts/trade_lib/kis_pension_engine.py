@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from dotenv import load_dotenv
 
-from .constants import PROJECT_ROOT
+from .constants import PROJECT_ROOT, KST
 from .utils import get_env_any
 from .notifier import send_telegram
 from .kis_ops import normalize_kis_account_fields
@@ -16,12 +16,41 @@ from src.engine.kis_trader import KISTrader
 logger = logging.getLogger(__name__)
 
 
+def _resolve_exec_method(method: str, hour: int, minute: int) -> str | None:
+    """주문 방식 + 현재 시각 → 실제 실행 방식 결정.
+
+    Returns:
+        실행 방식 문자열, 또는 None (시간 외 → 건너뜀)
+    """
+    if "동시호가" in method:
+        if hour == 15 and 18 <= minute <= 32:
+            return "동시호가"
+        if hour == 15 and minute >= 38:
+            return "시간외종가"  # 동시호가 시간 초과 → 자동 전환
+        return None
+    if "시간외" in method:
+        if hour == 15 and minute >= 38:
+            return "시간외종가"
+        return None
+    if "시장가" in method:
+        if 9 <= hour < 15 or (hour == 15 and minute < 20):
+            return "시장가"
+        return None
+    # 지정가 등 기타: 시간 제한 없음
+    return method
+
+
 def run_kis_pension_trade():
     """
     한국투자증권 연금저축 계좌 - 예약주문 실행.
 
     config/pension_orders.json의 '대기' 상태 주문을 모두 실행한다.
     주문 목록은 Streamlit UI에서 관리하고, 이 함수는 실행만 담당.
+
+    시간대별 실행 규칙:
+      동시호가  → 15:18~15:32 (동시호가), 15:38~ (시간외종가 자동전환)
+      시간외종가 → 15:38~16:00
+      시장가    → 09:00~15:20
     """
     load_dotenv()
     logger.info("=== KIS 연금저축 예약주문 실행 시작 ===")
@@ -40,13 +69,21 @@ def run_kis_pension_trade():
         logger.error(f"pension_orders.json 로드 실패: {e}")
         orders = []
 
-    pending = [o for o in orders if o.get("status") == "대기"]
+    now_kst = datetime.now(KST)
+    today_str = now_kst.strftime("%Y-%m-%d")
+    _hour = now_kst.hour
+    _minute = now_kst.minute
+
+    pending = [
+        o for o in orders
+        if o.get("status") == "대기"
+        and o.get("scheduled_kst", "9999")[:10] <= today_str
+    ]
     if not pending:
         logger.info("대기 중인 예약주문 없음. 종료.")
-        send_telegram("<b>KIS 연금저축</b>\n대기 중인 예약주문 없음")
         return
 
-    logger.info(f"대기 주문 {len(pending)}건 발견")
+    logger.info(f"대기 주문 {len(pending)}건 발견 (오늘 이전 예정분)")
 
     # KIS 인증
     pension_key = get_env_any("KIS_PENSION_APP_KEY", "KIS_APP_KEY")
@@ -76,12 +113,25 @@ def run_kis_pension_trade():
         if o.get("status") != "대기":
             continue
 
+        # 날짜 필터: 미래 예정 주문은 건너뜀
+        sched_date = o.get("scheduled_kst", "")[:10]
+        if sched_date > today_str:
+            continue
+
         code = str(o.get("etf_code", "")).strip()
         side = o.get("side", "")
         qty = int(o.get("qty", 0))
         method = o.get("method", "")
         oid = o.get("id", "")
         etf_name = o.get("etf_name", code)
+
+        # ── 시간대 안전장치 & 방식 자동 전환 ──
+        exec_method = _resolve_exec_method(method, _hour, _minute)
+        if exec_method is None:
+            logger.warning(
+                f"주문 {oid}: {method} 시간 외 ({_hour}:{_minute:02d}). 건너뜀."
+            )
+            continue
 
         if qty <= 0 or not code:
             o["status"] = "실패"
@@ -92,40 +142,70 @@ def run_kis_pension_trade():
             logger.warning(f"주문 {oid}: 수량/코드 누락")
             continue
 
+        # 실행 방식 안내
+        if exec_method != method.split("(")[0].strip():
+            _label = f"{exec_method} (원래: {method.split('(')[0].strip()})"
+        else:
+            _label = exec_method
+        send_telegram(
+            f"<b>연금저축 주문 실행</b>\n"
+            f"{side} {etf_name}({code}) x{qty} ({_label})"
+        )
+
         try:
             res = None
-            if "동시호가" in method:
+            if exec_method == "동시호가":
                 if "매수" in side:
                     res = trader.execute_closing_auction_buy(code, qty)
                 else:
                     res = trader.execute_closing_auction_sell(code, qty)
-                # 동시호가 실패 시 시간외 종가로 자동 재주문
+                # 동시호가 실패 시 처리
                 if not (isinstance(res, dict) and res.get("success", False)):
-                    logger.warning(f"동시호가 실패 → 시간외 종가 재주문: {code}")
-                    ord_side = "BUY" if "매수" in side else "SELL"
-                    res2 = trader.send_order(ord_side, code, qty, price=0, ord_dvsn="06")
-                    success2 = isinstance(res2, dict) and res2.get("success", False)
-                    res = {
-                        "success": success2,
-                        "method": "동시호가실패→시간외종가",
-                        "closing_result": str(res)[:100],
-                        "after_hours_result": str(res2)[:100],
-                    }
-            elif "시간외" in method:
+                    if _minute < 35:
+                        # 시간외종가 시간 전 → "대기" 유지, 15:40에 시간외종가로 재시도
+                        _fail_msg = str(res)[:80]
+                        o["result"] = f"동시호가 실패→시간외 대기: {_fail_msg}"
+                        o["executed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        changed = True
+                        results.append(
+                            f"{side} {etf_name}({code}) x{qty}: 동시호가 실패→시간외 대기"
+                        )
+                        send_telegram(
+                            f"<b>연금저축 동시호가 실패</b>\n"
+                            f"{side} {etf_name}({code}) x{qty}\n"
+                            f"15:40 시간외종가 자동 재시도\n{_fail_msg}"
+                        )
+                        continue  # status stays "대기"
+                    else:
+                        # 시간외종가 시간 → 즉시 fallback
+                        logger.warning(f"동시호가 실패 → 시간외 종가 재주문: {code}")
+                        ord_side = "BUY" if "매수" in side else "SELL"
+                        res2 = trader.send_order(
+                            ord_side, code, qty, price=0, ord_dvsn="06"
+                        )
+                        success2 = isinstance(res2, dict) and res2.get(
+                            "success", False
+                        )
+                        res = {
+                            "success": success2,
+                            "method": "동시호가실패→시간외종가",
+                            "closing_result": str(res)[:100],
+                            "after_hours_result": str(res2)[:100],
+                        }
+            elif exec_method == "시간외종가":
                 ord_side = "BUY" if "매수" in side else "SELL"
                 res = trader.send_order(ord_side, code, qty, price=0, ord_dvsn="06")
-            elif "시장가" in method:
-                if "매수" in side:
-                    price_val = float(o.get("price", 0)) or 0
-                    res = trader.smart_buy_krw(code, price_val)
-                else:
-                    res = trader.smart_sell_all(code)
+            elif exec_method == "시장가":
+                ord_side = "BUY" if "매수" in side else "SELL"
+                res = trader.send_order(ord_side, code, qty, price=0, ord_dvsn="01")
             else:
                 # 지정가 fallback
                 price_val = int(o.get("price", 0))
                 ord_side = "BUY" if "매수" in side else "SELL"
                 if price_val > 0:
-                    res = trader.send_order(ord_side, code, qty, price=price_val, ord_dvsn="00")
+                    res = trader.send_order(
+                        ord_side, code, qty, price=price_val, ord_dvsn="00"
+                    )
                 else:
                     res = {"success": False, "msg": "지정가 0"}
 
@@ -137,6 +217,20 @@ def run_kis_pension_trade():
             status_str = "완료" if success else "실패"
             results.append(f"{side} {etf_name}({code}) x{qty}: {status_str}")
             logger.info(f"주문 {oid}: {side} {code} x{qty} → {status_str}")
+            # 개별 결과 알림
+            if success:
+                _ord_no = res.get("ord_no", "") if isinstance(res, dict) else ""
+                _detail = f" (ord_no: {_ord_no})" if _ord_no else ""
+                send_telegram(
+                    f"<b>연금저축 주문 완료</b>\n"
+                    f"{side} {etf_name}({code}) x{qty}{_detail}"
+                )
+            else:
+                _fail_msg = str(res)[:80] if res else "응답 없음"
+                send_telegram(
+                    f"<b>연금저축 주문 실패</b>\n"
+                    f"{side} {etf_name}({code}) x{qty}\n{_fail_msg}"
+                )
             time.sleep(0.5)
         except Exception as e:
             o["status"] = "실패"
@@ -145,6 +239,10 @@ def run_kis_pension_trade():
             changed = True
             results.append(f"{side} {etf_name}({code}) x{qty}: 실패 ({e})")
             logger.error(f"주문 {oid} 예외: {e}")
+            send_telegram(
+                f"<b>연금저축 주문 실패</b>\n"
+                f"{side} {etf_name}({code}) x{qty}\n{str(e)[:80]}"
+            )
 
     # 결과 저장
     if changed:
@@ -155,6 +253,10 @@ def run_kis_pension_trade():
             logger.info("pension_orders.json 업데이트 완료")
         except Exception as e:
             logger.error(f"pension_orders.json 저장 실패: {e}")
+
+    if not results:
+        logger.info("실행 대상 주문 없음 (시간 외 건너뜀). 종료.")
+        return
 
     logger.info("=== KIS 연금저축 예약주문 실행 완료 ===")
     tg = [f"<b>KIS 연금저축 예약주문</b>"]

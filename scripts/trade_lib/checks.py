@@ -67,10 +67,14 @@ def _latest_upbit_slot_kst(now_kst: datetime) -> datetime:
 
 def _parse_minute_key_kst(raw: str) -> datetime | None:
     txt = str(raw or "").strip()
-    if not re.fullmatch(r"\d{12}", txt):
+    if re.fullmatch(r"\d{12}", txt):
+        fmt = "%Y%m%d%H%M"
+    elif re.fullmatch(r"\d{10}", txt):
+        fmt = "%Y%m%d%H"
+    else:
         return None
     try:
-        dt = datetime.strptime(txt, "%Y%m%d%H%M")
+        dt = datetime.strptime(txt, fmt)
         return dt.replace(tzinfo=KST)
     except Exception:
         return None
@@ -252,7 +256,7 @@ def _check_kiwoom_gold() -> dict:
 
         # 5. 가상주문 왕복 테스트 (하한가 매수 1g → 조회 → 취소)
         if not is_kr_order_window():
-            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~15:30, 16:00~18:00 KST)'
+            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~15:30, 15:40~16:00 KST)'
             return result
 
         limit_price = trader._get_limit_price(code, "SELL")
@@ -449,7 +453,7 @@ def _check_kis_isa() -> dict:
         # 5. 가상주문 왕복 테스트
         order_phase = get_kr_order_phase()
         if order_phase == "closed":
-            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~15:30, 16:00~18:00 KST)'
+            result['order_msg'] = 'SKIP - 주문 가능 시간이 아닙니다 (09:00~15:30, 15:40~16:00 KST)'
             return result
 
         if order_phase == "after_hours":
@@ -790,6 +794,65 @@ def _check_upbit() -> dict:
     return result
 
 
+# ── 연금저축 예약주문 요약 ────────────────────────────
+
+def _get_pension_order_summary() -> tuple[str, str]:
+    """오늘 예약주문 요약: (대기 요약, 결과 요약)."""
+    orders_path = os.path.join(PROJECT_ROOT, "config", "pension_orders.json")
+    if not os.path.exists(orders_path):
+        return ("", "")
+    try:
+        with open(orders_path, "r", encoding="utf-8") as f:
+            orders = json.load(f)
+    except Exception:
+        return ("", "")
+    if not isinstance(orders, list):
+        return ("", "")
+
+    today_str = datetime.now(KST).strftime("%Y-%m-%d")
+    pending_parts = []
+    result_parts = []
+    for o in orders:
+        sched = str(o.get("scheduled_kst", ""))
+        status = o.get("status", "")
+        side = o.get("side", "")
+        code = o.get("etf_code", "")
+        name = o.get("etf_name", code)
+        qty = o.get("qty", 0)
+        method = o.get("method", "").split("(")[0].strip()
+        time_part = sched[11:16] if len(sched) >= 16 else ""
+        label = f"{side} {name}({code}) x{qty}"
+
+        # 대기 주문: 오늘 또는 미래 예정 모두 표시
+        if status == "대기":
+            sched_date = sched[:10] if len(sched) >= 10 else ""
+            if sched_date == today_str:
+                pending_parts.append(f"{label} {method} {time_part}")
+            else:
+                pending_parts.append(f"{label} {method} ({sched_date} {time_part})")
+            continue
+
+        # 완료/실패: 오늘 실행된 것만
+        if not sched.startswith(today_str):
+            continue
+        if status == "실패":
+            raw = str(o.get("result", ""))
+            import re as _re
+            m = _re.search(r"'msg':\s*'([^']{1,30})", raw)
+            reason = m.group(1) if m else raw[:30]
+            result_parts.append(f"{label} -> 실패 ({reason})")
+        elif status == "완료":
+            result_parts.append(f"{label} -> 완료")
+
+    pending_str = ""
+    if pending_parts:
+        pending_str = f"오늘 예약주문 {len(pending_parts)}건: " + ", ".join(pending_parts)
+    result_str = ""
+    if result_parts:
+        result_str = "오늘 주문 결과: " + " | ".join(result_parts)
+    return (pending_str, result_str)
+
+
 # ── KIS 연금저축 헬스체크 ────────────────────────────
 
 def _check_kis_pension() -> dict:
@@ -801,7 +864,15 @@ def _check_kis_pension() -> dict:
         "price": False, "price_msg": "",
         "signal": False, "signal_msg": "",
         "order_test": False, "order_msg": "",
+        "pending_orders": "", "order_results": "",
     }
+    # 예약주문 요약 (인증 불필요 — 로컬 파일)
+    try:
+        _pend, _ores = _get_pension_order_summary()
+        result["pending_orders"] = _pend
+        result["order_results"] = _ores
+    except Exception:
+        pass
     try:
         trader = KISTrader(is_mock=False)
         pension_key = get_env_any("KIS_PENSION_APP_KEY", "KIS_APP_KEY")
@@ -850,9 +921,9 @@ def _check_kis_pension() -> dict:
             "SPY": get_env_any("KR_ETF_LAA_SPY", "KR_ETF_SPY", default="360750"),
             "IWD": get_env_any("KR_ETF_LAA_IWD", "KR_ETF_SPY", default="360750"),
             "GLD": normalize_gold_kr_etf(get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default=GOLD_KRX_ETF_CODE)),
-            "IEF": get_env_any("KR_ETF_LAA_IEF", "KR_ETF_AGG", default="453540"),
+            "IEF": get_env_any("KR_ETF_LAA_IEF", "KR_ETF_AGG", default="305080"),
             "QQQ": get_env_any("KR_ETF_LAA_QQQ", default="133690"),
-            "SHY": get_env_any("KR_ETF_LAA_SHY", default="114470"),
+            "SHY": get_env_any("KR_ETF_LAA_SHY", default="329750"),
         }
         price_data = {}
         for t in tickers:
@@ -883,10 +954,10 @@ def _check_kis_pension() -> dict:
         # 주문 테스트
         order_phase = get_kr_order_phase()
         if order_phase == "closed":
-            result["order_msg"] = "SKIP - 주문 가능 시간이 아닙니다 (09:00~15:30, 16:00~18:00 KST)"
+            result["order_msg"] = "SKIP - 주문 가능 시간이 아닙니다 (09:00~15:30, 15:40~16:00 KST)"
             return result
 
-        default_bond_code = str(kr_etf_map.get("SHY", "114470")).strip() or "114470"
+        default_bond_code = str(kr_etf_map.get("SHY", "329750")).strip() or "329750"
         test_code = str(get_env_any("KIS_PENSION_TEST_ORDER_CODE", default=default_bond_code)).strip()
         if not test_code:
             result["order_msg"] = "FAIL - 테스트 종목 없음"
@@ -1000,6 +1071,14 @@ def _print_health_report(results: dict):
         sig_msg = r.get('signal_msg', '')
         if sig_msg and not sig_msg.upper().startswith('SKIP'):
             lines.append(f"  시그널: {sig_msg}")
+        # 연금저축 예약주문/결과 표시
+        if key == "kis_pension":
+            _pend_msg = r.get("pending_orders", "")
+            if _pend_msg:
+                lines.append(f"  {_pend_msg}")
+            _ores_msg = r.get("order_results", "")
+            if _ores_msg:
+                lines.append(f"  {_ores_msg}")
         if key == "upbit" and schedule_msg:
             lines.append(f"  누락여부: {schedule_msg}")
             _sync_msg = str(r.get("sync_msg", "")).strip()

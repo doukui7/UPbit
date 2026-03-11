@@ -58,5 +58,50 @@
     "executed_at": "2026-03-09 07:38:23",
     "result": "{'success': False, 'method': '동시호가실패→시간외종가', 'closing_result': \"{'success': False, 'msg': '거래정지종목(주식)은 취소주문만 가능(정정불가)합니다.'}\", 'after_hours_result': \"{'success': False, 'msg': '거래정지종목(주식)은 취소주문만 가능(정정불",
     "note": ""
+  },
+  {
+    "id": "pen-20260310005941-9216",
+    "etf_code": "305080",
+    "etf_name": "TIGER 미국채10년선물",
+    "side": "매수",
+    "qty": 1,
+    "method": "동시호가 (장마감)",
+    "price": 0,
+    "scheduled_kst": "2026-03-10 15:20",
+    "status": "실패",
+    "created_at": "2026-03-10 00:59:41",
+    "executed_at": "2026-03-10 22:44:09",
+    "result": "{'success': False, 'method': '동시호가실패→시간외종가', 'closing_result': \"{'success': False, 'msg': '장운영일자가 주문일과 상이합니다'}\", 'after_hours_result': \"{'success': False, 'msg': '장운영일자가 주문일과 상이합니다'}\"}",
+    "note": ""
+  },
+  {
+    "id": "pen-20260310224522-7695",
+    "etf_code": "305080",
+    "etf_name": "TIGER 미국채10년선물 [미국]",
+    "side": "매수",
+    "qty": 1,
+    "method": "시장가",
+    "price": 0,
+    "scheduled_kst": "2026-03-10 15:10",
+    "status": "실패",
+    "created_at": "2026-03-10 22:45:22",
+    "executed_at": "2026-03-11 00:25:17",
+    "result": "{'success': False, 'msg': '목표 금액(0원)이 너무 적습니다 (현재가 13445.0원)'}",
+    "note": ""
+  },
+  {
+    "id": "pen-20260311002554-6315",
+    "etf_code": "360750",
+    "etf_name": "TIGER 미국S&P500 [미국]",
+    "side": "매수",
+    "qty": 1,
+    "method": "동시호가 (장마감)",
+    "price": 0,
+    "scheduled_kst": "2026-03-12 15:20",
+    "status": "대기",
+    "created_at": "2026-03-11 00:25:54",
+    "executed_at": "",
+    "result": "",
+    "note": ""
   }
 ]

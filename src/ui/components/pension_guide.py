@@ -6,12 +6,12 @@ from src.ui.components.triggers import render_strategy_trigger_tab
 
 
 def render_pension_guide_tab(dm_settings: dict, vaa_settings: dict,
-                             cdm_settings: dict, pen_cfg: dict):
+                             pen_cfg: dict):
     """Tab 5: 전략 가이드."""
     st.header("연금저축 전략 가이드")
     st.caption("전략별 하위탭에서 원하는 전략 설명을 바로 확인할 수 있습니다.")
-    guide_tab_laa, guide_tab_dm, guide_tab_vaa, guide_tab_cdm = st.tabs(
-        ["LAA", "듀얼모멘텀", "VAA", "CDM"]
+    guide_tab_laa, guide_tab_dm, guide_tab_vaa = st.tabs(
+        ["LAA", "듀얼모멘텀", "VAA"]
     )
 
     with guide_tab_laa:
@@ -37,10 +37,10 @@ def render_pension_guide_tab(dm_settings: dict, vaa_settings: dict,
         st.subheader("국내 ETF 매핑")
         st.dataframe(pd.DataFrame([
             {"미국 티커": "IWD", "국내 ETF": "TIGER 미국S&P500 (360750)", "역할": "코어 - 미국 가치주"},
-            {"미국 티커": "GLD", "국내 ETF": "KODEX Gold선물(H) (132030)", "역할": "코어 - 금"},
+            {"미국 티커": "GLD", "국내 ETF": "ACE KRX금현물 (411060)", "역할": "코어 - 금"},
             {"미국 티커": "IEF", "국내 ETF": "TIGER 미국채10년선물 (305080)", "역할": "코어 - 중기채"},
             {"미국 티커": "QQQ", "국내 ETF": "TIGER 미국나스닥100 (133690)", "역할": "리스크 공격"},
-            {"미국 티커": "SHY", "국내 ETF": "KODEX 국고채3년 (114470)", "역할": "리스크 방어"},
+            {"미국 티커": "SHY", "국내 ETF": "TIGER 미국달러단기채권액티브 (329750)", "역할": "리스크 방어"},
         ]), use_container_width=True, hide_index=True)
         st.caption("연금저축 계좌에서 해외 ETF 직접 매매 불가 → 국내 ETF로 대체 실행")
 
@@ -49,7 +49,7 @@ def render_pension_guide_tab(dm_settings: dict, vaa_settings: dict,
         _guide_dm_spy = str(_guide_dm_map.get("SPY", _code_only(pen_cfg.get("pen_dm_kr_spy", "360750"))))
         _guide_dm_efa = str(_guide_dm_map.get("EFA", _code_only(pen_cfg.get("pen_dm_kr_efa", "195930"))))
         _guide_dm_agg = str(_guide_dm_map.get("AGG", _code_only(pen_cfg.get("pen_dm_kr_agg", "305080"))))
-        _guide_dm_bil = str(_guide_dm_map.get("BIL", _code_only(pen_cfg.get("pen_dm_kr_bil", "114470"))))
+        _guide_dm_bil = str(_guide_dm_map.get("BIL", _code_only(pen_cfg.get("pen_dm_kr_bil", "329750"))))
         _guide_dm_w = (dm_settings.get("momentum_weights", {}) if isinstance(dm_settings, dict) else {}) or {}
         _w1 = float(_guide_dm_w.get("m1", pen_cfg.get("pen_dm_w1", 12.0)))
         _w3 = float(_guide_dm_w.get("m3", pen_cfg.get("pen_dm_w3", 4.0)))
@@ -141,53 +141,6 @@ def render_pension_guide_tab(dm_settings: dict, vaa_settings: dict,
             {"전략 키": "SHY", "국내 ETF": _fmt_etf_code_name(str(_guide_vaa_map.get("SHY", "329750"))), "유형": "방어", "역할": "단기채"},
         ]), use_container_width=True, hide_index=True)
 
-    with guide_tab_cdm:
-        st.subheader("CDM (Composite Dual Momentum) 전략")
-        st.markdown("""
-**CDM**은 4개 모듈로 구성된 복합 듀얼모멘텀 전략입니다.
-공격자산 8개를 2개씩 4모듈로 나누고, 각 모듈에서 **상대모멘텀**(승자 선택)과
-**절대모멘텀**(방어 전환 여부)을 동시에 적용합니다.
-
-- **공격 자산 (8개, 4모듈 × 2자산)**:
-  - Module 1: SPY(미국) vs VEU(해외)
-  - Module 2: VNQ(부동산) vs REM(리츠)
-  - Module 3: LQD(회사채) vs HYG(하이일드)
-  - Module 4: TLT(장기채) vs GLD(금)
-- **방어 자산**: BIL(초단기채)
-- **각 모듈 비중**: 25% (총 100%)
-- **리밸런싱**: 월 1회 (월말 기준)
-""")
-        st.subheader("의사결정 흐름")
-        st.markdown("""
-```
-매월 말 기준 (각 모듈 독립 처리):
-  Module 1: SPY vs VEU
-    1. SPY, VEU 12개월 수익률 비교 → 승자(상대모멘텀) 선택
-    2. 승자의 12개월 수익률 > BIL 12개월 수익률?
-       → YES: 승자에 25% 투자 (공격)
-       → NO:  BIL에 25% 투자 (방어)
-
-  Module 2~4도 동일한 규칙으로 각각 25% 배분
-
-최종 포트폴리오: 4모듈 합산 = 100%
-(공격 모듈이 많을수록 공격적, 적을수록 방어적)
-```
-""")
-        st.subheader("국내 ETF 매핑")
-        _guide_cdm_map = (cdm_settings.get("kr_etf_map", {}) if isinstance(cdm_settings, dict) else {}) or {}
-        st.dataframe(pd.DataFrame([
-            {"전략 키": "SPY", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("SPY", "379800"))), "모듈": "M1", "역할": "미국 주식"},
-            {"전략 키": "VEU", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("VEU", "195930"))), "모듈": "M1", "역할": "해외 주식"},
-            {"전략 키": "VNQ", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("VNQ", "352560"))), "모듈": "M2", "역할": "부동산"},
-            {"전략 키": "REM", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("REM", "352560"))), "모듈": "M2", "역할": "리츠"},
-            {"전략 키": "LQD", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("LQD", "305080"))), "모듈": "M3", "역할": "회사채"},
-            {"전략 키": "HYG", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("HYG", "305080"))), "모듈": "M3", "역할": "하이일드"},
-            {"전략 키": "TLT", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("TLT", "304660"))), "모듈": "M4", "역할": "장기채"},
-            {"전략 키": "GLD", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("GLD", "132030"))), "모듈": "M4", "역할": "금"},
-            {"전략 키": "BIL", "국내 ETF": _fmt_etf_code_name(str(_guide_cdm_map.get("BIL", "329750"))), "모듈": "-", "역할": "방어자산"},
-        ]), use_container_width=True, hide_index=True)
-        st.caption("연금저축 계좌에서 해외 ETF 직접 매매 불가 → 국내 ETF로 대체. 일부 종목은 국내 대안이 제한적이어서 동일 ETF를 중복 매핑합니다.")
-
 
 def render_pension_order_info_tab():
     """Tab 6: 주문방식 안내."""
@@ -234,10 +187,10 @@ def render_pension_fee_tab():
     st.subheader("2. 매매 대상 ETF 보수")
     st.dataframe(pd.DataFrame([
         {"ETF": "TIGER 미국S&P500", "코드": "360750", "총보수": "0.07%", "추종": "SPY 대용"},
-        {"ETF": "KODEX Gold선물(H)", "코드": "132030", "총보수": "0.09%", "추종": "GLD 대용"},
+        {"ETF": "ACE KRX금현물", "코드": "411060", "총보수": "0.05%", "추종": "GLD 대용"},
         {"ETF": "TIGER 미국채10년선물", "코드": "305080", "총보수": "0.10%", "추종": "IEF 대용"},
         {"ETF": "TIGER 미국나스닥100", "코드": "133690", "총보수": "0.07%", "추종": "QQQ 대용"},
-        {"ETF": "KODEX 국고채3년", "코드": "114470", "총보수": "0.05%", "추종": "SHY 대용"},
+        {"ETF": "TIGER 미국달러단기채권액티브", "코드": "329750", "총보수": "0.09%", "추종": "SHY 대용"},
     ]), use_container_width=True, hide_index=True)
 
     st.subheader("3. 연금저축 세제혜택")

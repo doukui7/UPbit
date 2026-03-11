@@ -174,9 +174,9 @@ def run_daily_status_report():
                             "SPY": get_env_any("KR_ETF_LAA_SPY", "KR_ETF_SPY", default="360750"),
                             "IWD": get_env_any("KR_ETF_LAA_IWD", "KR_ETF_SPY", default="360750"),
                             "GLD": normalize_gold_kr_etf(get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default=GOLD_KRX_ETF_CODE)),
-                            "IEF": get_env_any("KR_ETF_LAA_IEF", "KR_ETF_AGG", default="453540"),
+                            "IEF": get_env_any("KR_ETF_LAA_IEF", "KR_ETF_AGG", default="305080"),
                             "QQQ": get_env_any("KR_ETF_LAA_QQQ", default="133690"),
-                            "SHY": get_env_any("KR_ETF_LAA_SHY", default="114470"),
+                            "SHY": get_env_any("KR_ETF_LAA_SHY", default="329750"),
                         }
                         tickers_laa = ["SPY", "IWD", "GLD", "IEF", "QQQ", "SHY"]
                         price_data = {}
@@ -361,12 +361,78 @@ def run_account_sync():
                 f"미체결: {pending_cnt}건, "
                 f"입금: {len(cache['deposits'])}건, "
                 f"출금: {len(cache['withdraws'])}건")
-    send_telegram(
-        f"<b>계좌 동기화 완료</b>\n"
-        f"시각: {now_kst.strftime('%m-%d %H:%M')}\n"
-        f"잔고: {len(cache['balances'])}종 | 주문: {len(cache['orders'])}건"
+
+    # 포트폴리오 상세 + 전략 정보 구성
+    _port_lines = []
+    _total_val = 0.0
+    _bal = cache.get("balances", {})
+    _krw = float(_bal.get("KRW", 0.0))
+    _total_val += _krw
+    for _sym, _qty in _bal.items():
+        if _sym == "KRW":
+            continue
+        _q = float(_qty)
+        _p = float(_prices.get(f"KRW-{_sym}", 0.0)) if _prices else 0.0
+        _v = _q * _p
+        _total_val += _v
+        _port_lines.append(f"  {_sym} {_q:.8g} ({_v:,.0f}원)")
+    _port_msg = f"총 자산: {_total_val:,.0f}원 (현금 {_krw:,.0f}원)"
+    if _port_lines:
+        _port_msg += "\n" + "\n".join(_port_lines)
+
+    # 전략 정보
+    _strat_msg = ""
+    try:
+        _ucfg_path = os.path.join(PROJECT_ROOT, "user_config.json")
+        with open(_ucfg_path, "r", encoding="utf-8") as _f:
+            _ucfg = json.load(_f)
+        _portfolio = _ucfg.get("portfolio", [])
+        if _portfolio:
+            _parts = []
+            for _p_item in _portfolio:
+                _s = _p_item.get("strategy", "?")
+                _param = _p_item.get("parameter", "")
+                _w = _p_item.get("weight", 0)
+                _intv = _p_item.get("interval", "")
+                _intv_short = {"day": "D", "minute240": "4H", "minute60": "1H"}.get(_intv, _intv)
+                _parts.append(f"{_s}({_param},{_intv_short}) {_w:.0f}%")
+            _strat_msg = "전략: " + " + ".join(_parts)
+    except Exception:
+        pass
+
+    # 포지션 상태
+    _pos_msg = ""
+    try:
+        _ss_path = os.path.join(PROJECT_ROOT, "signal_state.json")
+        with open(_ss_path, "r", encoding="utf-8") as _f:
+            _ss = json.load(_f)
+        _pos_parts = []
+        for _key, _val in _ss.items():
+            if isinstance(_val, dict):
+                _st = _val.get("state", "?")
+            else:
+                _st = str(_val)
+            _short_key = _key.replace("KRW-BTC_", "").replace("_", " ")
+            _pos_parts.append(f"{_short_key}={_st}")
+        if _pos_parts:
+            _pos_msg = "포지션: " + " | ".join(_pos_parts)
+    except Exception:
+        pass
+
+    _tg_parts = [
+        f"<b>계좌 동기화 완료</b>",
+        f"시각: {now_kst.strftime('%m-%d %H:%M')}",
+    ]
+    if _strat_msg:
+        _tg_parts.append(_strat_msg)
+    _tg_parts.append(_port_msg)
+    if _pos_msg:
+        _tg_parts.append(_pos_msg)
+    _tg_parts.append(
+        f"주문: {len(cache['orders'])}건"
         + (f" | 미체결: {pending_cnt}건" if pending_cnt > 0 else "")
     )
+    send_telegram("\n".join(_tg_parts))
 
 
 # ── 수동 주문 ────────────────────────────────────────

@@ -223,9 +223,9 @@ def get_ohlcv_cached(ticker, interval="day", to=None, count=200, progress_callba
                     merged = pd.concat([cached, df_new])
                     merged = merged[~merged.index.duplicated(keep='last')]
                     merged = merged.sort_index()
-                    if len(merged) > len(cached):
-                        save_cache(ticker, interval, merged)
-                        cached = merged
+                    # 항상 저장 — 진행 중 캔들의 OHLCV 값 갱신 포함
+                    save_cache(ticker, interval, merged)
+                    cached = merged
             except Exception:
                 pass  # 갭필 실패해도 기존 캐시 사용
 
@@ -635,8 +635,7 @@ def fetch_and_cache_gold(trader, code="M04020000", count=2000, progress_callback
             merged = pd.concat([cached, df_new])
             merged = merged[~merged.index.duplicated(keep='last')]
             merged = merged.sort_index()
-            if len(merged) > len(cached):
-                save_cache_gold(code, "day", merged)
+            save_cache_gold(code, "day", merged)
             if progress_callback:
                 progress_callback(len(merged), len(merged), f"완료 ({len(merged)}개)")
             return merged

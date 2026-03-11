@@ -241,6 +241,17 @@ def render_live_portfolio_tab(
                     latest_close = _to_float(df_60['close'].iloc[-1], default=0.0)
                     close_now = _to_float(all_prices.get(p_ticker, latest_close), default=latest_close)
 
+                    # 실시간 가격으로 마지막(진행 중) 캔들 갱신
+                    if close_now > 0 and close_now != latest_close:
+                        df_60 = df_60.copy()
+                        df_60.at[df_60.index[-1], 'close'] = close_now
+                        cur_high = _to_float(df_60['high'].iloc[-1], default=close_now)
+                        cur_low = _to_float(df_60['low'].iloc[-1], default=close_now)
+                        if close_now > cur_high:
+                            df_60.at[df_60.index[-1], 'high'] = close_now
+                        if close_now < cur_low:
+                            df_60.at[df_60.index[-1], 'low'] = close_now
+
                     strategy_name = str(p_strategy).strip().lower()
                     if strategy_name.startswith("donchian"):
                         strat = DonchianStrategy()

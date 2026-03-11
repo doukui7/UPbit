@@ -8,6 +8,15 @@ from datetime import datetime, timedelta
 
 from src.utils.formatting import _etf_name_kr, _fmt_etf_code_name
 
+
+def _try_send_telegram(msg: str):
+    """텔레그램 전송 시도 (실패 시 무시)."""
+    try:
+        from scripts.trade_lib.notifier import send_telegram
+        send_telegram(msg)
+    except Exception:
+        pass
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 _PEN_ORDERS_FILE = os.path.join(_PROJECT_ROOT, "config", "pension_orders.json")
 
@@ -102,6 +111,10 @@ def execute_pending_pen_orders(trader) -> list[str]:
             results.append(f"{oid}: 실패 (수량/코드 누락)")
             continue
 
+        etf_name = o.get("etf_name", code)
+        _method_short = method.split("(")[0].strip() if method else method
+        _try_send_telegram(f"<b>연금저축 주문 실행</b>\n{side} {etf_name}({code}) x{qty} ({_method_short})")
+
         try:
             res = None
             if "동시호가" in method:
@@ -124,10 +137,8 @@ def execute_pending_pen_orders(trader) -> list[str]:
                 ord_side = "BUY" if "매수" in side else "SELL"
                 res = trader.send_order(ord_side, code, qty, price=0, ord_dvsn="06")
             elif "시장가" in method:
-                if "매수" in side:
-                    res = trader.smart_buy_krw(code, float(o.get("price", 0)) or 0)
-                else:
-                    res = trader.smart_sell_all(code)
+                ord_side = "BUY" if "매수" in side else "SELL"
+                res = trader.send_order(ord_side, code, qty, price=0, ord_dvsn="01")
             else:
                 # 지정가 fallback
                 price = int(o.get("price", 0))
@@ -143,12 +154,21 @@ def execute_pending_pen_orders(trader) -> list[str]:
             o["executed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             changed = True
             results.append(f"{oid}: {'완료' if success else '실패'}")
+            # 개별 결과 알림
+            if success:
+                _ord_no = res.get("ord_no", "") if isinstance(res, dict) else ""
+                _detail = f" (ord_no: {_ord_no})" if _ord_no else ""
+                _try_send_telegram(f"<b>연금저축 주문 완료</b>\n{side} {etf_name}({code}) x{qty}{_detail}")
+            else:
+                _fail_msg = str(res)[:80] if res else "응답 없음"
+                _try_send_telegram(f"<b>연금저축 주문 실패</b>\n{side} {etf_name}({code}) x{qty}\n{_fail_msg}")
         except Exception as e:
             o["status"] = "실패"
             o["result"] = str(e)[:200]
             o["executed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             changed = True
             results.append(f"{oid}: 실패 ({e})")
+            _try_send_telegram(f"<b>연금저축 주문 실패</b>\n{side} {etf_name}({code}) x{qty}\n{str(e)[:80]}")
 
     if changed:
         _save_pen_orders(orders)

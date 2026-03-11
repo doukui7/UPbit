@@ -59,11 +59,11 @@ class MarketDataWorker:
                     key = f"{ticker}|{interval}"
 
                     if self._first_run:
-                        # 첫 실행: 로컬 캐시 우선 로드 (API 없이 즉시)
+                        # 첫 실행: 로컬 캐시 즉시 로드 (UI 표시용)
                         cached = data_cache.load_cached(ticker, interval)
-                        if cached is not None and len(cached) > 100:
+                        if cached is not None and len(cached) > 0:
                             self.data_map[key] = cached
-                            continue
+                        # continue 하지 않음 — 아래에서 API gap-fill 수행
 
                     # data_cache를 통한 증분 다운로드 (캐시 있으면 갭필만)
                     df = data_cache.get_ohlcv_cached(ticker, interval=interval, count=400)
@@ -86,11 +86,17 @@ class MarketDataWorker:
         df = self.data_map.get(key)
         if df is not None:
             return df
-        # 워커 데이터 없으면 로컬 캐시에서 직접 로드
-        cached = data_cache.load_cached(ticker, interval)
-        if cached is not None and len(cached) > 0:
-            self.data_map[key] = cached
-            return cached
+        # 워커 데이터 없으면 API 포함 로컬 우선 로드
+        try:
+            fresh = data_cache.get_ohlcv_local_first(
+                ticker, interval=interval, count=400,
+                allow_api_fallback=True,
+            )
+            if fresh is not None and len(fresh) > 0:
+                self.data_map[key] = fresh
+                return fresh
+        except Exception:
+            pass
         return None
 
     def get_status(self):

@@ -59,6 +59,23 @@ def _is_weekday(dt: datetime) -> bool:
     return dt.weekday() < 5
 
 
+def _has_pending_pension_orders_today(dt: datetime) -> bool:
+    """오늘 예정된 대기 중인 연금저축 주문이 있는지 확인."""
+    try:
+        pf = REPO_DIR / "config" / "pension_orders.json"
+        if not pf.exists():
+            return False
+        with open(pf, "r", encoding="utf-8") as f:
+            orders = json.load(f)
+        today_str = dt.strftime("%Y-%m-%d")
+        return any(
+            o.get("status") == "대기" and o.get("scheduled_kst", "").startswith(today_str)
+            for o in orders
+        )
+    except Exception:
+        return False
+
+
 RULES: list[ScheduleRule] = [
     ScheduleRule(
         mode="upbit",
@@ -88,10 +105,10 @@ RULES: list[ScheduleRule] = [
     ScheduleRule(
         mode="kis_pension",
         label="KIS 연금저축",
-        is_due=lambda dt: 20 <= dt.minute <= 30
+        is_due=lambda dt: (20 <= dt.minute <= 30 or 40 <= dt.minute <= 55)
         and dt.hour == 15
         and _is_weekday(dt)
-        and 25 <= dt.day <= 31,
+        and _has_pending_pension_orders_today(dt),
     ),
 ]
 RULE_LABELS = {rule.mode: rule.label for rule in RULES}
@@ -207,19 +224,25 @@ def _self_heal(state: dict[str, str]) -> None:
     cwd = str(REPO_DIR)
     try:
         # 상태 파일 백업
-        for fn in ("signal_state.json", "balance_cache.json", "trade_log.json", "signal_test_orders.json"):
+        _heal_files = (
+            "signal_state.json", "balance_cache.json", "trade_log.json",
+            "signal_test_orders.json", "config/pension_orders.json",
+        )
+        for fn in _heal_files:
             src = REPO_DIR / fn
+            bak_name = fn.replace("/", "_").replace(".", "_")
             if src.exists():
                 subprocess.run(
-                    ["cp", str(src), f"/tmp/_{fn.replace('.', '_')}_heal.json"],
+                    ["cp", str(src), f"/tmp/_{bak_name}_heal.json"],
                     capture_output=True, timeout=5,
                 )
         # git reset --hard (코드 갱신)
         subprocess.run(["git", "fetch", "origin", "--quiet"], cwd=cwd, capture_output=True, timeout=15)
         subprocess.run(["git", "reset", "--hard", "origin/master", "--quiet"], cwd=cwd, capture_output=True, timeout=15)
         # 상태 파일 복원
-        for fn in ("signal_state.json", "balance_cache.json", "trade_log.json", "signal_test_orders.json"):
-            bak = f"/tmp/_{fn.replace('.', '_')}_heal.json"
+        for fn in _heal_files:
+            bak_name = fn.replace("/", "_").replace(".", "_")
+            bak = f"/tmp/_{bak_name}_heal.json"
             subprocess.run(["cp", bak, str(REPO_DIR / fn)], capture_output=True, timeout=5)
         state[CONSECUTIVE_FAIL_KEY] = "0"
         state[LAST_ERROR_KEY] = f"{_now_kst().strftime('%Y-%m-%d %H:%M:%S')} | self-heal: git reset 완료"
@@ -250,11 +273,64 @@ def _send_scheduler_telegram(message: str) -> None:
         logging.debug("텔레그램 알림 실패: %s", e)
 
 
+def _run_pension_direct() -> bool:
+    """KIS 연금저축 직접 호출 (subprocess 없이 즉시 실행)."""
+    try:
+        if str(REPO_DIR) not in sys.path:
+            sys.path.insert(0, str(REPO_DIR))
+        # .vm_runtime_env 환경변수 보장
+        env_file = REPO_DIR / ".vm_runtime_env"
+        if env_file.exists():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip("'\"")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+
+        from scripts.trade_lib.kis_pension_engine import run_kis_pension_trade
+        run_kis_pension_trade()
+
+        # 결과 push
+        gh_pat = _get_gh_pat()
+        if gh_pat:
+            for fp in ("config/pension_orders.json", "logs/vm_scheduler_state.json"):
+                _push_file_via_api(gh_pat, fp, f"auto: 연금저축 주문 결과 동기화 {fp}")
+        return True
+    except Exception as e:
+        logging.exception("연금저축 직접 실행 실패: %s", e)
+        return False
+
+
 def _run_mode(mode: str, label: str, state: dict[str, str] | None = None) -> bool:
+    # kis_pension: 직접 호출 (subprocess 오버헤드 제거, 즉시 주문)
+    if mode == "kis_pension":
+        logging.info("실행 시작(직접): %s (%s)", label, mode)
+        started = time.time()
+        ok = _run_pension_direct()
+        elapsed = time.time() - started
+        if ok:
+            logging.info("실행 완료(직접): %s %.1fs", label, elapsed)
+            if state is not None:
+                now = _now_kst()
+                state[LAST_TRADE_EPOCH_KEY] = f"{time.time():.3f}"
+                state[LAST_TRADE_KST_KEY] = now.strftime("%Y-%m-%d %H:%M:%S")
+                state[LAST_TRADE_MODE_KEY] = mode
+                state[CONSECUTIVE_FAIL_KEY] = "0"
+        else:
+            logging.error("실행 실패(직접): %s %.1fs → subprocess fallback", label, elapsed)
+            if state is not None:
+                prev = int(state.get(CONSECUTIVE_FAIL_KEY, "0") or "0")
+                state[CONSECUTIVE_FAIL_KEY] = str(prev + 1)
+        return ok
+
     cmd = ["bash", "scripts/vm_run_job.sh", mode]
     logging.info("실행 시작: %s (%s)", label, mode)
     started = time.time()
-    timeout_sec = 60 * 80 if mode == "kis_pension" else 60 * 40
+    timeout_sec = 60 * 40
     try:
         res = subprocess.run(
             cmd,
@@ -540,6 +616,7 @@ def _pull_code_from_origin() -> bool:
         _state_files = [
             "balance_cache.json", "signal_state.json",
             "trade_log.json", "logs/vm_scheduler_state.json",
+            "config/pension_orders.json",
         ]
         for sf in _state_files:
             fp = REPO_DIR / sf
@@ -639,7 +716,7 @@ def main() -> int:
     logging.info("VM 파이썬 스케줄러 시작 (repo=%s)", REPO_DIR)
     logging.info(
         "스케줄: upbit[01/05/09/13/17/21:00], health[+5m], daily[평일09:00], "
-        "gold[평일15:05], isa[금15:10], pension[25~31평일15:20], oneoff[vm_reserved_orders.json]"
+        "gold[평일15:05], isa[금15:10], pension[평일15:20~30+15:40~55], oneoff[vm_reserved_orders.json]"
     )
     logging.info(
         "잔고 동기화: 조회=%ds, push=%ds (다른 작업 실행 중에는 건너뜀)",
@@ -660,10 +737,16 @@ def main() -> int:
                 for rule in RULES:
                     if not rule.is_due(now):
                         continue
-                    if state.get(rule.mode) == sk:
+                    # pension: 동시호가(15:20~30) / 시간외(15:40~55) 각각 실행
+                    if rule.mode == "kis_pension":
+                        _win = "a" if now.minute < 35 else "b"
+                        rule_sk = f"{sk}_{_win}"
+                    else:
+                        rule_sk = sk
+                    if state.get(rule.mode) == rule_sk:
                         continue
                     ok = _run_mode(rule.mode, rule.label, state)
-                    state[rule.mode] = sk
+                    state[rule.mode] = rule_sk
                     state_dirty = True
                     if ok and LAST_ERROR_KEY in state:
                         state.pop(LAST_ERROR_KEY, None)

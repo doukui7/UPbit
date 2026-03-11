@@ -196,6 +196,7 @@ class BacktestEngine:
                     'slippage_pct': slippage,
                     'amount': coin_balance,
                     'balance': coin_balance * exec_price,
+                    'equity': coin_balance * exec_price,
                     'sma': p_sma
                 })
                 pending_action = None
@@ -219,6 +220,7 @@ class BacktestEngine:
                     'slippage_pct': slippage,
                     'amount': 0,
                     'balance': balance,
+                    'equity': balance,
                     'profit': (exec_price - buy_price) / buy_price * 100,
                     'sma': p_sma,
                     'long_sma': 0,

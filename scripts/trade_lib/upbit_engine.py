@@ -30,8 +30,33 @@ from .data import get_upbit_ohlcv_local_first, get_upbit_price_local_first
 from src.strategy.sma import SMAStrategy
 from src.strategy.donchian import DonchianStrategy
 from src.trading.upbit_trader import UpbitTrader
+from src.backtest.engine import BacktestEngine
 
 logger = logging.getLogger(__name__)
+
+
+def _compute_backtest_targets(analyses, initial_cap, start_date):
+    """각 전략별 백테스트 실행 → backtest_target(이론 equity) 저장."""
+    bt_engine = BacktestEngine()
+    for a in analyses:
+        per_coin_cap = initial_cap * (a['weight'] / 100)
+        p = a['param']
+        sell_ratio = (a['sell_param'] or max(5, p // 2)) / p if p > 0 else 0.5
+        try:
+            bt_res = bt_engine.run_backtest(
+                a['ticker'], period=p, interval=a['interval'],
+                count=500, start_date=str(start_date),
+                initial_balance=per_coin_cap,
+                strategy_mode=a['strategy_name'],
+                sell_period_ratio=sell_ratio,
+            )
+            if bt_res and "error" not in bt_res:
+                a['backtest_target'] = bt_res['performance']['final_equity']
+            else:
+                a['backtest_target'] = per_coin_cap
+        except Exception:
+            a['backtest_target'] = per_coin_cap
+        logger.info(f"[{a['ticker']}] BT target: {a['backtest_target']:,.0f} (초기={per_coin_cap:,.0f})")
 
 
 # ── 시그널 키 / 전환 감지 ────────────────────────────────
@@ -636,29 +661,81 @@ def run_auto_trade():
 
     logger.info(f"Portfolio Value={total_portfolio_value:,.0f} KRW (현금={krw_balance:,.0f}, 코인={total_coin_value:,.0f})")
 
+    # ── 백테스트 기반 목표 가치 계산 ──
+    _ucfg_bt = load_user_config()
+    _initial_cap = _ucfg_bt.get("initial_cap", 100000)
+    _start_date = _ucfg_bt.get("start_date", "2026-01-01")
+    _compute_backtest_targets(analyses, _initial_cap, _start_date)
+    _compute_backtest_targets(skipped_analyses, _initial_cap, _start_date)
+
+    _all_strats = analyses + skipped_analyses
+    # 코인별 bt equity 합산
+    coin_bt_sum = {}
+    for a in _all_strats:
+        coin_bt_sum[a['coin_sym']] = coin_bt_sum.get(a['coin_sym'], 0) + a.get('backtest_target', 0)
+    # HOLD(BUY/HOLD) 전략 bt equity 합산 — 매도 전 기준 (코인 분배용)
+    coin_bt_hold_sum = {}
+    for a in _all_strats:
+        if a.get('position_state') in ('BUY', 'HOLD'):
+            coin_bt_hold_sum[a['coin_sym']] = coin_bt_hold_sum.get(a['coin_sym'], 0) + a.get('backtest_target', 0)
+
+    for sym in coin_bt_sum:
+        logger.info(f"[{sym}] BT total={coin_bt_sum[sym]:,.0f}, hold={coin_bt_hold_sum.get(sym, 0):,.0f}")
+
     # ── 2단계: 매도 먼저 실행 ──
     exec_results = {}
     decision_notes = {}
     sold_qty_map = {}
+
+    # 코인별 매도 목표 사전계산: 남은 전략(HOLD/BUY)의 목표 보유액 기준
+    coin_sell_info = {}
+    for sym in set(a['coin_sym'] for a in analyses if a['signal'] == 'SELL' and a['is_holding']):
+        rem_bt = 0
+        sell_bt = 0
+        for x in _all_strats:
+            if x['coin_sym'] != sym:
+                continue
+            sig = x.get('signal', x.get('position_state', ''))
+            if sig == 'SELL':
+                sell_bt += x.get('backtest_target', 0)
+            else:
+                rem_bt += x.get('backtest_target', 0)
+        total_bt = coin_bt_sum.get(sym, 1)
+        if total_portfolio_value >= total_bt:
+            rem_target = rem_bt  # 상한: bt equity
+        else:
+            rem_target = total_portfolio_value * (rem_bt / total_bt) if total_bt > 0 else 0
+        coin_sell_info[sym] = {'rem_target': rem_target, 'sell_bt': sell_bt}
+        logger.info(f"[{sym}] 매도계획: rem_target={rem_target:,.0f}, sell_bt={sell_bt:,.0f}, total_bt={total_bt:,.0f}")
+
     for a in analyses:
         if a['signal'] == 'SELL' and a['is_holding']:
-            target_value = total_portfolio_value * (a['weight'] / 100)
-            if a['current_price'] and a['current_price'] > 0:
-                target_qty = target_value / a['current_price']
-            else:
+            if not (a['current_price'] and a['current_price'] > 0):
                 continue
+            # 남은 전략 목표 보유액 유지, 나머지 매도
+            my_bt = a.get('backtest_target', _initial_cap * a['weight'] / 100)
+            info = coin_sell_info.get(a['coin_sym'], {})
+            rem_target_val = info.get('rem_target', 0)
+            sell_bt_total = info.get('sell_bt', my_bt)
+
+            coin_val = a['coin_balance'] * a['current_price']
+            total_sell_val = max(0, coin_val - rem_target_val)
+            my_sell_fraction = my_bt / sell_bt_total if sell_bt_total > 0 else 1.0
+            my_sell_val = total_sell_val * my_sell_fraction
+            sell_qty = my_sell_val / a['current_price'] if a['current_price'] > 0 else 0
+
+            # 이미 매도된 수량 반영 (다전략 순차 매도 안전장치)
             already_sold = sold_qty_map.get(a['coin_sym'], 0)
-            remaining_balance = a['coin_balance'] - already_sold
-            sell_qty = min(target_qty, remaining_balance)
+            remaining = a['coin_balance'] - already_sold
+            sell_qty = min(sell_qty, remaining)
             if sell_qty <= 0:
                 continue
-            sell_value = sell_qty * a['current_price'] if a['current_price'] else 0
+            sell_value = sell_qty * a['current_price']
             if sell_value < MIN_ORDER_KRW:
                 note = f"SELL 스킵({a.get('strategy_label', '')}): 주문금액 미달 {sell_value:,.0f}원 < {MIN_ORDER_KRW:,.0f}원"
                 decision_notes.setdefault(a['ticker'], []).append(note)
                 continue
-            coin_total_w = coin_weight_sum.get(a['coin_sym'], a['weight'])
-            logger.info(f"[{a['ticker']}] SELL {sell_qty:.6f}/{a['coin_balance']:.6f} {a['coin_sym']} (비중={a['weight']}%/{coin_total_w}%)")
+            logger.info(f"[{a['ticker']}] SELL {sell_qty:.6f}/{a['coin_balance']:.6f} {a['coin_sym']} (fraction={my_sell_fraction:.2%}, sell_val={my_sell_val:,.0f}, rem_target={rem_target_val:,.0f})")
 
             if is_signal_only:
                 test_price = int(a['current_price'] * UPBIT_TEST_SELL_MULTIPLIER)
@@ -713,18 +790,41 @@ def run_auto_trade():
 
     time.sleep(1)
 
+    # ── 매도 완료 → 잔존 보유 전략의 bt 합산 (이전 보유 + 매도 안 한 전략만) ──
+    coin_bt_remaining_hold = {}
+    for a in _all_strats:
+        if a.get('position_state') in ('BUY', 'HOLD') and a.get('signal', '') != 'SELL':
+            coin_bt_remaining_hold[a['coin_sym']] = coin_bt_remaining_hold.get(a['coin_sym'], 0) + a.get('backtest_target', 0)
+
     # ── 3단계: 매수 실행 ──
     krw_balance = trader.get_balance("KRW")
     buy_signals = [a for a in analyses if a['signal'] == 'BUY']
     logger.info(f"KRW(매도후)={krw_balance:,.0f} | Buy signals={len(buy_signals)}")
 
     for a in buy_signals:
-        target_value = total_portfolio_value * (a['weight'] / 100)
-        current_holding_value = a['coin_value']
-        coin_total_w = coin_weight_sum.get(a['coin_sym'], a['weight'])
-        my_holding = current_holding_value * (a['weight'] / coin_total_w)
+        # bt equity 비율로 매수 금액 계산
+        my_bt = a.get('backtest_target', _initial_cap * a['weight'] / 100)
+        bt_total = coin_bt_sum.get(a['coin_sym'], my_bt)
+        bt_share = my_bt / bt_total if bt_total > 0 else 1.0
+        if total_portfolio_value >= bt_total:
+            target_value = my_bt  # 상한: bt equity
+        else:
+            target_value = total_portfolio_value * bt_share  # 비례 배분
+
+        # 현재 보유분 계산: position_state 기준 (이전에 보유 중이었는지)
+        sold_val = sold_qty_map.get(a['coin_sym'], 0) * a.get('current_price', 0)
+        remaining_coin_val = max(0, a['coin_value'] - sold_val)
+        if a.get('position_state') in ('BUY', 'HOLD'):
+            # 이전에 보유 중 → 잔존 코인 중 내 비중
+            bt_remain = coin_bt_remaining_hold.get(a['coin_sym'], my_bt)
+            hold_share = my_bt / bt_remain if bt_remain > 0 else 1.0
+            my_holding = remaining_coin_val * hold_share
+        else:
+            # SELL→BUY 전환: 이전에 미보유 → 코인 없음
+            my_holding = 0
         need_value = target_value - my_holding
         buy_budget = min(need_value, krw_balance) * 0.999
+        logger.info(f"[{a['ticker']}] BT매수계산: target={target_value:,.0f}, my_holding={my_holding:,.0f}, need={need_value:,.0f}, bt={my_bt:,.0f}/{bt_total:,.0f}, ps={a.get('position_state')}")
 
         if buy_budget > MIN_ORDER_KRW:
             logger.info(f"[{a['ticker']}] BUY {buy_budget:,.0f} KRW (Adaptive) | 목표={target_value:,.0f}, 보유={my_holding:,.0f}")
@@ -797,9 +897,20 @@ def run_auto_trade():
                 continue
             if a['coin_sym'] in topup_done:
                 continue
-            target_value = total_portfolio_value * (a['weight'] / 100)
-            coin_total_w = coin_weight_sum.get(a['coin_sym'], a['weight'])
-            my_holding = a['coin_value'] * (a['weight'] / coin_total_w)
+            # bt equity 비율로 보충매수 목표 계산
+            my_bt = a.get('backtest_target', _initial_cap * a['weight'] / 100)
+            bt_total = coin_bt_sum.get(a['coin_sym'], my_bt)
+            bt_share = my_bt / bt_total if bt_total > 0 else 1.0
+            if total_portfolio_value >= bt_total:
+                target_value = my_bt
+            else:
+                target_value = total_portfolio_value * bt_share
+            # 보충매수는 position_state가 BUY/HOLD인 전략만 진입 → 항상 보유 중
+            sold_val = sold_qty_map.get(a['coin_sym'], 0) * a.get('current_price', 0)
+            remaining_coin_val = max(0, a['coin_value'] - sold_val)
+            bt_remain = coin_bt_remaining_hold.get(a['coin_sym'], my_bt)
+            hold_share = my_bt / bt_remain if bt_remain > 0 else 1.0
+            my_holding = remaining_coin_val * hold_share
             need_value = target_value - my_holding
             if need_value < MIN_ORDER_KRW:
                 continue
