@@ -616,8 +616,9 @@ def _pull_code_from_origin() -> bool:
         _state_files = [
             "balance_cache.json", "signal_state.json",
             "trade_log.json", "logs/vm_scheduler_state.json",
-            "config/pension_orders.json",
         ]
+        # NOTE: pension_orders.json은 UI→origin→VM 방향이므로 백업하면 안 됨
+        # (백업하면 origin의 새 주문을 못 받음)
         for sf in _state_files:
             fp = REPO_DIR / sf
             if fp.exists():
