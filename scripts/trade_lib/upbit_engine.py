@@ -229,7 +229,7 @@ def pick_focus_target(
     return cands[0]
 
 
-def build_upbit_condition_info(strategy_name, param, sell_param, interval, last_candle, current_price) -> dict:
+def build_upbit_condition_info(strategy_name, param, sell_param, interval, last_candle, current_price, position_state="") -> dict:
     close_price = safe_float(last_candle.get("close"), default=0.0)
     interval_label = fmt_interval_label(interval)
 
@@ -258,10 +258,17 @@ def build_upbit_condition_info(strategy_name, param, sell_param, interval, last_
         sell_label = f"매도타점(SMA_{param})"
         label = f"SMA({param}, {interval_label})"
 
-    focus = pick_focus_target(
-        buy_label=buy_label, buy_level=buy_level, buy_gap=buy_gap, buy_cond=buy_cond,
-        sell_label=sell_label, sell_level=sell_level, sell_gap=sell_gap, sell_cond=sell_cond,
-    )
+    # 포지션 상태에 따라 포커스 타점 결정
+    ps = str(position_state).upper()
+    if ps in ('BUY', 'HOLD') and valid_price(sell_level):
+        focus = {"side": "SELL", "label": sell_label, "level": sell_level, "gap_pct": sell_gap, "cond": sell_cond}
+    elif ps == 'SELL' and valid_price(buy_level):
+        focus = {"side": "BUY", "label": buy_label, "level": buy_level, "gap_pct": buy_gap, "cond": buy_cond}
+    else:
+        focus = pick_focus_target(
+            buy_label=buy_label, buy_level=buy_level, buy_gap=buy_gap, buy_cond=buy_cond,
+            sell_label=sell_label, sell_level=sell_level, sell_gap=sell_gap, sell_cond=sell_cond,
+        )
     focus_line = (
         f"{focus.get('label', '타점')} {fmt_krw_price(focus.get('level'))} | "
         f"이격 {fmt_gap_pct(focus.get('gap_pct'))} | {cond_text(focus.get('cond'))}"
@@ -300,7 +307,7 @@ def describe_upbit_signal_reason(analysis: dict) -> str:
 
 
 def compact_upbit_condition_lines(analysis: dict) -> list[str]:
-    """알림 표시는 항상 '현재가 + 가까운 타점 1개'만 유지."""
+    """포지션 상태에 따라 타점 선택: 보유중(BUY/HOLD)→매도타점, 현금(SELL)→매수타점."""
     raw_lines = [str(x) for x in (analysis.get("condition_lines") or []) if str(x).strip()]
     current_line = next((ln for ln in raw_lines if ln.startswith("현재가 ")), "")
     if not current_line:
@@ -308,24 +315,38 @@ def compact_upbit_condition_lines(analysis: dict) -> list[str]:
             f"현재가 {fmt_krw_price(analysis.get('current_price'))} / "
             f"판단종가 {fmt_krw_price(analysis.get('close_price'))}"
         )
-    focus = pick_focus_target(
-        buy_label=(
-            f"매수타점(상단 {int(analysis.get('param', 0) or 0)})"
-            if str(analysis.get("strategy_name", "")).lower() == "donchian"
-            else f"매수타점(SMA_{int(analysis.get('param', 0) or 0)})"
-        ),
-        buy_level=safe_float(analysis.get("buy_level"), default=0.0),
-        buy_gap=analysis.get("buy_gap_pct"),
-        buy_cond=analysis.get("buy_cond"),
-        sell_label=(
-            f"매도타점(하단 {int(analysis.get('sell_param', 0) or 0)})"
-            if str(analysis.get("strategy_name", "")).lower() == "donchian"
-            else f"매도타점(SMA_{int(analysis.get('param', 0) or 0)})"
-        ),
-        sell_level=safe_float(analysis.get("sell_level"), default=0.0),
-        sell_gap=analysis.get("sell_gap_pct"),
-        sell_cond=analysis.get("sell_cond"),
-    )
+
+    is_donchian = str(analysis.get("strategy_name", "")).lower() == "donchian"
+    param = int(analysis.get('param', 0) or 0)
+    sell_param = int(analysis.get('sell_param', 0) or 0)
+
+    buy_label = f"매수타점(상단 {param})" if is_donchian else f"매수타점(SMA_{param})"
+    sell_label = f"매도타점(하단 {sell_param})" if is_donchian else f"매도타점(SMA_{param})"
+    buy_level = safe_float(analysis.get("buy_level"), default=0.0)
+    sell_level = safe_float(analysis.get("sell_level"), default=0.0)
+
+    # 포지션 상태에 따라 표시할 타점 결정
+    pos_state = str(analysis.get('position_state', '')).upper()
+    prev_state = str(analysis.get('prev_state', '')).upper()
+    effective = pos_state or prev_state
+
+    if effective in ('BUY', 'HOLD') and valid_price(sell_level):
+        # 보유 중 → 매도 조건 표시
+        focus = {"side": "SELL", "label": sell_label, "level": sell_level,
+                 "gap_pct": analysis.get("sell_gap_pct"), "cond": analysis.get("sell_cond")}
+    elif effective == 'SELL' and valid_price(buy_level):
+        # 현금 → 매수 타점 표시
+        focus = {"side": "BUY", "label": buy_label, "level": buy_level,
+                 "gap_pct": analysis.get("buy_gap_pct"), "cond": analysis.get("buy_cond")}
+    else:
+        # 기본: 가까운 타점
+        focus = pick_focus_target(
+            buy_label=buy_label, buy_level=buy_level,
+            buy_gap=analysis.get("buy_gap_pct"), buy_cond=analysis.get("buy_cond"),
+            sell_label=sell_label, sell_level=sell_level,
+            sell_gap=analysis.get("sell_gap_pct"), sell_cond=analysis.get("sell_cond"),
+        )
+
     focus_line = ""
     if focus and valid_price(focus.get("level")):
         focus_line = (
@@ -472,6 +493,7 @@ def analyze_asset(trader, item):
     condition_info = build_upbit_condition_info(
         strategy_name=str(strategy_name), param=int(param), sell_param=int(sell_p),
         interval=interval, last_candle=last_candle, current_price=current_price,
+        position_state=position_state,
     )
 
     logger.info(f"[{ticker}] Close={last_candle['close']}, {indicator_info}, State={position_state}, Price={current_price}")
@@ -656,7 +678,7 @@ def run_auto_trade():
     total_portfolio_value = krw_balance + total_coin_value
 
     coin_weight_sum = {}
-    for a in analyses:
+    for a in analyses + skipped_analyses:
         coin_weight_sum[a['coin_sym']] = coin_weight_sum.get(a['coin_sym'], 0) + a['weight']
 
     logger.info(f"Portfolio Value={total_portfolio_value:,.0f} KRW (현금={krw_balance:,.0f}, 코인={total_coin_value:,.0f})")
