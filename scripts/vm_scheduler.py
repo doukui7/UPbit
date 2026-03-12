@@ -227,7 +227,7 @@ def _self_heal(state: dict[str, str]) -> None:
         # NOTE: pension_orders.json은 UI→origin→VM 방향이므로 백업하면 안 됨
         _heal_files = (
             "signal_state.json", "balance_cache.json", "trade_log.json",
-            "signal_test_orders.json",
+            "signal_test_orders.json", "logs/vm_scheduler_state.json",
         )
         for fn in _heal_files:
             src = REPO_DIR / fn
@@ -635,7 +635,8 @@ def _pull_code_from_origin() -> bool:
         _backup = {}
         _state_files = [
             "balance_cache.json", "signal_state.json",
-            "trade_log.json", "logs/vm_scheduler_state.json",
+            "trade_log.json", "signal_test_orders.json",
+            "logs/vm_scheduler_state.json",
         ]
         # NOTE: pension_orders.json은 UI→origin→VM 방향이므로 백업하면 안 됨
         # (백업하면 origin의 새 주문을 못 받음)
