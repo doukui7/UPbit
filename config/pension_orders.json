@@ -98,10 +98,10 @@
     "method": "동시호가 (장마감)",
     "price": 0,
     "scheduled_kst": "2026-03-12 15:20",
-    "status": "대기",
+    "status": "완료",
     "created_at": "2026-03-11 00:25:54",
-    "executed_at": "",
-    "result": "",
+    "executed_at": "2026-03-12 06:20:05",
+    "result": "{'success': True, 'ord_no': '0002028000', 'msg': '주문 전송 완료 되었습니다.'}",
     "note": ""
   }
 ]
