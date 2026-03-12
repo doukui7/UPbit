@@ -52,7 +52,9 @@ CONSECUTIVE_FAIL_KEY = "__consecutive_failures"
 _LAST_BALANCE_SYNC = 0.0  # 마지막 잔고 조회 시각 (epoch)
 _LAST_BALANCE_PUSH = 0.0  # 마지막 잔고 push 시각 (epoch)
 _LAST_CODE_PULL = 0.0     # 마지막 코드 pull 시각 (epoch)
+_LAST_ACCOUNT_SYNC = 0.0  # 마지막 account_sync 시각 (epoch)
 CODE_PULL_INTERVAL_SEC = 2 * 60  # 코드 pull 주기 (2분)
+ACCOUNT_SYNC_INTERVAL_SEC = 4 * 60 * 60  # account_sync 주기 (4시간)
 
 
 def _is_weekday(dt: datetime) -> bool:
@@ -288,6 +290,26 @@ def _pull_pension_orders() -> None:
         logging.info("pension_orders.json origin 최신 반영 완료")
     except Exception as e:
         logging.warning("pension_orders.json pull 실패 (로컬 파일 사용): %s", e)
+
+
+def _run_account_sync() -> None:
+    """Upbit 계좌 데이터 동기화 (주문/입출금 내역 → account_cache.json → push)."""
+    global _LAST_ACCOUNT_SYNC
+    now_epoch = time.time()
+    if (now_epoch - _LAST_ACCOUNT_SYNC) < ACCOUNT_SYNC_INTERVAL_SEC:
+        return
+    try:
+        if str(REPO_DIR) not in sys.path:
+            sys.path.insert(0, str(REPO_DIR))
+        from scripts.trade_lib.reports import run_account_sync
+        run_account_sync()
+        gh_pat = _get_gh_pat()
+        if gh_pat:
+            _push_file_via_api(gh_pat, "account_cache.json", "auto: sync account_cache.json")
+        _LAST_ACCOUNT_SYNC = time.time()
+        logging.info("account_sync 완료 + push")
+    except Exception as e:
+        logging.warning("account_sync 실패: %s", e)
 
 
 def _run_pension_direct() -> bool:
@@ -683,6 +705,7 @@ def _push_balance_cache() -> bool:
         "balance_cache.json",
         "signal_state.json",
         "trade_log.json",
+        "account_cache.json",
         "logs/vm_scheduler_state.json",
     ]
     ok_count = 0
@@ -802,6 +825,12 @@ def main() -> int:
                 _push_balance_cache()
             except Exception as e:
                 logging.debug("잔고 동기화 예외 (무시): %s", e)
+
+            # ── 계좌 데이터 동기화 (4시간마다 — 주문/입출금 내역) ──
+            try:
+                _run_account_sync()
+            except Exception as e:
+                logging.debug("account_sync 예외 (무시): %s", e)
 
             # ── 코드 업데이트 수신 (2분마다 독립 실행) ──
             try:
