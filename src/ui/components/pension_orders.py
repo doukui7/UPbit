@@ -383,6 +383,11 @@ def render_pension_orders_tab(etf_options: dict, current_price: float = 0):
                 label = f"{o.get('side', '')} {_fmt_etf_code_name(o.get('etf_code', ''))} {o.get('qty', 0)}주 | {o.get('method', '')} | 예정: {o.get('scheduled_kst', '')}"
                 if o.get("note"):
                     label += f" | {o['note']}"
+                # 최근 시도 기록이 있으면 표시
+                _attempts = o.get("attempts", [])
+                if _attempts:
+                    _last = _attempts[-1]
+                    label += f"\n  └ 최근 시도: {_last.get('at', '')} — {_last.get('action', '')}"
                 _pc1, _pc2 = st.columns([6, 1])
                 _pc1.markdown(label)
                 if _pc2.button("취소", key=f"pen_rsv_cancel_{oid}"):
@@ -394,6 +399,8 @@ def render_pension_orders_tab(etf_options: dict, current_price: float = 0):
             _rows = []
             for o in reversed(pen_orders):
                 _status_icon = {"대기": "", "완료": "", "실패": "", "취소": ""}.get(o.get("status", ""), "?")
+                _atts = o.get("attempts", [])
+                _last_att = _atts[-1].get("action", "") if _atts else ""
                 _rows.append({
                     "상태": f"{_status_icon} {o.get('status', '')}",
                     "방향": o.get("side", ""),
@@ -404,8 +411,9 @@ def render_pension_orders_tab(etf_options: dict, current_price: float = 0):
                     "예정일시": o.get("scheduled_kst", ""),
                     "등록일시": o.get("created_at", ""),
                     "실행일시": o.get("executed_at", "") or "-",
+                    "시도": len(_atts),
+                    "최근시도": _last_att[:40] if _last_att else "-",
                     "결과": (o.get("result", "") or "-")[:60],
-                    "메모": o.get("note", ""),
                 })
             st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
     else:

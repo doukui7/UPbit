@@ -16,6 +16,27 @@ from src.engine.kis_trader import KISTrader
 logger = logging.getLogger(__name__)
 
 
+def _append_attempt(order: dict, at: str, action: str):
+    """주문 기록에 실행 시도 로그를 추가한다."""
+    if "attempts" not in order:
+        order["attempts"] = []
+    order["attempts"].append({"at": at, "action": action})
+    # 최근 20건만 유지
+    if len(order["attempts"]) > 20:
+        order["attempts"] = order["attempts"][-20:]
+
+
+def _save_orders(orders_file: str, orders: list):
+    """pension_orders.json 저장."""
+    try:
+        os.makedirs(os.path.dirname(orders_file), exist_ok=True)
+        with open(orders_file, "w", encoding="utf-8") as f:
+            json.dump(orders, f, ensure_ascii=False, indent=2)
+        logger.info("pension_orders.json 업데이트 완료")
+    except Exception as e:
+        logger.error(f"pension_orders.json 저장 실패: {e}")
+
+
 def _resolve_exec_method(method: str, hour: int, minute: int) -> str | None:
     """주문 방식 + 현재 시각 → 실제 실행 방식 결정.
 
@@ -74,6 +95,8 @@ def run_kis_pension_trade():
     _hour = now_kst.hour
     _minute = now_kst.minute
 
+    _now_str = now_kst.strftime("%Y-%m-%d %H:%M:%S")
+
     pending = [
         o for o in orders
         if o.get("status") == "대기"
@@ -104,6 +127,10 @@ def run_kis_pension_trade():
     if not trader.auth():
         logger.error("KIS 인증 실패. 종료.")
         send_telegram("<b>KIS 연금저축</b>\nKIS 인증 실패")
+        # 인증 실패도 시도 기록 남기기
+        for o in pending:
+            _append_attempt(o, _now_str, "인증 실패로 건너뜀")
+        _save_orders(orders_file, orders)
         return
 
     # 대기 주문 실행
@@ -128,15 +155,17 @@ def run_kis_pension_trade():
         # ── 시간대 안전장치 & 방식 자동 전환 ──
         exec_method = _resolve_exec_method(method, _hour, _minute)
         if exec_method is None:
-            logger.warning(
-                f"주문 {oid}: {method} 시간 외 ({_hour}:{_minute:02d}). 건너뜀."
-            )
+            _skip_reason = f"시간외 건너뜀 ({_hour}:{_minute:02d}, {method})"
+            logger.warning(f"주문 {oid}: {_skip_reason}")
+            _append_attempt(o, _now_str, _skip_reason)
+            changed = True
             continue
 
         if qty <= 0 or not code:
             o["status"] = "실패"
             o["result"] = "수량 또는 ETF코드 누락"
-            o["executed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            o["executed_at"] = _now_str
+            _append_attempt(o, _now_str, "실패: 수량/코드 누락")
             changed = True
             results.append(f"{etf_name}({code}): 실패 (수량/코드 누락)")
             logger.warning(f"주문 {oid}: 수량/코드 누락")
@@ -165,7 +194,8 @@ def run_kis_pension_trade():
                         # 시간외종가 시간 전 → "대기" 유지, 15:40에 시간외종가로 재시도
                         _fail_msg = str(res)[:80]
                         o["result"] = f"동시호가 실패→시간외 대기: {_fail_msg}"
-                        o["executed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        o["executed_at"] = _now_str
+                        _append_attempt(o, _now_str, f"동시호가 실패→시간외 대기: {_fail_msg}")
                         changed = True
                         results.append(
                             f"{side} {etf_name}({code}) x{qty}: 동시호가 실패→시간외 대기"
@@ -212,7 +242,9 @@ def run_kis_pension_trade():
             success = isinstance(res, dict) and res.get("success", False)
             o["status"] = "완료" if success else "실패"
             o["result"] = str(res)[:200] if res else "응답 없음"
-            o["executed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            o["executed_at"] = _now_str
+            _exec_label = exec_method if exec_method == method.split("(")[0].strip() else f"{exec_method}(원래:{method.split('(')[0].strip()})"
+            _append_attempt(o, _now_str, f"{'완료' if success else '실패'}: {_exec_label}")
             changed = True
             status_str = "완료" if success else "실패"
             results.append(f"{side} {etf_name}({code}) x{qty}: {status_str}")
@@ -235,7 +267,8 @@ def run_kis_pension_trade():
         except Exception as e:
             o["status"] = "실패"
             o["result"] = str(e)[:200]
-            o["executed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            o["executed_at"] = _now_str
+            _append_attempt(o, _now_str, f"예외: {str(e)[:80]}")
             changed = True
             results.append(f"{side} {etf_name}({code}) x{qty}: 실패 ({e})")
             logger.error(f"주문 {oid} 예외: {e}")
@@ -246,13 +279,7 @@ def run_kis_pension_trade():
 
     # 결과 저장
     if changed:
-        try:
-            os.makedirs(os.path.dirname(orders_file), exist_ok=True)
-            with open(orders_file, "w", encoding="utf-8") as f:
-                json.dump(orders, f, ensure_ascii=False, indent=2)
-            logger.info("pension_orders.json 업데이트 완료")
-        except Exception as e:
-            logger.error(f"pension_orders.json 저장 실패: {e}")
+        _save_orders(orders_file, orders)
 
     if not results:
         logger.info("실행 대상 주문 없음 (시간 외 건너뜀). 종료.")

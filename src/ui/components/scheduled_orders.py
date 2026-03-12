@@ -311,6 +311,7 @@ def _render_past_orders():
 def _render_topup_settings(config, save_config):
     st.subheader("보충 매수/매도 설정")
     st.caption("BUY 시그널 유지 중 목표 미달 → 매 실행마다 설정 금액 추가 매수 / SELL 시그널 유지 중 잔량 보유 → 설정 금액 추가 매도")
+    st.caption("⚠️ 최소 주문 금액: **5,000원** — 계산 결과가 미만이면 자동으로 5,000원 주문")
 
     topup_enabled = config.get("topup_enabled", False)
     topup_buy_amt = config.get("topup_buy_amount", 5000)

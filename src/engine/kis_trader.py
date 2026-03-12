@@ -139,6 +139,10 @@ class KISTrader:
             t = _tick(raw)
             return ((raw + t - 1) // t) * t
 
+    def get_pension_trade_history(self, **kwargs) -> dict:
+        """연금저축 거래내역 조회 (trade 모듈 위임)."""
+        return self.trade.get_trade_history(**kwargs)
+
     def smart_buy_krw(self, stock_code: str, target_krw: float) -> dict | None:
         """목표 금액(KRW) 만큼 시장가 매수"""
         cur_price = self.get_current_price(stock_code)

@@ -914,9 +914,12 @@ def run_auto_trade():
             need_value = target_value - my_holding
             if need_value < MIN_ORDER_KRW:
                 continue
-            buy_budget = min(topup_buy_amount, need_value, krw_balance) * 0.999
-            if buy_budget < MIN_ORDER_KRW * 0.999:
-                continue
+            buy_budget = min(topup_buy_amount, need_value, krw_balance)
+            if buy_budget < MIN_ORDER_KRW:
+                if krw_balance >= MIN_ORDER_KRW:
+                    buy_budget = MIN_ORDER_KRW
+                else:
+                    continue
             logger.info(f"[{a['ticker']}] 보충매수 {buy_budget:,.0f} KRW")
             try:
                 result = trader.adaptive_buy(a['ticker'], buy_budget, interval=a.get('interval', 'day'))
@@ -927,12 +930,16 @@ def run_auto_trade():
                 result["_strategy_label"] = a.get("strategy_label", "")
                 result["_topup"] = True
                 exec_results.setdefault(a['ticker'], []).append(result)
+                _filled = safe_float(result.get('filled_volume', 0)) if isinstance(result, dict) else 0
+                _spent = safe_float(result.get('total_krw', 0)) if isinstance(result, dict) else 0
+                _res_label = "success" if _filled > 0 else "unfilled"
                 append_trade_log({
                     "mode": "real", "ticker": a['ticker'], "side": "BUY_TOPUP",
                     "amount": f"{buy_budget:,.0f}", "strategy": a.get('strategy_label', ''),
-                    "result": "success", "detail": str(result)[:200],
+                    "result": _res_label, "detail": str(result)[:200],
                 })
-                krw_balance -= buy_budget
+                if _filled > 0:
+                    krw_balance -= _spent
                 topup_done.add(a['coin_sym'])
             except Exception as e:
                 logger.error(f"[{a['ticker']}] 보충매수 Error: {e}")
@@ -1019,8 +1026,13 @@ def run_auto_trade():
                     my_hold = skip_val * (skip_weight / cw) if cw > 0 else 0
                     need_v = target_v - my_hold
                     if need_v >= MIN_ORDER_KRW:
-                        buy_b = min(topup_buy_amount, need_v, krw_balance) * 0.999
-                        if buy_b >= MIN_ORDER_KRW * 0.999:
+                        buy_b = min(topup_buy_amount, need_v, krw_balance)
+                        if buy_b < MIN_ORDER_KRW:
+                            if krw_balance >= MIN_ORDER_KRW:
+                                buy_b = MIN_ORDER_KRW
+                            else:
+                                continue
+                        if buy_b >= MIN_ORDER_KRW:
                             try:
                                 result = trader.adaptive_buy(skip_ticker, buy_b, interval=skip_iv)
                                 if isinstance(result, dict):
@@ -1184,15 +1196,17 @@ def run_auto_trade():
             _krw = safe_float(ex.get('total_krw', 0))
             _strategy = ex.get("_strategy_label", "")
             _cond = ex.get("_condition_summary", "")
+            _is_topup = ex.get("_topup", False)
+            _topup_tag = "보충" if _is_topup else ""
             if 'sell' in _type and _vol > 0:
-                tg_lines.append(f"{_sym} SELL {_vol:.8g} @ {_avg:,.0f} = {_krw:,.0f}원")
+                tg_lines.append(f"{_sym} {_topup_tag}SELL {_vol:.8g} @ {_avg:,.0f} = {_krw:,.0f}원")
                 _printed_exec = True
             elif _vol > 0:
-                tg_lines.append(f"{_sym} BUY {_krw:,.0f}원 @ {_avg:,.0f} = {_vol:.8g}")
+                tg_lines.append(f"{_sym} {_topup_tag}BUY {_krw:,.0f}원 @ {_avg:,.0f} = {_vol:.8g}")
                 _printed_exec = True
             else:
                 _act = "SELL" if "sell" in str(_type).lower() else "BUY"
-                tg_lines.append(f"{_sym} {_act} 주문 미체결 (체결 0)")
+                tg_lines.append(f"{_sym} {_topup_tag}{_act} 주문 미체결 (체결 0)")
             if _strategy or _cond:
                 tg_lines.append(f"  주문조건[{_strategy or '전략'}]: {_cond}")
 

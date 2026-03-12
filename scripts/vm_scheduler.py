@@ -224,9 +224,10 @@ def _self_heal(state: dict[str, str]) -> None:
     cwd = str(REPO_DIR)
     try:
         # 상태 파일 백업
+        # NOTE: pension_orders.json은 UI→origin→VM 방향이므로 백업하면 안 됨
         _heal_files = (
             "signal_state.json", "balance_cache.json", "trade_log.json",
-            "signal_test_orders.json", "config/pension_orders.json",
+            "signal_test_orders.json",
         )
         for fn in _heal_files:
             src = REPO_DIR / fn
@@ -273,9 +274,28 @@ def _send_scheduler_telegram(message: str) -> None:
         logging.debug("텔레그램 알림 실패: %s", e)
 
 
+def _pull_pension_orders() -> None:
+    """origin에서 pension_orders.json만 강제 갱신 (UI 변경 반영)."""
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin", "--quiet"],
+            cwd=str(REPO_DIR), capture_output=True, timeout=15,
+        )
+        subprocess.run(
+            ["git", "checkout", "origin/master", "--", "config/pension_orders.json"],
+            cwd=str(REPO_DIR), capture_output=True, timeout=10,
+        )
+        logging.info("pension_orders.json origin 최신 반영 완료")
+    except Exception as e:
+        logging.warning("pension_orders.json pull 실패 (로컬 파일 사용): %s", e)
+
+
 def _run_pension_direct() -> bool:
     """KIS 연금저축 직접 호출 (subprocess 없이 즉시 실행)."""
     try:
+        # 실행 전 origin에서 최신 주문 파일 pull (UI 변경 즉시 반영)
+        _pull_pension_orders()
+
         if str(REPO_DIR) not in sys.path:
             sys.path.insert(0, str(REPO_DIR))
         # .vm_runtime_env 환경변수 보장

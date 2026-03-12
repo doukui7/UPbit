@@ -116,7 +116,7 @@ class KISTrade:
         if not self.auth.ensure_token(): return []
         tr_id = "VTTC8001R" if "VT" in self.base_url else "TTTC8001R"
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
-        
+
         from datetime import datetime
         dt = datetime.now().strftime("%Y%m%d")
         params = {
@@ -129,7 +129,7 @@ class KISTrade:
             res = self._session.get(url, params=params, headers=self.auth.get_headers(tr_id), timeout=10)
             data = res.json()
             if data.get("rt_cd") != "0": return []
-            
+
             result = []
             for r in data.get("output1", []):
                 qty = int(r.get("ord_qty", 0))
@@ -144,3 +144,99 @@ class KISTrade:
         except Exception as e:
             logger.error(f"체결 내역 조회 오류: {e}")
             return []
+
+    def get_trade_history(self, start_date: str = "", end_date: str = "",
+                          side: str = "00", ccld: str = "00",
+                          stock_code: str = "", order_no: str = "",
+                          max_rows: int = 50) -> dict:
+        """주식 일별 주문 체결 조회 — 기간/필터/페이징 지원 (TTTC8001R).
+
+        Args:
+            start_date: 조회 시작일 (YYYYMMDD)
+            end_date: 조회 종료일 (YYYYMMDD)
+            side: 매도매수 ("00" 전체, "01" 매도, "02" 매수)
+            ccld: 체결구분 ("00" 전체, "01" 체결, "02" 미체결)
+            stock_code: 종목번호 (빈값=전체)
+            order_no: 주문번호 (빈값=전체)
+            max_rows: 최대 조회 건수
+
+        Returns:
+            {"success": bool, "rows": list[dict], "msg": str, "source": str}
+        """
+        if not self.auth.ensure_token():
+            return {"success": False, "rows": [], "msg": "인증 실패", "source": ""}
+
+        from datetime import datetime
+        if not start_date:
+            start_date = datetime.now().strftime("%Y%m%d")
+        if not end_date:
+            end_date = datetime.now().strftime("%Y%m%d")
+
+        tr_id = "VTTC8001R" if "VT" in self.base_url else "TTTC8001R"
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+
+        all_rows = []
+        ctx_fk = ""
+        ctx_nk = ""
+
+        for page in range(20):  # 최대 20페이지
+            params = {
+                "CANO": self.account_no,
+                "ACNT_PRDT_CD": self.acnt_prdt_cd,
+                "INQR_STRT_DT": start_date,
+                "INQR_END_DT": end_date,
+                "SLL_BUY_DVSN_CD": side,
+                "INQR_DVSN": "00",
+                "PDNO": stock_code,
+                "CCLD_DVSN": ccld,
+                "ORD_GNO_BRNO": "",
+                "ODNO": order_no,
+                "INQR_DVSN_3": "00",
+                "INQR_DVSN_1": "",
+                "CTX_AREA_FK100": ctx_fk,
+                "CTX_AREA_NK100": ctx_nk,
+            }
+            try:
+                res = self._session.get(
+                    url, params=params,
+                    headers=self.auth.get_headers(tr_id),
+                    timeout=10,
+                )
+                data = res.json()
+                if data.get("rt_cd") != "0":
+                    if page == 0:
+                        return {
+                            "success": False, "rows": [],
+                            "msg": data.get("msg1", "조회 실패"),
+                            "source": "KIS API",
+                        }
+                    break
+
+                rows = data.get("output1", [])
+                all_rows.extend(rows)
+
+                # 페이징 종료 조건
+                if len(all_rows) >= max_rows:
+                    all_rows = all_rows[:max_rows]
+                    break
+                tr_cont = data.get("tr_cont", "")
+                ctx_fk = data.get("ctx_area_fk100", "")
+                ctx_nk = data.get("ctx_area_nk100", "")
+                if tr_cont not in ("F", "M") or (not ctx_fk and not ctx_nk):
+                    break
+                time.sleep(0.2)
+            except Exception as e:
+                logger.error(f"거래내역 조회 오류 (page {page}): {e}")
+                if page == 0:
+                    return {
+                        "success": False, "rows": [],
+                        "msg": str(e), "source": "KIS API",
+                    }
+                break
+
+        return {
+            "success": True,
+            "rows": all_rows,
+            "msg": f"{len(all_rows)}건 조회",
+            "source": "KIS API",
+        }

@@ -362,12 +362,11 @@ def run_account_sync():
                 f"입금: {len(cache['deposits'])}건, "
                 f"출금: {len(cache['withdraws'])}건")
 
-    # 포트폴리오 상세 + 전략 정보 구성
-    _port_lines = []
-    _total_val = 0.0
+    # ── 텔레그램 상세 메시지 구성 ──
     _bal = cache.get("balances", {})
     _krw = float(_bal.get("KRW", 0.0))
-    _total_val += _krw
+    _total_val = _krw
+    _coin_parts = []
     for _sym, _qty in _bal.items():
         if _sym == "KRW":
             continue
@@ -375,64 +374,93 @@ def run_account_sync():
         _p = float(_prices.get(f"KRW-{_sym}", 0.0)) if _prices else 0.0
         _v = _q * _p
         _total_val += _v
-        _port_lines.append(f"  {_sym} {_q:.8g} ({_v:,.0f}원)")
-    _port_msg = f"총 자산: {_total_val:,.0f}원 (현금 {_krw:,.0f}원)"
-    if _port_lines:
-        _port_msg += "\n" + "\n".join(_port_lines)
+        _coin_parts.append({"sym": _sym, "qty": _q, "price": _p, "val": _v})
 
-    # 전략 정보
-    _strat_msg = ""
-    try:
-        _ucfg_path = os.path.join(PROJECT_ROOT, "user_config.json")
-        with open(_ucfg_path, "r", encoding="utf-8") as _f:
-            _ucfg = json.load(_f)
-        _portfolio = _ucfg.get("portfolio", [])
-        if _portfolio:
-            _parts = []
-            for _p_item in _portfolio:
-                _s = _p_item.get("strategy", "?")
-                _param = _p_item.get("parameter", "")
-                _w = _p_item.get("weight", 0)
-                _intv = _p_item.get("interval", "")
-                _intv_short = {"day": "D", "minute240": "4H", "minute60": "1H"}.get(_intv, _intv)
-                _parts.append(f"{_s}({_param},{_intv_short}) {_w:.0f}%")
-            _strat_msg = "전략: " + " + ".join(_parts)
-    except Exception:
-        pass
+    # 비중 재계산 (total 확정 후)
+    _krw_pct = (_krw / _total_val * 100) if _total_val > 0 else 0
 
-    # 포지션 상태
-    _pos_msg = ""
+    # 전략 + 포지션 상태 (signal_state에서 상세 정보 추출)
+    _signal_lines = []
     try:
         _ss_path = os.path.join(PROJECT_ROOT, "signal_state.json")
         with open(_ss_path, "r", encoding="utf-8") as _f:
             _ss = json.load(_f)
-        _pos_parts = []
         for _key, _val in _ss.items():
-            if isinstance(_val, dict):
-                _st = _val.get("state", "?")
-            else:
-                _st = str(_val)
-            _short_key = _key.replace("KRW-BTC_", "").replace("_", " ")
-            _pos_parts.append(f"{_short_key}={_st}")
-        if _pos_parts:
-            _pos_msg = "포지션: " + " | ".join(_pos_parts)
+            if not isinstance(_val, dict):
+                continue
+            # 키 파싱: KRW-BTC_SMA_29_day → SMA(29,D)
+            _parts = _key.split("_")
+            _coin = _parts[0].replace("KRW-", "") if _parts else "?"
+            _strat = _parts[1] if len(_parts) > 1 else "?"
+            _param = _parts[2] if len(_parts) > 2 else ""
+            _intv = _parts[3] if len(_parts) > 3 else ""
+            _intv_short = {"day": "D", "minute240": "4H", "minute60": "1H"}.get(_intv, _intv)
+            _st = _val.get("state", "?")
+            _cur = _val.get("current_price", 0)
+            _buy_t = _val.get("buy_target", 0)
+            _sell_t = _val.get("sell_target", 0)
+            _buy_d = _val.get("buy_dist", 0)
+            _sell_d = _val.get("sell_dist", 0)
+            _upd = _val.get("updated_at", "")
+
+            _label = f"{_strat}({_param},{_intv_short})"
+            _line = f"<b>{_coin} {_label}</b> → {_st}"
+            if _cur:
+                _line += f"\n  현재가 {_cur:,.0f}"
+            if _strat.upper() == "SMA":
+                if _buy_t:
+                    _line += f" | SMA {_buy_t:,.0f} (이격 {_buy_d:+.1f}%)"
+            elif _strat.upper() == "DONCHIAN":
+                if _buy_t:
+                    _line += f"\n  상단 {_buy_t:,.0f} ({_buy_d:+.1f}%)"
+                if _sell_t:
+                    _line += f" | 하단 {_sell_t:,.0f} ({_sell_d:+.1f}%)"
+            if _upd:
+                _line += f"\n  갱신: {_upd}"
+            _signal_lines.append(_line)
     except Exception:
         pass
 
-    _tg_parts = [
-        f"<b>계좌 동기화 완료</b>",
-        f"시각: {now_kst.strftime('%m-%d %H:%M')}",
+    # trading_mode
+    _trading_mode = "real"
+    try:
+        _ucfg_path = os.path.join(PROJECT_ROOT, "user_config.json")
+        with open(_ucfg_path, "r", encoding="utf-8") as _f:
+            _ucfg = json.load(_f)
+        _trading_mode = _ucfg.get("trading_mode", "real")
+        _topup = _ucfg.get("topup_enabled", False)
+    except Exception:
+        _topup = False
+    _mode_label = "Signal" if _trading_mode == "signal" else "Real"
+
+    _tg = [
+        f"<b>계좌 동기화 완료</b> [{_mode_label}]",
+        f"시각: {now_kst.strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        f"<b>자산 현황</b>",
+        f"총자산: <b>{_total_val:,.0f}원</b>",
+        f"  현금(KRW): {_krw:,.0f}원 ({_krw_pct:.1f}%)",
     ]
-    if _strat_msg:
-        _tg_parts.append(_strat_msg)
-    _tg_parts.append(_port_msg)
-    if _pos_msg:
-        _tg_parts.append(_pos_msg)
-    _tg_parts.append(
-        f"주문: {len(cache['orders'])}건"
-        + (f" | 미체결: {pending_cnt}건" if pending_cnt > 0 else "")
-    )
-    send_telegram("\n".join(_tg_parts))
+    for _cp in _coin_parts:
+        _cp_pct = (_cp['val'] / _total_val * 100) if _total_val > 0 else 0
+        _tg.append(
+            f"  {_cp['sym']}: {_cp['qty']:.8g}개 × {_cp['price']:,.0f} = {_cp['val']:,.0f}원 ({_cp_pct:.1f}%)"
+        )
+
+    if _signal_lines:
+        _tg.append("")
+        _tg.append(f"<b>전략 포지션</b>")
+        _tg.extend(_signal_lines)
+
+    _tg.append("")
+    _order_info = f"체결주문: {len(cache['orders'])}건"
+    if pending_cnt > 0:
+        _order_info += f" | 미체결: {pending_cnt}건"
+    if _topup:
+        _order_info += " | 보충매매: ON"
+    _tg.append(_order_info)
+
+    send_telegram("\n".join(_tg))
 
 
 # ── 수동 주문 ────────────────────────────────────────
