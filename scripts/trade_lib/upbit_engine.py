@@ -911,192 +911,142 @@ def run_auto_trade():
         logger.info("보충 매수/매도: Signal Mode → 테스트 주문으로 대체 (건너뜀)")
     elif topup_enabled:
         krw_balance = trader.get_balance("KRW")
-        topup_done = set()
+        _all_topup = analyses + skipped_analyses
 
-        # 보충 매수
-        for a in analyses:
-            if a['signal'] != 'HOLD' or a['position_state'] not in ('BUY', 'HOLD'):
+        # ── 보충 매수: 코인별 전략 합산 ──
+        coin_buy_need = {}   # {coin: total_need}
+        coin_buy_info = {}   # {coin: {ticker, interval, labels}}
+        for a in _all_topup:
+            sig = str(a.get('signal', '')).upper()
+            pos = str(a.get('position_state', '')).upper()
+            # SKIP 전략: prev_state 기준 (유지 상태)
+            if sig == 'SKIP':
+                prev = str(a.get('prev_state', '')).upper()
+                pos = prev if prev in ('BUY', 'SELL') else ('BUY' if pos in ('BUY', 'HOLD') else pos)
+            if sig == 'SELL' or pos not in ('BUY', 'HOLD'):
                 continue
-            if a['coin_sym'] in topup_done:
-                continue
-            # bt equity 비율로 보충매수 목표 계산
+            coin = a['coin_sym']
             my_bt = a.get('backtest_target', _initial_cap * a['weight'] / 100)
-            bt_total = coin_bt_sum.get(a['coin_sym'], my_bt)
+            bt_total = coin_bt_sum.get(coin, my_bt)
             bt_share = my_bt / bt_total if bt_total > 0 else 1.0
             if total_portfolio_value >= bt_total:
-                target_value = my_bt
+                target = my_bt
             else:
-                target_value = total_portfolio_value * bt_share
-            # 보충매수는 position_state가 BUY/HOLD인 전략만 진입 → 항상 보유 중
-            sold_val = sold_qty_map.get(a['coin_sym'], 0) * a.get('current_price', 0)
-            remaining_coin_val = max(0, a['coin_value'] - sold_val)
-            bt_remain = coin_bt_remaining_hold.get(a['coin_sym'], my_bt)
+                target = total_portfolio_value * bt_share
+            sold_val = sold_qty_map.get(coin, 0) * a.get('current_price', 0)
+            remaining = max(0, a['coin_value'] - sold_val)
+            bt_remain = coin_bt_remaining_hold.get(coin, my_bt)
             hold_share = my_bt / bt_remain if bt_remain > 0 else 1.0
-            my_holding = remaining_coin_val * hold_share
-            need_value = target_value - my_holding
-            if need_value < MIN_ORDER_KRW:
+            my_holding = remaining * hold_share
+            need = target - my_holding
+            coin_buy_need[coin] = coin_buy_need.get(coin, 0) + max(0, need)
+            if coin not in coin_buy_info:
+                coin_buy_info[coin] = {'ticker': a['ticker'], 'interval': a.get('interval', 'day'), 'labels': []}
+            coin_buy_info[coin]['labels'].append(a.get('strategy_label', ''))
+
+        for coin, total_need in coin_buy_need.items():
+            if total_need < MIN_ORDER_KRW:
+                logger.info(f"[KRW-{coin}] 보충매수 스킵 (합산 need={total_need:,.0f} < {MIN_ORDER_KRW})")
                 continue
-            buy_budget = min(topup_buy_amount, need_value, krw_balance)
+            info = coin_buy_info[coin]
+            buy_budget = min(topup_buy_amount, total_need, krw_balance)
             if buy_budget < MIN_ORDER_KRW:
                 if krw_balance >= MIN_ORDER_KRW:
                     buy_budget = MIN_ORDER_KRW
                 else:
                     continue
-            logger.info(f"[{a['ticker']}] 보충매수 {buy_budget:,.0f} KRW")
+            combined_label = "+".join(info['labels'][:3])
+            logger.info(f"[{info['ticker']}] 보충매수(합산) {buy_budget:,.0f} KRW (need={total_need:,.0f}, 전략={combined_label})")
             try:
-                result = trader.adaptive_buy(a['ticker'], buy_budget, interval=a.get('interval', 'day'))
+                result = trader.adaptive_buy(info['ticker'], buy_budget, interval=info['interval'])
                 if isinstance(result, dict):
                     result = dict(result)
                 else:
                     result = {"raw_result": result}
-                result["_strategy_label"] = a.get("strategy_label", "")
+                result["_strategy_label"] = combined_label
                 result["_topup"] = True
-                exec_results.setdefault(a['ticker'], []).append(result)
+                exec_results.setdefault(info['ticker'], []).append(result)
                 _filled = safe_float(result.get('filled_volume', 0)) if isinstance(result, dict) else 0
                 _spent = safe_float(result.get('total_krw', 0)) if isinstance(result, dict) else 0
                 _res_label = "success" if _filled > 0 else "unfilled"
                 append_trade_log({
-                    "mode": "real", "ticker": a['ticker'], "side": "BUY_TOPUP",
-                    "amount": f"{buy_budget:,.0f}", "strategy": a.get('strategy_label', ''),
+                    "mode": "real", "ticker": info['ticker'], "side": "BUY_TOPUP",
+                    "amount": f"{buy_budget:,.0f}", "strategy": combined_label,
                     "result": _res_label, "detail": str(result)[:200],
                 })
                 if _filled > 0:
                     krw_balance -= _spent
-                topup_done.add(a['coin_sym'])
             except Exception as e:
-                logger.error(f"[{a['ticker']}] 보충매수 Error: {e}")
+                logger.error(f"[{info['ticker']}] 보충매수(합산) Error: {e}")
                 append_trade_log({
-                    "mode": "real", "ticker": a['ticker'], "side": "BUY_TOPUP",
-                    "amount": f"{buy_budget:,.0f}", "strategy": a.get('strategy_label', ''),
+                    "mode": "real", "ticker": info['ticker'], "side": "BUY_TOPUP",
+                    "amount": f"{buy_budget:,.0f}", "strategy": combined_label,
                     "result": "error", "detail": str(e)[:200],
                 })
 
-        # 보충 매도
-        topup_sold = set()
-        for a in analyses:
-            if a['signal'] != 'HOLD' or a['position_state'] != 'SELL':
+        # ── 보충 매도: 코인별 전략 합산 ──
+        coin_sell_info = {}  # {coin: {ticker, interval, labels, sell_share}}
+        for a in _all_topup:
+            sig = str(a.get('signal', '')).upper()
+            pos = str(a.get('position_state', '')).upper()
+            if sig == 'SKIP':
+                prev = str(a.get('prev_state', '')).upper()
+                pos = prev if prev in ('BUY', 'SELL') else pos
+            if pos != 'SELL':
                 continue
-            if not a['is_holding'] or a['coin_sym'] in topup_sold:
+            coin = a['coin_sym']
+            if not a.get('is_holding'):
                 continue
-            sell_value = a['coin_value']
+            my_bt = a.get('backtest_target', _initial_cap * a['weight'] / 100)
+            bt_total_coin = coin_bt_sum.get(coin, my_bt)
+            my_share = my_bt / bt_total_coin if bt_total_coin > 0 else 1.0
+            if coin not in coin_sell_info:
+                coin_sell_info[coin] = {
+                    'ticker': a['ticker'], 'interval': a.get('interval', 'day'),
+                    'labels': [], 'sell_share': 0,
+                    'coin_bal': a.get('coin_balance', 0), 'coin_val': a.get('coin_value', 0),
+                    'price': a.get('current_price', 0),
+                }
+            coin_sell_info[coin]['labels'].append(a.get('strategy_label', ''))
+            coin_sell_info[coin]['sell_share'] += my_share
+
+        for coin, info in coin_sell_info.items():
+            sell_share = min(info['sell_share'], 1.0)
+            sell_value = info['coin_val'] * sell_share
             if sell_value < MIN_ORDER_KRW:
                 continue
-            if a['current_price'] and a['current_price'] > 0:
-                sell_krw = min(topup_sell_amount, sell_value)
-                sell_qty = min(sell_krw / a['current_price'], a['coin_balance'])
-            else:
+            price = info['price']
+            if not price or price <= 0:
                 continue
-            act_value = sell_qty * a['current_price']
-            if act_value < MIN_ORDER_KRW:
+            sell_krw = min(topup_sell_amount, sell_value)
+            sell_qty = min(sell_krw / price, info['coin_bal'] * sell_share)
+            if sell_qty * price < MIN_ORDER_KRW:
                 continue
-            logger.info(f"[{a['ticker']}] 보충매도 {sell_qty:.8g} {a['coin_sym']}")
+            combined_label = "+".join(info['labels'][:3])
+            logger.info(f"[{info['ticker']}] 보충매도(합산) {sell_qty:.8g} {coin} (전략={combined_label})")
             try:
-                result = trader.smart_sell(a['ticker'], sell_qty, interval=a.get('interval', 'day'))
+                result = trader.smart_sell(info['ticker'], sell_qty, interval=info['interval'])
                 if isinstance(result, dict):
                     result = dict(result)
                 else:
                     result = {"raw_result": result}
-                result["_strategy_label"] = a.get("strategy_label", "")
+                result["_strategy_label"] = combined_label
                 result["_topup"] = True
-                exec_results.setdefault(a['ticker'], []).append(result)
+                exec_results.setdefault(info['ticker'], []).append(result)
+                _filled = safe_float(result.get('filled_volume', 0)) if isinstance(result, dict) else 0
+                _res_label = "success" if _filled > 0 else "unfilled"
                 append_trade_log({
-                    "mode": "real", "ticker": a['ticker'], "side": "SELL_TOPUP",
-                    "qty": f"{sell_qty:.8g}", "strategy": a.get('strategy_label', ''),
-                    "result": "success", "detail": str(result)[:200],
+                    "mode": "real", "ticker": info['ticker'], "side": "SELL_TOPUP",
+                    "qty": f"{sell_qty:.8g}", "strategy": combined_label,
+                    "result": _res_label, "detail": str(result)[:200],
                 })
-                topup_sold.add(a['coin_sym'])
             except Exception as e:
-                logger.error(f"[{a['ticker']}] 보충매도 Error: {e}")
+                logger.error(f"[{info['ticker']}] 보충매도(합산) Error: {e}")
                 append_trade_log({
-                    "mode": "real", "ticker": a['ticker'], "side": "SELL_TOPUP",
-                    "qty": f"{sell_qty:.8g}", "strategy": a.get('strategy_label', ''),
+                    "mode": "real", "ticker": info['ticker'], "side": "SELL_TOPUP",
+                    "qty": f"{sell_qty:.8g}", "strategy": combined_label,
                     "result": "error", "detail": str(e)[:200],
                 })
-
-        # interval 스킵 전략 보충
-        if skipped_by_interval:
-            for skip_ticker, skip_iv in skipped_by_interval:
-                skip_item = next(
-                    (p for p in portfolio
-                     if f"{p.get('market','KRW')}-{p['coin'].upper()}" == skip_ticker
-                     and normalize_coin_interval(p.get('interval', 'day')) == skip_iv),
-                    None,
-                )
-                if not skip_item:
-                    continue
-                skip_key = make_signal_key(skip_item)
-                maint_state = get_prev_state(signal_state, skip_key)
-                if maint_state == 'HOLD':
-                    maint_state = 'BUY'
-                if not maint_state or maint_state not in ('BUY', 'SELL'):
-                    continue
-                skip_coin = skip_item['coin'].upper()
-                skip_weight = float(skip_item.get('weight', 0))
-                skip_label = f"{skip_item.get('strategy','SMA')}({skip_item.get('parameter',20)}, {skip_iv})"
-
-                try:
-                    skip_bal = float(trader.get_balance(skip_coin) or 0.0)
-                except Exception:
-                    skip_bal = 0.0
-                skip_price = get_upbit_price_local_first(skip_ticker)
-                skip_val = skip_bal * float(skip_price or 0)
-                skip_holding = skip_val >= MIN_ORDER_KRW
-
-                if maint_state == 'BUY' and skip_coin not in topup_done:
-                    target_v = total_portfolio_value * (skip_weight / 100)
-                    cw = coin_weight_sum.get(skip_coin, skip_weight)
-                    my_hold = skip_val * (skip_weight / cw) if cw > 0 else 0
-                    need_v = target_v - my_hold
-                    if need_v >= MIN_ORDER_KRW:
-                        buy_b = min(topup_buy_amount, need_v, krw_balance)
-                        if buy_b < MIN_ORDER_KRW:
-                            if krw_balance >= MIN_ORDER_KRW:
-                                buy_b = MIN_ORDER_KRW
-                            else:
-                                continue
-                        if buy_b >= MIN_ORDER_KRW:
-                            try:
-                                result = trader.adaptive_buy(skip_ticker, buy_b, interval=skip_iv)
-                                if isinstance(result, dict):
-                                    result = dict(result)
-                                else:
-                                    result = {"raw_result": result}
-                                result["_strategy_label"] = skip_label
-                                result["_topup"] = True
-                                exec_results.setdefault(skip_ticker, []).append(result)
-                                append_trade_log({
-                                    "mode": "real", "ticker": skip_ticker, "side": "BUY_TOPUP",
-                                    "amount": f"{buy_b:,.0f}", "strategy": skip_label,
-                                    "result": "success", "detail": str(result)[:200],
-                                })
-                                krw_balance -= buy_b
-                                topup_done.add(skip_coin)
-                            except Exception as e:
-                                logger.error(f"[{skip_ticker}] 보충매수(스킵) Error: {e}")
-
-                elif maint_state == 'SELL' and skip_holding and skip_coin not in topup_sold:
-                    if skip_price and skip_price > 0:
-                        sell_krw = min(topup_sell_amount, skip_val)
-                        sell_qty = min(sell_krw / skip_price, skip_bal)
-                        act_val = sell_qty * skip_price
-                        if act_val >= MIN_ORDER_KRW:
-                            try:
-                                result = trader.smart_sell(skip_ticker, sell_qty, interval=skip_iv)
-                                if isinstance(result, dict):
-                                    result = dict(result)
-                                else:
-                                    result = {"raw_result": result}
-                                result["_strategy_label"] = skip_label
-                                result["_topup"] = True
-                                exec_results.setdefault(skip_ticker, []).append(result)
-                                append_trade_log({
-                                    "mode": "real", "ticker": skip_ticker, "side": "SELL_TOPUP",
-                                    "qty": f"{sell_qty:.8g}", "strategy": skip_label,
-                                    "result": "success", "detail": str(result)[:200],
-                                })
-                                topup_sold.add(skip_coin)
-                            except Exception as e:
-                                logger.error(f"[{skip_ticker}] 보충매도(스킵) Error: {e}")
     else:
         logger.info("보충 매수/매도 비활성 (user_config.topup_enabled=false)")
 
