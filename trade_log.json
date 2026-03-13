@@ -1,5 +1,36 @@
 [
   {
+    "mode": "signal",
+    "ticker": "KRW-BTC",
+    "side": "SKIP",
+    "strategy": "SMA(29, day)",
+    "reason": "주기 미도래(day)",
+    "detail": "interval=day, 보충매수/매도만 실행",
+    "current_price": 104418000.0,
+    "buy_target": 99764862.06896552,
+    "sell_target": 99764862.06896552,
+    "buy_gap": 4.664105011058761,
+    "sell_gap": 4.664105011058761,
+    "position_state": "BUY",
+    "condition": "현재가 104,418,000원 | 매도타점(SMA_29) 99,764,862원 | 이격 +4.66% | 조건미충족",
+    "time": "2026-03-13 13:00:15 KST"
+  },
+  {
+    "mode": "signal",
+    "ticker": "KRW-BTC",
+    "side": "HOLD",
+    "strategy": "Donchian(115/105, 4H)",
+    "detail": "prev=HOLD → raw=HOLD → HOLD",
+    "current_price": 104418000.0,
+    "buy_target": 107547000.0,
+    "sell_target": 92000000.0,
+    "buy_gap": -2.9094256464615498,
+    "sell_gap": 13.497826086956533,
+    "condition": "현재가 104,418,000원 | 매도타점(하단 105) 92,000,000원 | 이격 +13.50% | 조건미충족",
+    "reason": "조건미충족 (중립구간)",
+    "time": "2026-03-13 13:00:15 KST"
+  },
+  {
     "mode": "real",
     "ticker": "KRW-BTC",
     "side": "BUY_TOPUP",
