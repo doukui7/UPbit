@@ -604,7 +604,6 @@ def render_live_portfolio_tab(
                             strategy_metrics=perf,
                             strategy_label=f"{strategy_mode} 전략",
                             benchmark_label=f"{ticker} 단순보유",
-                            monte_carlo_sims=220,
                         )
 
                 with p_tab2:

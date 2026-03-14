@@ -261,7 +261,6 @@ def _render_laa_detail(res, bal, pen_bt_start_raw, pen_bt_cap, auto_signal_strat
                 strategy_metrics=_laa_m,
                 strategy_label="LAA 전략",
                 benchmark_label=_laa_bm_label,
-                monte_carlo_sims=400,
             )
             _render_trade_history_table(_laa_bt, key_prefix="mon_laa")
 
@@ -417,7 +416,6 @@ def _render_dm_detail(dm_res, bal, pen_bt_start_raw, pen_bt_cap, dm_settings, au
                 strategy_metrics=_dm_m,
                 strategy_label="듀얼모멘텀 전략",
                 benchmark_label=_dm_bm_label,
-                monte_carlo_sims=400,
             )
             _render_trade_history_table(_dm_bt, key_prefix="mon_dm")
 

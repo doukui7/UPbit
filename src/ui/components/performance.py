@@ -24,7 +24,6 @@ def _render_performance_analysis(
     strategy_metrics: dict | None = None,
     strategy_label: str = "전략",
     benchmark_label: str = "벤치마크",
-    monte_carlo_sims: int = 400,
     show_drawdown: bool = True,
     show_weight: bool = False,
     equity_df: pd.DataFrame | None = None, # 주식 비중 계산용 (shares, price 포함 시)
@@ -281,43 +280,6 @@ def _render_performance_analysis(
                     return f"color: {fg}; background-color: {bg}; font-weight: 600"
                 st.dataframe(pivot.style.format("{:.2f}").map(_color_ret), use_container_width=True)
     
-    _render_analysis_title("몬테카를로 시뮬레이션")
-    rets = eq.pct_change().dropna()
-    if len(rets) > 15:
-        n_sims = int(max(100, min(int(monte_carlo_sims), 2000)))
-        n_steps = int(min(len(rets), 750))
-        init_cap = float(eq.iloc[-(n_steps+1)])
-        rng = np.random.default_rng(42)
-        sampled = rng.choice(rets.values, size=(n_sims, n_steps), replace=True)
-        paths = np.zeros((n_sims, n_steps + 1))
-        paths[:, 0] = init_cap
-        paths[:, 1:] = init_cap * np.cumprod(1.0 + sampled, axis=1)
-        
-        final_values = paths[:, -1]
-        p5, p50, p95 = np.percentile(final_values, [5, 50, 95])
-        mc1, mc2, mc3 = st.columns(3)
-        mc1.metric("하위 5%", f"{p5:,.0f}원")
-        mc2.metric("중앙값", f"{p50:,.0f}원")
-        mc3.metric("상위 5%", f"{p95:,.0f}원")
-        
-        fig_mc = go.Figure()
-        x_vals = list(range(n_steps + 1))
-        fig_mc.add_trace(go.Scatter(x=x_vals, y=np.percentile(paths, 95, axis=0), mode="lines", line=dict(width=0), showlegend=False))
-        fig_mc.add_trace(go.Scatter(x=x_vals, y=np.percentile(paths, 5, axis=0), mode="lines", line=dict(width=0), fill="tonexty", fillcolor="rgba(255,193,7,0.15)", showlegend=False))
-        fig_mc.add_trace(go.Scatter(x=x_vals, y=np.percentile(paths, 50, axis=0), mode="lines", name="중앙 경로", line=dict(color="goldenrod", width=2)))
-        fig_mc.update_layout(height=340, margin=dict(l=0, r=0, t=30, b=30))
-        st.plotly_chart(fig_mc, use_container_width=True)
-    
-    _render_analysis_title("켈리 공식")
-    if len(rets) > 15:
-        w = rets[rets > 0]
-        l = rets[rets < 0]
-        if len(w) > 0 and len(l) > 0:
-            win_p = len(w) / len(rets)
-            payoff = w.mean() / abs(l.mean()) if l.mean() != 0 else 0
-            kelly = max(0, min(win_p - ( (1-win_p) / payoff if payoff > 0 else 0), 1))
-            st.metric("권장 비중 (Kelly)", f"{kelly*100:.1f}%")
-
 def render_performance_table(
     equity_series,
     benchmark_series=None,

@@ -302,7 +302,6 @@ def render_backtest_tab(portfolio_list, initial_cap, backtest_engine):
                     strategy_metrics=res,
                     strategy_label="백테스트 전략",
                     benchmark_label=f"{bt_ticker} 단순보유",
-                    monte_carlo_sims=400,
                 )
 
                 st.info(f"전략 상태: **{res['final_status']}** | 다음 행동: **{res['next_action'] if res['next_action'] else '없음'}**")

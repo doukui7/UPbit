@@ -34,6 +34,7 @@ import src.engine.data_cache as data_cache
 from src.strategy.donchian import DonchianStrategy
 from src.strategy.widaeri import WDRStrategy
 from src.strategy.laa import LAAStrategy
+from src.strategy.dual_momentum import DualMomentumStrategy
 from src.trading.upbit_trader import UpbitTrader
 from src.engine.kiwoom_gold import KiwoomGoldTrader, GOLD_CODE_1KG
 from src.engine.kis_trader import KISTrader
@@ -856,9 +857,25 @@ def _get_pension_order_summary() -> tuple[str, str]:
 # ── KIS 연금저축 헬스체크 ────────────────────────────
 
 def _check_kis_pension() -> dict:
-    """KIS 연금저축 LAA 시스템 헬스체크."""
+    """KIS 연금저축 시스템 헬스체크 (활성 전략 전체)."""
+    # user_config에서 활성 전략 목록 로드
+    _ucfg_path = os.path.join(PROJECT_ROOT, "user_config.json")
+    _pen_portfolio = []
+    _ucfg = {}
+    try:
+        with open(_ucfg_path, "r", encoding="utf-8") as f:
+            _ucfg = json.load(f)
+        _pen_portfolio = _ucfg.get("pension_portfolio", [])
+    except Exception:
+        pass
+    enabled_strategies = [
+        p["strategy"] for p in _pen_portfolio
+        if float(p.get("weight", 0)) > 0
+    ] or ["LAA"]
+    strategy_label = "+".join(enabled_strategies)
+
     result = {
-        "name": "KIS 연금저축 LAA",
+        "name": f"KIS 연금저축 {strategy_label}",
         "auth": False, "auth_msg": "",
         "balance": False, "balance_msg": "",
         "price": False, "price_msg": "",
@@ -916,8 +933,9 @@ def _check_kis_pension() -> dict:
             f" / 보유 {holding_brief}"
         )
 
-        tickers = ["SPY", "IWD", "GLD", "IEF", "QQQ", "SHY"]
-        kr_etf_map = {
+        # ── LAA용 시세 데이터 (LAA 활성 시) ──
+        laa_tickers = ["SPY", "IWD", "GLD", "IEF", "QQQ", "SHY"]
+        laa_kr_etf_map = {
             "SPY": get_env_any("KR_ETF_LAA_SPY", "KR_ETF_SPY", default="360750"),
             "IWD": get_env_any("KR_ETF_LAA_IWD", "KR_ETF_SPY", default="360750"),
             "GLD": normalize_gold_kr_etf(get_env_any("KR_ETF_LAA_GLD", "KR_ETF_GOLD", default=GOLD_KRX_ETF_CODE)),
@@ -925,31 +943,92 @@ def _check_kis_pension() -> dict:
             "QQQ": get_env_any("KR_ETF_LAA_QQQ", default="133690"),
             "SHY": get_env_any("KR_ETF_LAA_SHY", default="329750"),
         }
-        price_data = {}
-        for t in tickers:
-            code = str(kr_etf_map.get(t, "")).strip()
-            if not code:
-                result["price_msg"] = f"FAIL - {t} 국내 ETF 코드 미설정"
-                return result
-            df = get_kis_daily_local_first(trader, code, count=320)
-            if df is None or len(df) == 0:
-                result["price_msg"] = f"FAIL - {t}({code}) 국내 데이터 조회 실패"
-                return result
-            price_data[t] = df
-            time.sleep(0.1)
-        result["price"] = True
-        result["price_msg"] = "PASS - 국내 ETF SPY/IWD/GLD/IEF/QQQ/SHY"
+        # ── 듀얼모멘텀용 시세 데이터 (듀얼모멘텀 활성 시) ──
+        dm_tickers = ["SPY", "EFA", "AGG", "BIL"]
+        dm_kr_etf_map = {
+            "SPY": _ucfg.get("pen_dm_kr_spy", "360750"),
+            "EFA": _ucfg.get("pen_dm_kr_efa", "251350"),
+            "AGG": _ucfg.get("pen_dm_kr_agg", "305080"),
+            "BIL": _ucfg.get("pen_dm_kr_bil", "329750"),
+        }
 
-        strategy = LAAStrategy(settings={"kr_etf_map": kr_etf_map})
-        sig = strategy.analyze(price_data)
-        if not sig:
-            result["signal_msg"] = "FAIL - LAA 분석 실패"
+        # 필요한 코드 통합 조회 (중복 제거)
+        all_codes = {}  # {ticker: code}
+        if "LAA" in enabled_strategies:
+            for t in laa_tickers:
+                all_codes[f"LAA_{t}"] = str(laa_kr_etf_map.get(t, "")).strip()
+        if "듀얼모멘텀" in enabled_strategies:
+            for t in dm_tickers:
+                all_codes[f"DM_{t}"] = str(dm_kr_etf_map.get(t, "")).strip()
+
+        fetched = {}  # {code: df} — 중복 코드 1회만 조회
+        price_data_laa = {}
+        price_data_dm = {}
+        for key, code in all_codes.items():
+            if not code:
+                result["price_msg"] = f"FAIL - {key} 국내 ETF 코드 미설정"
+                return result
+            if code not in fetched:
+                df = get_kis_daily_local_first(trader, code, count=320)
+                if df is None or len(df) == 0:
+                    result["price_msg"] = f"FAIL - {key}({code}) 국내 데이터 조회 실패"
+                    return result
+                fetched[code] = df
+                time.sleep(0.1)
+            if key.startswith("LAA_"):
+                price_data_laa[key[4:]] = fetched[code]
+            elif key.startswith("DM_"):
+                price_data_dm[key[3:]] = fetched[code]
+
+        result["price"] = True
+        fetched_codes = list(dict.fromkeys(all_codes.values()))
+        result["price_msg"] = f"PASS - 국내 ETF {len(fetched_codes)}종목"
+
+        # ── 전략별 시그널 분석 ──
+        signal_parts = []
+        signal_ok = True
+
+        if "LAA" in enabled_strategies:
+            laa_strategy = LAAStrategy(settings={"kr_etf_map": laa_kr_etf_map})
+            laa_sig = laa_strategy.analyze(price_data_laa)
+            if laa_sig:
+                laa_mode = "공격" if laa_sig.get("risk_on") else "방어"
+                laa_target = f"{laa_sig.get('selected_risk_asset')}->{laa_sig.get('selected_risk_kr_code')}"
+                signal_parts.append(f"LAA: {laa_mode} | {laa_target}")
+            else:
+                signal_parts.append("LAA: 분석실패")
+                signal_ok = False
+
+        if "듀얼모멘텀" in enabled_strategies:
+            dm_settings = {
+                "kr_etf_map": dm_kr_etf_map,
+                "offensive": _ucfg.get("pen_dm_offensive", "SPY,EFA").split(","),
+                "defensive": [_ucfg.get("pen_dm_defensive", "AGG")],
+                "canary": [_ucfg.get("pen_dm_canary", "BIL")],
+                "lookback": int(_ucfg.get("pen_dm_lookback", 12)),
+                "trading_days_per_month": int(_ucfg.get("pen_dm_trading_days", 22)),
+                "momentum_weights": {
+                    "m1": float(_ucfg.get("pen_dm_w1", 12.0)),
+                    "m3": float(_ucfg.get("pen_dm_w3", 4.0)),
+                    "m6": float(_ucfg.get("pen_dm_w6", 2.0)),
+                    "m12": float(_ucfg.get("pen_dm_w12", 1.0)),
+                },
+            }
+            dm_strategy = DualMomentumStrategy(settings=dm_settings)
+            dm_sig = dm_strategy.analyze(price_data_dm)
+            if dm_sig:
+                dm_mode = "공격" if dm_sig.get("is_offensive") else "방어"
+                dm_target = f"{dm_sig.get('target_ticker')}->{dm_sig.get('target_kr_code')}"
+                signal_parts.append(f"듀얼모멘텀: {dm_mode} | {dm_target}")
+            else:
+                signal_parts.append("듀얼모멘텀: 분석실패")
+                signal_ok = False
+
+        if not signal_parts:
+            result["signal_msg"] = "FAIL - 활성 전략 없음"
             return result
-        result["signal"] = True
-        result["signal_msg"] = (
-            f"{'공격' if sig.get('risk_on') else '방어'} | "
-            f"{sig.get('selected_risk_asset')}->{sig.get('selected_risk_kr_code')}"
-        )
+        result["signal"] = signal_ok
+        result["signal_msg"] = " / ".join(signal_parts)
 
         # 주문 테스트
         order_phase = get_kr_order_phase()
@@ -1070,7 +1149,11 @@ def _print_health_report(results: dict):
 
         sig_msg = r.get('signal_msg', '')
         if sig_msg and not sig_msg.upper().startswith('SKIP'):
-            lines.append(f"  시그널: {sig_msg}")
+            if " / " in sig_msg:
+                for _sm in sig_msg.split(" / "):
+                    lines.append(f"  시그널: {_sm}")
+            else:
+                lines.append(f"  시그널: {sig_msg}")
         # 연금저축 예약주문/결과 표시
         if key == "kis_pension":
             _pend_msg = r.get("pending_orders", "")
