@@ -238,6 +238,10 @@ _MANUAL_NOTES: dict[int, str] = {
 
 def _render_gh_actions():
     st.subheader("GH Actions 실행 내역")
+    st.caption(
+        "실제 매매는 VM 스케줄러(Google Cloud)에서 실행됩니다. "
+        "GH Actions는 헬스체크/모니터링, 잔고 동기화, 연금저축 예약주문 백업 등 보조 역할만 수행합니다."
+    )
 
     col1, col2 = st.columns([3, 1])
     with col2:
