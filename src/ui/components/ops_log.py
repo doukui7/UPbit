@@ -794,9 +794,10 @@ def _render_verification():
                 pass
 
         gh_found = len(gh_day_runs) > 0
-        # 주말(토/일) 판단 — GH Actions schedule은 평일만 실행
+        # 주말(토/일) 판단 — 코인은 24/7, 주식(Pension/Monitoring)은 평일만
         _check_weekday = check_date.weekday()  # 0=월 ~ 6=일
         _is_weekend = _check_weekday >= 5
+        _coin_runs = [r for r in gh_day_runs if r["워크플로우"] == "Coin Trade"]
         if gh_found:
             st.success(f"✅ GH Actions에서 {date_str} 실행 기록 {len(gh_day_runs)}건 발견")
             df_gh = pd.DataFrame(gh_day_runs)
@@ -821,11 +822,18 @@ def _render_verification():
                 st.error(f"실패 {fail_cnt}건 / 성공 {success_cnt}건 / 총 {len(gh_day_runs)}건")
             else:
                 st.caption(f"성공 {success_cnt}건 / 총 {len(gh_day_runs)}건")
+            if _is_weekend and not _coin_runs:
+                st.warning("⚠️ 주말인데 Coin Trade 실행 기록 없음 (코인은 24/7 거래)")
         elif _is_weekend:
-            st.info(f"ℹ️ {date_str}은 주말 — GH Actions schedule은 평일만 실행 (정상)")
+            st.warning(f"⚠️ {date_str} 주말 — Coin Trade 실행 기록 없음 (코인은 24/7 거래)")
+            st.caption("Pension Trade, Monitoring은 평일만 실행 (정상)")
         else:
             st.error(f"❌ GH Actions에서 {date_str} 실행 기록 없음")
-        results.append(gh_found or _is_weekend)
+        # 판정: 평일→전체 기록 필요, 주말→코인 기록만 체크
+        if _is_weekend:
+            results.append(len(_coin_runs) > 0)
+        else:
+            results.append(gh_found)
 
         # ── 2단계: VM 매매 로그 확인 ──
         st.markdown("##### 2단계: VM 매매 로그 확인")
