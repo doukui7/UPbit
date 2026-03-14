@@ -794,6 +794,9 @@ def _render_verification():
                 pass
 
         gh_found = len(gh_day_runs) > 0
+        # 주말(토/일) 판단 — GH Actions schedule은 평일만 실행
+        _check_weekday = check_date.weekday()  # 0=월 ~ 6=일
+        _is_weekend = _check_weekday >= 5
         if gh_found:
             st.success(f"✅ GH Actions에서 {date_str} 실행 기록 {len(gh_day_runs)}건 발견")
             df_gh = pd.DataFrame(gh_day_runs)
@@ -818,9 +821,11 @@ def _render_verification():
                 st.error(f"실패 {fail_cnt}건 / 성공 {success_cnt}건 / 총 {len(gh_day_runs)}건")
             else:
                 st.caption(f"성공 {success_cnt}건 / 총 {len(gh_day_runs)}건")
+        elif _is_weekend:
+            st.info(f"ℹ️ {date_str}은 주말 — GH Actions schedule은 평일만 실행 (정상)")
         else:
             st.error(f"❌ GH Actions에서 {date_str} 실행 기록 없음")
-        results.append(gh_found)
+        results.append(gh_found or _is_weekend)
 
         # ── 2단계: VM 매매 로그 확인 ──
         st.markdown("##### 2단계: VM 매매 로그 확인")
@@ -970,7 +975,15 @@ def _render_verification():
         sig = _load_json("signal_state.json")
         sig_ok = False
         if isinstance(sig, dict):
+            # __updated_at 또는 각 항목의 updated_at에서 최신 시각 추출
             sig_updated = sig.get("__updated_at", "")
+            if not sig_updated:
+                _entry_times = []
+                for _k, _v in sig.items():
+                    if isinstance(_v, dict) and _v.get("updated_at"):
+                        _entry_times.append(_v["updated_at"])
+                if _entry_times:
+                    sig_updated = max(_entry_times)
             if date_str in sig_updated:
                 sig_ok = True
                 st.success(f"✅ signal_state 갱신 확인 ({sig_updated})")
@@ -983,7 +996,10 @@ def _render_verification():
             for key, val in sig.items():
                 if key.startswith("__"):
                     continue
-                sig_rows.append({"전략키": key, "포지션": val})
+                if isinstance(val, dict):
+                    sig_rows.append({"전략키": key, "포지션": val.get("state", str(val)), "갱신": val.get("updated_at", "")})
+                else:
+                    sig_rows.append({"전략키": key, "포지션": val, "갱신": ""})
             if sig_rows:
                 df_sig = pd.DataFrame(sig_rows)
 
