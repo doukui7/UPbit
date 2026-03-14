@@ -1,10 +1,33 @@
 {
-  "updated_at": "2026-03-14 14:07:35 KST",
+  "updated_at": "2026-03-14 16:39:09 KST",
   "balances": {
-    "BTC": 0.00088801,
-    "KRW": 6191.07482021
+    "BTC": 0.00094551,
+    "KRW": 188.81268896
   },
   "orders": [
+    {
+      "uuid": "6e90ad39-26bb-4d30-9cad-9e7d98960ea1",
+      "side": "bid",
+      "ord_type": "limit",
+      "price": "104335000",
+      "avg_price": "104387167.5",
+      "state": "done",
+      "market": "KRW-BTC",
+      "created_at": "2026-03-14T15:32:51+09:00",
+      "volume": "0.0000575",
+      "remaining_volume": "0",
+      "prevented_volume": "0",
+      "reserved_fee": "2.99963125",
+      "remaining_fee": "0",
+      "paid_fee": "2.99963125",
+      "locked": "0",
+      "prevented_locked": "0",
+      "executed_volume": "0.0000575",
+      "trades_count": 1,
+      "application_name": "self_issued_open_api",
+      "thirdparty": false,
+      "is_cancel_and_newable": true
+    },
     {
       "uuid": "c26b898b-1c67-4e65-9601-efd483f48672",
       "side": "bid",
