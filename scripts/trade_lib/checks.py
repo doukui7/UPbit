@@ -1036,7 +1036,7 @@ def _check_kis_pension() -> dict:
             result["order_msg"] = "SKIP - 주문 가능 시간이 아닙니다 (09:00~15:30, 15:40~16:00 KST)"
             return result
 
-        default_bond_code = str(kr_etf_map.get("SHY", "329750")).strip() or "329750"
+        default_bond_code = str(laa_kr_etf_map.get("SHY", "329750")).strip() or "329750"
         test_code = str(get_env_any("KIS_PENSION_TEST_ORDER_CODE", default=default_bond_code)).strip()
         if not test_code:
             result["order_msg"] = "FAIL - 테스트 종목 없음"
