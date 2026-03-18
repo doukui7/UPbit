@@ -177,29 +177,33 @@ class BacktestEngine:
             
             # 1. Execute Pending Action at OPEN (with slippage)
             if pending_action == 'BUY':
-                # Buy at Open + slippage (worse price for buyer)
-                exec_price = open_price * (1 + slippage / 100)
-                coin_balance = balance * (1 - fee) / exec_price
-                balance = 0
-                position = 'HOLD'
-                buy_price = exec_price
-                
-                # Fetch conditions from previous day (Signal Source)
-                prev_row = df.iloc[i-1] if i > 0 else row
-                p_sma = prev_row.get(f'SMA_{period}', 0)
-                
-                trades.append({
-                    'date': date,
-                    'type': 'buy',
-                    'price': exec_price,
-                    'open_price': open_price,
-                    'slippage_pct': slippage,
-                    'amount': coin_balance,
-                    'balance': coin_balance * exec_price,
-                    'equity': coin_balance * exec_price,
-                    'sma': p_sma
-                })
-                pending_action = None
+                # 업비트 최소 주문금액 5,000 KRW 미만이면 매수 스킵
+                if balance < 5000:
+                    pending_action = None
+                else:
+                    # Buy at Open + slippage (worse price for buyer)
+                    exec_price = open_price * (1 + slippage / 100)
+                    coin_balance = balance * (1 - fee) / exec_price
+                    balance = 0
+                    position = 'HOLD'
+                    buy_price = exec_price
+
+                    # Fetch conditions from previous day (Signal Source)
+                    prev_row = df.iloc[i-1] if i > 0 else row
+                    p_sma = prev_row.get(f'SMA_{period}', 0)
+
+                    trades.append({
+                        'date': date,
+                        'type': 'buy',
+                        'price': exec_price,
+                        'open_price': open_price,
+                        'slippage_pct': slippage,
+                        'amount': coin_balance,
+                        'balance': coin_balance * exec_price,
+                        'equity': coin_balance * exec_price,
+                        'sma': p_sma
+                    })
+                    pending_action = None
                 
             elif pending_action == 'SELL':
                 # Sell at Open - slippage (worse price for seller)

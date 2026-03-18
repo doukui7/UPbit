@@ -1,0 +1,50 @@
+{
+  "coin": {
+    "strategies": {
+      "KRW-BTC_Donchian_115_minute240": {
+        "label": "BTC Donchian(115, minute240)",
+        "transactions": [
+          {
+            "date": "2026-02-13",
+            "type": "deposit",
+            "amount": 50000,
+            "memo": ""
+          },
+          {
+            "date": "2026-03-19",
+            "type": "deposit",
+            "amount": 2500000,
+            "memo": ""
+          }
+        ],
+        "start_date": "2026-02-13",
+        "seed": 50000.0,
+        "_auto_detect_done": true,
+        "overrides": {}
+      },
+      "KRW-BTC_SMA_29_day": {
+        "label": "BTC SMA(29, day)",
+        "transactions": [
+          {
+            "date": "2026-02-13",
+            "type": "deposit",
+            "amount": 50000,
+            "memo": ""
+          },
+          {
+            "date": "2026-03-19",
+            "type": "deposit",
+            "amount": 2500000,
+            "memo": ""
+          }
+        ],
+        "start_date": "2026-02-13",
+        "seed": 50000.0,
+        "_auto_detect_done": true
+      }
+    }
+  },
+  "pension": {
+    "strategies": {}
+  }
+}

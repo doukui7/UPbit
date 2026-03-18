@@ -57,8 +57,185 @@ def _resolve_exec_method(method: str, hour: int, minute: int) -> str | None:
         if 9 <= hour < 15 or (hour == 15 and minute < 20):
             return "시장가"
         return None
-    # 지정가 등 기타: 시간 제한 없음
+    if "분산" in method:
+        # 장중 시간만 허용 (09:00~15:20)
+        if 9 <= hour < 15 or (hour == 15 and minute < 20):
+            return "분산"
+        return None
+    if "지정가" in method:
+        # 장중 시간만 허용 (09:00~15:20)
+        if 9 <= hour < 15 or (hour == 15 and minute < 20):
+            return "지정가"
+        return None
+    # 기타: 시간 제한 없음
     return method
+
+
+def _execute_split_order(trader, order: dict, orders: list, orders_file: str, now_str: str) -> str:
+    """분산 주문 실행: N분할로 간격을 두고 순차 주문.
+
+    Returns: 결과 요약 문자열
+    """
+    code = str(order.get("etf_code", "")).strip()
+    side = order.get("side", "")
+    total_qty = int(order.get("qty", 0))
+    etf_name = order.get("etf_name", code)
+    splits = int(order.get("splits", 10))
+    interval_sec = int(order.get("interval_sec", 60))
+    sub_method = order.get("sub_method", "시장가")
+    offset_pct = float(order.get("price_offset_pct", 0))
+    completed = int(order.get("completed_splits", 0))
+    ord_side = "BUY" if "매수" in side else "SELL"
+
+    # 분할 수량 계산
+    base_qty = total_qty // splits
+    remainder = total_qty % splits
+    if base_qty <= 0:
+        order["status"] = "실패"
+        order["result"] = f"분할 수량 부족 (총 {total_qty}주 / {splits}분할)"
+        order["executed_at"] = now_str
+        _append_attempt(order, now_str, f"실패: 분할 수량 부족")
+        return f"{side} {etf_name}({code}) x{total_qty}: 실패 (분할 수량 부족)"
+
+    # 시작 알림
+    if completed == 0:
+        _sub_label = sub_method
+        if sub_method == "지정가":
+            _sub_label += f" {offset_pct:+.1f}%"
+        send_telegram(
+            f"<b>연금저축 분산 주문 시작</b>\n"
+            f"{side} {etf_name}({code}) x{total_qty}\n"
+            f"{_sub_label}, {splits}분할, {interval_sec}초 간격"
+        )
+
+    success_count = completed  # 이전 성공 포함
+    fail_count = 0
+
+    for i in range(completed, splits):
+        sub_qty = base_qty + (1 if i < remainder else 0)
+        _now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        try:
+            if sub_method == "지정가":
+                cur_price = trader.get_current_price(code)
+                if not cur_price or cur_price <= 0:
+                    _append_attempt(order, _now, f"분산 {i+1}/{splits}: 현재가 조회 실패")
+                    fail_count += 1
+                    order["completed_splits"] = i + 1
+                    _save_orders(orders_file, orders)
+                    if i < splits - 1:
+                        time.sleep(interval_sec)
+                    continue
+                limit_price = int(round(cur_price * (1 + offset_pct / 100)))
+                if limit_price <= 0:
+                    limit_price = 1
+                res = trader.send_order(ord_side, code, sub_qty, price=limit_price, ord_dvsn="00")
+                _price_info = f"@{limit_price:,}"
+            else:
+                res = trader.send_order(ord_side, code, sub_qty, price=0, ord_dvsn="01")
+                _price_info = "시장가"
+
+            ok = isinstance(res, dict) and res.get("success", False)
+            _ord_no = res.get("ord_no", "") if isinstance(res, dict) else ""
+            if ok:
+                success_count += 1
+                _append_attempt(order, _now, f"분산 {i+1}/{splits}: 완료 {sub_qty}주 {_price_info} (ord_no:{_ord_no})")
+            else:
+                fail_count += 1
+                _fail_msg = str(res)[:60] if res else "응답 없음"
+                _append_attempt(order, _now, f"분산 {i+1}/{splits}: 실패 {sub_qty}주 {_price_info} ({_fail_msg})")
+
+        except Exception as e:
+            fail_count += 1
+            _append_attempt(order, _now, f"분산 {i+1}/{splits}: 예외 ({str(e)[:60]})")
+            logger.error(f"분산 주문 {i+1}/{splits} 예외: {e}")
+
+        order["completed_splits"] = i + 1
+        _save_orders(orders_file, orders)
+
+        # 마지막 회차가 아니면 대기
+        if i < splits - 1:
+            time.sleep(interval_sec)
+
+    # ── 최종 주문: 미체결 취소 + 잔량 일괄 주문 ──
+    final_method = order.get("final_method", "")
+    final_offset = float(order.get("final_offset_pct", 0))
+    final_filled = 0
+
+    if final_method and sub_method == "지정가":
+        # 지정가 분산은 미체결 가능 → 미체결 조회 후 취소 + 재주문
+        _now_f = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        time.sleep(2)  # 체결 반영 대기
+
+        try:
+            pending = trader.get_pending_orders(code)
+            unfilled_qty = sum(p.get("remaining_qty", 0) for p in pending
+                               if p.get("side") == ord_side)
+
+            if unfilled_qty > 0:
+                # 미체결 전량 취소
+                cancelled = 0
+                for p in pending:
+                    if p.get("side") != ord_side:
+                        continue
+                    _ord_no = p.get("ord_no", "")
+                    if _ord_no:
+                        cres = trader.cancel_order(_ord_no, code)
+                        c_ok = isinstance(cres, dict) and cres.get("success", False)
+                        if c_ok:
+                            cancelled += p.get("remaining_qty", 0)
+                        _append_attempt(order, _now_f,
+                                        f"최종: 취소 ord_no={_ord_no} {'OK' if c_ok else 'FAIL'}")
+                        time.sleep(0.3)
+
+                if cancelled > 0:
+                    time.sleep(1)
+                    # 최종 일괄 주문
+                    if final_method == "시장가":
+                        fres = trader.send_order(ord_side, code, cancelled, price=0, ord_dvsn="01")
+                        _fp_info = "시장가"
+                    else:
+                        cur_price = trader.get_current_price(code)
+                        fp = int(round((cur_price or 0) * (1 + final_offset / 100))) if cur_price else 0
+                        if fp <= 0:
+                            fp = 1
+                        fres = trader.send_order(ord_side, code, cancelled, price=fp, ord_dvsn="00")
+                        _fp_info = f"@{fp:,} ({final_offset:+.1f}%)"
+
+                    f_ok = isinstance(fres, dict) and fres.get("success", False)
+                    _f_ord = fres.get("ord_no", "") if isinstance(fres, dict) else ""
+                    _append_attempt(order, _now_f,
+                                    f"최종: {cancelled}주 {_fp_info} → {'완료' if f_ok else '실패'} (ord_no:{_f_ord})")
+                    if f_ok:
+                        final_filled = cancelled
+                    send_telegram(
+                        f"<b>연금저축 최종 주문</b>\n"
+                        f"{side} {etf_name}({code}) x{cancelled} {_fp_info}\n"
+                        f"{'완료' if f_ok else '실패'}"
+                    )
+            else:
+                _append_attempt(order, _now_f, "최종: 미체결 없음 (전량 체결)")
+        except Exception as e:
+            _append_attempt(order, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            f"최종: 예외 ({str(e)[:60]})")
+            logger.error(f"최종 주문 예외: {e}")
+
+    # 최종 결과
+    _now_final = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if fail_count == 0 or final_filled > 0:
+        order["status"] = "완료"
+    else:
+        order["status"] = "실패" if success_count == 0 else "완료"
+    _result_parts = [f"분산 {success_count}/{splits}"]
+    if final_method:
+        _result_parts.append(f"최종 {final_filled}주")
+    order["result"] = " + ".join(_result_parts)
+    order["executed_at"] = _now_final
+    _save_orders(orders_file, orders)
+
+    _summary = f"{side} {etf_name}({code}) x{total_qty}: {order['result']}"
+    send_telegram(f"<b>연금저축 분산 주문 {'완료' if order['status'] == '완료' else '종료'}</b>\n{_summary}")
+    return _summary
 
 
 def run_kis_pension_trade():
@@ -171,6 +348,13 @@ def run_kis_pension_trade():
             logger.warning(f"주문 {oid}: 수량/코드 누락")
             continue
 
+        # ── 분산 주문: 별도 함수로 처리 ──
+        if exec_method == "분산":
+            _split_result = _execute_split_order(trader, o, orders, orders_file, _now_str)
+            changed = True
+            results.append(_split_result)
+            continue
+
         # 실행 방식 안내
         if exec_method != method.split("(")[0].strip():
             _label = f"{exec_method} (원래: {method.split('(')[0].strip()})"
@@ -229,13 +413,25 @@ def run_kis_pension_trade():
                 ord_side = "BUY" if "매수" in side else "SELL"
                 res = trader.send_order(ord_side, code, qty, price=0, ord_dvsn="01")
             else:
-                # 지정가 fallback
+                # 지정가 (고정가 또는 오프셋)
                 price_val = int(o.get("price", 0))
+                offset_pct = float(o.get("price_offset_pct", 0))
                 ord_side = "BUY" if "매수" in side else "SELL"
                 if price_val > 0:
                     res = trader.send_order(
                         ord_side, code, qty, price=price_val, ord_dvsn="00"
                     )
+                elif offset_pct != 0:
+                    cur_price = trader.get_current_price(code)
+                    if cur_price and cur_price > 0:
+                        limit_price = int(round(cur_price * (1 + offset_pct / 100)))
+                        if limit_price <= 0:
+                            limit_price = 1
+                        res = trader.send_order(
+                            ord_side, code, qty, price=limit_price, ord_dvsn="00"
+                        )
+                    else:
+                        res = {"success": False, "msg": "현재가 조회 실패"}
                 else:
                     res = {"success": False, "msg": "지정가 0"}
 

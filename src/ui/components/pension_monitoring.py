@@ -85,6 +85,15 @@ def render_monitoring_tab(
         m2.metric("주식 평가", f"{_bal_sum['stock_eval']:,.0f} KRW")
         m3.metric("총 평가", f"{_bal_sum['total_eval']:,.0f} KRW")
         m4.metric("보유 종목 수", f"{len(_bal_sum['holdings'])}")
+        # 자산관리 투입원금 연동
+        _pen_invested = float(st.session_state.get("_asset_mgmt_total_invested_pension", 0) or 0)
+        if _pen_invested > 0:
+            _pen_pnl = _bal_sum['total_eval'] - _pen_invested
+            _pen_pnl_pct = (_pen_pnl / _pen_invested * 100) if _pen_invested > 0 else 0.0
+            im1, im2, im3 = st.columns(3)
+            im1.metric("투입원금", f"{_pen_invested:,.0f} KRW")
+            im2.metric("수익금", f"{_pen_pnl:+,.0f} KRW")
+            im3.metric("수익률", f"{_pen_pnl_pct:+.2f}%")
         if _bal_sum["holdings"]:
             st.dataframe(_format_kis_holdings_df(_bal_sum["holdings"]), use_container_width=True, hide_index=True)
 
@@ -374,7 +383,14 @@ def _render_portfolio_aggregation(
         _leg_qty = _hold_qty_map.pop(_leg_code, 0)
         if _leg_eval > 0 or _leg_qty > 0:
             _hold_eval_map[_pri_code] = _hold_eval_map.get(_pri_code, 0.0) + _leg_eval
+            _hold_qty_map[_pri_code] = _hold_qty_map.get(_pri_code, 0) + _leg_qty
             _legacy_sell_qty[_leg_code] = _leg_qty
+
+    # 레거시 합산 수량으로 현재수량 보정
+    for _code in _combined_rows:
+        _merged_qty = _hold_qty_map.get(_code, 0)
+        if _merged_qty > _combined_rows[_code]["현재수량(주)"]:
+            _combined_rows[_code]["현재수량(주)"] = _merged_qty
 
     _combo_price_cache = {}
 

@@ -51,7 +51,9 @@ class KISAccount:
             buyable_cash = float(str(summary.get("ord_psbl_cash", cash)).replace(",", ""))
             total_eval = float(str(summary.get("tot_asst_amt", 0)).replace(",", ""))
             stock_eval = float(str(summary.get("scts_evlu_amt", sum(h["eval_amt"] for h in holdings))).replace(",", ""))
-            
+            if total_eval <= 0:
+                total_eval = cash + stock_eval
+
             return {
                 "cash": cash, "buyable_cash": buyable_cash, "total_eval": total_eval,
                 "stock_eval": stock_eval, "holdings": holdings,

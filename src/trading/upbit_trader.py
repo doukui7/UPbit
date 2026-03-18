@@ -69,7 +69,7 @@ class UpbitTrader:
                 if currency:
                     params["currency"] = currency
                 headers = self.upbit._request_headers(params)
-                res = requests.get(f"{server_url}/v1/deposits", headers=headers, data=params)
+                res = requests.get(f"{server_url}/v1/deposits", headers=headers, params=params)
                 if res.status_code == 200:
                     return res.json(), None
                 err = f"Deposit API {res.status_code}: {res.text}"
@@ -81,7 +81,7 @@ class UpbitTrader:
                 if currency:
                     params["currency"] = currency
                 headers = self.upbit._request_headers(params)
-                res = requests.get(f"{server_url}/v1/withdraws", headers=headers, data=params)
+                res = requests.get(f"{server_url}/v1/withdraws", headers=headers, params=params)
                 if res.status_code == 200:
                     return res.json(), None
                 err = f"Withdraw API {res.status_code}: {res.text}"
@@ -97,7 +97,7 @@ class UpbitTrader:
                         if currency and currency != "KRW":
                             params["market"] = f"KRW-{currency}"
                         headers = self.upbit._request_headers(params)
-                        res = requests.get(f"{server_url}/v1/orders", headers=headers, data=params)
+                        res = requests.get(f"{server_url}/v1/orders", headers=headers, params=params)
                         if res.status_code != 200:
                             break
                         batch = res.json()

@@ -17,6 +17,7 @@ from src.ui.components.backtest_opt_tab import render_optimization_tab, render_s
 from src.ui.components.live_portfolio import render_live_portfolio_tab
 from src.ui.components.manual_trade import render_manual_trade_tab
 from src.ui.components.trade_history import render_trade_history_tab
+from src.ui.components.asset_mgmt import render_asset_mgmt_tab
 from src.ui.coin_utils import (
     load_balance_cache as _load_balance_cache,
     sync_account_cache_from_github as _sync_account_cache_from_github,
@@ -567,7 +568,9 @@ def render_coin_mode(config, save_config):
     st.sidebar.subheader("공통 설정")
     # Interval Removed (Per-Coin Setting)
     
-    default_start_str = _coin_cfg.get("start_date", None) or config.get("start_date", None) or _pjson_config.get("start_date", None)
+    from src.ui.components.asset_mgmt import get_earliest_start_date, get_total_invested
+    _am_earliest = get_earliest_start_date("coin")
+    default_start_str = _am_earliest or _coin_cfg.get("start_date", None) or config.get("start_date", None) or _pjson_config.get("start_date", None)
     if not default_start_str:
         st.error("start_date 설정이 없습니다. 로컬에서 portfolio.json에 start_date를 설정 후 push 해주세요.")
         st.stop()
@@ -584,17 +587,22 @@ def render_coin_mode(config, save_config):
     )
 
     # Capital Input Customization
-    default_cap = _coin_cfg.get("initial_cap", None) or config.get("initial_cap", None) or _pjson_config.get("initial_cap", None)
+    _am_invested = get_total_invested("coin")
+    if _am_invested > 0:
+        default_cap = int(_am_invested)
+    else:
+        default_cap = _coin_cfg.get("initial_cap", None) or config.get("initial_cap", None) or _pjson_config.get("initial_cap", None)
     if not default_cap:
         st.error("initial_cap 설정이 없습니다. 로컬에서 portfolio.json에 initial_cap을 설정 후 push 해주세요.")
         st.stop()
     initial_cap = st.sidebar.number_input(
         "초기 자본금 (KRW - 원 단위)",
         value=default_cap, step=100000, format="%d",
-        help="시뮬레이션을 위한 초기 투자금 설정입니다. 실제 계좌 잔고와는 무관하며, 수익률 계산의 기준이 됩니다.",
+        help="자산관리 탭의 입출금 내역에서 자동 반영됩니다. 직접 수정도 가능합니다.",
         disabled=IS_CLOUD
     )
-    st.sidebar.caption(f"설정: **{initial_cap:,.0f} KRW**")
+    _cap_src = "자산관리" if _am_invested > 0 else "설정"
+    st.sidebar.caption(f"{_cap_src}: **{initial_cap:,.0f} KRW**")
     
     # Strategy Selection REMOVED (Moved to Per-Coin)
 
@@ -676,7 +684,10 @@ def render_coin_mode(config, save_config):
     # ═══════════════════════════════════════════════════════════════
     # fragment 내부에서 참조할 변수를 closure로 캡처
     _frag_portfolio = portfolio_list
-    _frag_initial_cap = initial_cap
+    # 자산관리 탭의 총 투입원금이 있으면 우선 사용
+    _frag_initial_cap = float(st.session_state.get("_asset_mgmt_total_invested_coin", 0) or 0)
+    if _frag_initial_cap <= 0:
+        _frag_initial_cap = initial_cap
 
     @st.fragment(run_every=10)
     def _render_live_ticker():
@@ -806,7 +817,7 @@ def render_coin_mode(config, save_config):
         pass
 
     # --- Tabs ---
-    tab1, tab_orders, tab5, tab3, tab4, tab6, tab7 = st.tabs(["🚀 실시간 포트폴리오", "📋 예약 주문", "🛒 수동 주문", "📜 거래 내역", "📊 백테스트", "⏰ 트리거", "📝 운영 로그"])
+    tab1, tab_orders, tab5, tab3, tab4, tab_am, tab6, tab7 = st.tabs(["🚀 실시간 포트폴리오", "📋 예약 주문", "🛒 수동 주문", "📜 거래 내역", "📊 백테스트", "💰 자산관리", "⏰ 트리거", "📝 운영 로그"])
 
     # --- Tab 1: Live Portfolio ---
     with tab1:
@@ -826,6 +837,10 @@ def render_coin_mode(config, save_config):
     # --- Tab 3: 거래 내역 ---
     with tab3:
         render_trade_history_tab(trader, portfolio_list)
+
+    # --- Tab: 자산관리 ---
+    with tab_am:
+        render_asset_mgmt_tab(portfolio_list, start_date=start_date, initial_cap=initial_cap)
 
     # --- Tab 6: 트리거 ---
     with tab6:

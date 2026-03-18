@@ -64,6 +64,11 @@ def render_live_portfolio_tab(
         st.warning("사이드바에서 포트폴리오에 코인을 추가해주세요.")
         return
 
+    # 자산관리 투입원금 로드
+    from src.ui.components.asset_mgmt import load_asset_mgmt, calc_invested_capital
+    _am_data = load_asset_mgmt()
+    _am_coin_strats = _am_data.get("coin", {}).get("strategies", {})
+
     count = len(portfolio_list)
 
     # ── 일괄 API 호출 (TTL 캐시) ──
@@ -106,12 +111,19 @@ def render_live_portfolio_tab(
 
     sum_col1, sum_col2, sum_col3, sum_col4 = st.columns(4)
 
-    total_init_val = initial_cap
-
-    # Cash Logic
-    total_weight_alloc = sum([item.get('weight', 0) for item in portfolio_list])
-    cash_ratio = max(0, 100 - total_weight_alloc) / 100.0
-    reserved_cash = initial_cap * cash_ratio
+    # 자산관리 투입원금 합산 (없으면 사이드바 초기자본 fallback)
+    _am_total = sum(
+        calc_invested_capital(_am_coin_strats.get(make_signal_key(it), {}))
+        for it in portfolio_list
+    )
+    if _am_total > 0:
+        total_init_val = _am_total
+        reserved_cash = 0
+    else:
+        total_init_val = initial_cap
+        total_weight_alloc = sum([item.get('weight', 0) for item in portfolio_list])
+        cash_ratio = max(0, 100 - total_weight_alloc) / 100.0
+        reserved_cash = initial_cap * cash_ratio
     total_theo_val = reserved_cash
 
     # --- 전체 자산 현황 테이블 ---
@@ -467,7 +479,9 @@ def render_live_portfolio_tab(
             weight = 0.0
         interval = item.get('interval', 'day')
 
-        per_coin_cap = initial_cap * (weight / 100.0)
+        _am_key = make_signal_key(item)
+        _am_invested = calc_invested_capital(_am_coin_strats.get(_am_key, {}))
+        per_coin_cap = _am_invested if _am_invested > 0 else initial_cap * (weight / 100.0)
 
         with st.expander(f"**{ticker}** ({strategy_mode} {param_val}, {weight}%, {interval})", expanded=False):
             try:

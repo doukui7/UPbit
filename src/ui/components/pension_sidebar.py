@@ -66,8 +66,11 @@ def render_pension_sidebar(config: dict, save_config) -> dict | None:
     st.title("연금저축 포트폴리오")
     st.sidebar.header("연금저축 설정")
 
+    from src.ui.components.asset_mgmt import get_earliest_start_date
+    _am_pen_earliest = get_earliest_start_date("pension")
     _pen_bt_start_raw = str(
-        pen_cfg.get("kis_pension_start_date", config.get("start_date", "2020-01-01"))
+        _am_pen_earliest
+        or pen_cfg.get("kis_pension_start_date", config.get("start_date", "2020-01-01"))
         or "2020-01-01"
     )
     try:

@@ -24,6 +24,7 @@ from src.ui.components.pension_manual import render_pension_manual_tab
 from src.ui.components.pension_backtest import render_pension_backtest_tab
 from src.ui.components.pension_sidebar import render_pension_sidebar
 from src.ui.components.pension_monitoring import render_monitoring_tab
+from src.ui.components.pension_asset_mgmt import render_pension_asset_mgmt_tab
 
 
 def render_kis_pension_mode(config, save_config):
@@ -381,12 +382,13 @@ def render_kis_pension_mode(config, save_config):
         _cache_put("orderbook", _c, _ob)
         return _ob
 
-    tab_p1, tab_p2, tab_p3, tab_p_orders, tab_p4, tab_p5, tab_p6, tab_p7, tab_p8 = st.tabs([
+    tab_p1, tab_p2, tab_p3, tab_p_orders, tab_p4, tab_p_am, tab_p5, tab_p6, tab_p7, tab_p8 = st.tabs([
         "🚀 실시간 모니터링",
         "🧪 백테스트",
         "🛒 수동 주문",
         "📋 예약 주문",
         "📜 거래내역",
+        "💰 자산관리",
         "📖 전략 가이드",
         "📋 주문방식",
         "💳 수수료/세금",
@@ -474,6 +476,15 @@ def render_kis_pension_mode(config, save_config):
     # ══════════════════════════════════════════════════════════════
     with tab_p4:
         render_pension_history_tab(trader, kis_acct, kis_prdt, pen_bal_key, pen_bal_ts_key)
+
+    # ══════════════════════════════════════════════════════════════
+    # Tab: 자산관리
+    # ══════════════════════════════════════════════════════════════
+    with tab_p_am:
+        render_pension_asset_mgmt_tab(
+            pen_port_edited=_pen_port_edited,
+            pen_bal_key=pen_bal_key,
+        )
 
     # ══════════════════════════════════════════════════════════════
     # Tab 5-8: 가이드 / 주문방식 / 수수료 / 트리거

@@ -33,8 +33,8 @@ def _compute_kis_balance_summary(bal):
             bal["cash"] = bal.get("buyable_cash", 0.0)
         if "stock_eval" not in bal:
             bal["stock_eval"] = sum(_safe_float(h.get("eval_amt", 0)) for h in bal.get("holdings", []))
-        if "total_eval" not in bal:
-            bal["total_eval"] = bal["cash"] + bal["stock_eval"]
+        if not bal.get("total_eval"):
+            bal["total_eval"] = bal.get("cash", 0.0) + bal.get("stock_eval", 0.0)
         return bal
 
     if "output1" not in bal:
@@ -57,10 +57,14 @@ def _compute_kis_balance_summary(bal):
             })
             
     cash_val = _safe_float(out2.get("dnca_tot_amt"))
+    _stock_eval = _safe_float(out2.get("scts_evl_amt"))
+    _total_eval = _safe_float(out2.get("tot_evl_amt"))
+    if _total_eval <= 0:
+        _total_eval = cash_val + _stock_eval
     return {
         "cash": cash_val,
         "buyable_cash": cash_val,
         "holdings": holdings,
-        "stock_eval": _safe_float(out2.get("scts_evl_amt")),
-        "total_eval": _safe_float(out2.get("tot_evl_amt"))
+        "stock_eval": _stock_eval,
+        "total_eval": _total_eval,
     }

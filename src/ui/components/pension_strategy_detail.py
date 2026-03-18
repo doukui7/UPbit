@@ -447,12 +447,15 @@ def _render_vaa_detail(vaa_res, auto_signal_strategies):
 
     _off_sc = _vs.get("offensive_scores", {})
     _def_sc = _vs.get("defensive_scores", {})
+    _vaa_kr_map = vaa_res.get("kr_etf_map", {}) or {}
     if _off_sc or _def_sc:
         _score_rows = []
         for t, s in _off_sc.items():
-            _score_rows.append({"티커": t, "유형": "공격", "모멘텀": round(s * 100, 2)})
+            _kr_code = str(_vaa_kr_map.get(t, "")).strip()
+            _score_rows.append({"티커": t, "국내 ETF": _fmt_etf_code_name(_kr_code) if _kr_code else "", "유형": "공격", "모멘텀": round(s * 100, 2)})
         for t, s in _def_sc.items():
-            _score_rows.append({"티커": t, "유형": "방어", "모멘텀": round(s * 100, 2)})
+            _kr_code = str(_vaa_kr_map.get(t, "")).strip()
+            _score_rows.append({"티커": t, "국내 ETF": _fmt_etf_code_name(_kr_code) if _kr_code else "", "유형": "방어", "모멘텀": round(s * 100, 2)})
         st.dataframe(pd.DataFrame(_score_rows), use_container_width=True, hide_index=True)
 
     _vaa_alloc = vaa_res.get("alloc_df")

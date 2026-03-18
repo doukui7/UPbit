@@ -613,6 +613,7 @@ def compute_vaa_signal(
         return {
             "signal": _vaa_sig, "action": _vaa_action,
             "alloc_df": pd.DataFrame(_vaa_rebal_rows) if _vaa_rebal_rows else pd.DataFrame(),
+            "kr_etf_map": vaa_settings.get("kr_etf_map", {}),
         }
     except Exception as _e:
         return {"error": str(_e)}

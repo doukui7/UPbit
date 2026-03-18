@@ -13,6 +13,7 @@ from src.ui.gold_mode import render_gold_mode
 from src.ui.isa_mode import render_kis_isa_mode
 from src.ui.pension_mode import render_kis_pension_mode
 from src.ui.project_logic import render_project_logic
+from src.ui.us_stock_mode import render_us_stock_mode
 
 # Load environment variables
 load_dotenv(override=True)
@@ -31,6 +32,7 @@ def main():
         "골드": "GOLD",
         "ISA": "ISA",
         "연금저축": "PENSION",
+        "미국주식": "US_STOCK",
         "프로젝트 로직": "PROJECT",
     }
     _mode_keys = list(_mode_map.keys())
@@ -93,6 +95,8 @@ def main():
         render_kis_isa_mode(config, save_config)
     elif trading_mode == "PENSION":
         render_kis_pension_mode(config, save_config)
+    elif trading_mode == "US_STOCK":
+        render_us_stock_mode(config, save_config)
     elif trading_mode == "PROJECT":
         render_project_logic()
     else:
