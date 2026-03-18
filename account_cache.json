@@ -1,8 +1,8 @@
 {
-  "updated_at": "2026-03-18 21:56:16 KST",
+  "updated_at": "2026-03-19 00:43:07 KST",
   "balances": {
     "BTC": 0.00094551,
-    "KRW": 188.81268896
+    "KRW": 5000188.81268896
   },
   "orders": [
     {
@@ -2511,6 +2511,45 @@
     }
   ],
   "deposits": [
+    {
+      "type": "deposit",
+      "uuid": "43ddb6a5-5159-4794-959f-a52494554bfd",
+      "currency": "KRW",
+      "net_type": null,
+      "txid": "BKD-2026-03-18-2c5eeeaa00f3df5ddc325f0740",
+      "state": "ACCEPTED",
+      "created_at": "2026-03-18T23:37:54+09:00",
+      "done_at": "2026-03-18T23:38:21+09:00",
+      "amount": "5000000.0",
+      "fee": "0.0",
+      "transaction_type": "default"
+    },
+    {
+      "type": "deposit",
+      "uuid": "885270c2-c07b-410d-8ed6-0356319869f9",
+      "currency": "KRW",
+      "net_type": null,
+      "txid": "BKD-2026-03-18-7a9b5eabd02f203d5e7c5df8d1",
+      "state": "REJECTED",
+      "created_at": "2026-03-18T23:34:23+09:00",
+      "done_at": null,
+      "amount": "5000000.0",
+      "fee": "0.0",
+      "transaction_type": "default"
+    },
+    {
+      "type": "deposit",
+      "uuid": "dfa9dd40-1c8c-48cd-89a7-6e1431cb9554",
+      "currency": "KRW",
+      "net_type": null,
+      "txid": "BKD-2026-03-18-7e58583264ad3b4ae6bb72fb73",
+      "state": "REJECTED",
+      "created_at": "2026-03-18T23:33:15+09:00",
+      "done_at": null,
+      "amount": "5000000.0",
+      "fee": "0.0",
+      "transaction_type": "default"
+    },
     {
       "type": "deposit",
       "uuid": "74edf930-a494-46f8-84ea-48a0e1d2bac6",
