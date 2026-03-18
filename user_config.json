@@ -29,27 +29,23 @@
   "pension_portfolio": [
     {
       "strategy": "LAA",
-      "weight": 50
+      "weight": 34
     },
     {
       "strategy": "듀얼모멘텀",
-      "weight": 50
+      "weight": 33
     },
     {
       "strategy": "VAA",
-      "weight": 0
-    },
-    {
-      "strategy": "CDM",
-      "weight": 0
+      "weight": 33
     }
   ],
   "kr_etf_laa_spy": "360750",
   "kr_etf_laa_iwd": "360750",
-  "kr_etf_laa_gld": "132030",
-  "kr_etf_laa_ief": "453540",
+  "kr_etf_laa_gld": "411060",
+  "kr_etf_laa_ief": "305080",
   "kr_etf_laa_qqq": "133690",
-  "kr_etf_laa_shy": "114470",
+  "kr_etf_laa_shy": "329750",
   "pen_dm_lookback": 12,
   "pen_dm_trading_days": 22,
   "pen_dm_offensive": "SPY,EFA",
@@ -60,14 +56,14 @@
   "pen_dm_w6": 2.0,
   "pen_dm_w12": 1.0,
   "pen_dm_kr_spy": "360750",
-  "pen_dm_kr_efa": "453850",
-  "pen_dm_kr_agg": "453540",
-  "pen_dm_kr_bil": "114470",
+  "pen_dm_kr_efa": "251350",
+  "pen_dm_kr_agg": "305080",
+  "pen_dm_kr_bil": "329750",
   "pen_dm_agg_etf": "360750",
-  "pen_dm_def_etf": "453540",
+  "pen_dm_def_etf": "305080",
   "pen_vaa_kr_spy": "379800",
   "pen_vaa_kr_efa": "195930",
-  "pen_vaa_kr_eem": "295820",
+  "pen_vaa_kr_eem": "195980",
   "pen_vaa_kr_agg": "305080",
   "pen_vaa_kr_lqd": "329750",
   "pen_vaa_kr_ief": "305080",
@@ -81,7 +77,7 @@
   "pen_cdm_kr_tlt": "304660",
   "pen_cdm_kr_gld": "411060",
   "pen_cdm_kr_bil": "329750",
-  "topup_enabled": true,
+  "topup_enabled": false,
   "topup_buy_amount": 6000,
   "topup_sell_amount": 6000
 }
