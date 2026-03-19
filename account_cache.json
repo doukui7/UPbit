@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-03-19 12:43:37 KST",
+  "updated_at": "2026-03-19 14:19:56 KST",
   "balances": {
     "BTC": 0.00094551,
     "KRW": 5000188.81268896
@@ -2488,26 +2488,6 @@
       "application_name": "android",
       "thirdparty": false,
       "is_cancel_and_newable": true
-    },
-    {
-      "uuid": "b77d72d3-3fff-4a3f-b8af-752fd6454f38",
-      "side": "bid",
-      "ord_type": "price",
-      "price": "23649.61910152",
-      "avg_price": "100604277",
-      "state": "cancel",
-      "market": "KRW-BTC",
-      "created_at": "2026-03-10T09:10:20+09:00",
-      "reserved_fee": "11.82480955076",
-      "remaining_fee": "0.00016192076",
-      "paid_fee": "11.82464763",
-      "locked": "0.32400344076",
-      "prevented_locked": "0",
-      "executed_volume": "0.00023519",
-      "trades_count": 1,
-      "application_name": "self_issued_open_api",
-      "thirdparty": false,
-      "is_cancel_and_newable": false
     }
   ],
   "deposits": [
