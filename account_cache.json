@@ -1,10 +1,34 @@
 {
-  "updated_at": "2026-03-24 12:48:29 KST",
+  "updated_at": "2026-03-24 16:48:40 KST",
   "balances": {
     "BTC": 0.00094551,
-    "KRW": 5000188.81268896
+    "KRW": 0.81269413,
+    "USDT": 10068.96685975
   },
   "orders": [
+    {
+      "uuid": "55ce7dee-e6bf-4f5c-9c51-331b3954adb1",
+      "side": "bid",
+      "ord_type": "limit",
+      "price": "1489",
+      "avg_price": "1489.7445",
+      "state": "done",
+      "market": "KRW-USDT",
+      "created_at": "2026-03-24T16:02:46+09:00",
+      "volume": "10068.96685975",
+      "remaining_volume": "0",
+      "prevented_volume": "0",
+      "reserved_fee": "7496.345827083875",
+      "remaining_fee": "0",
+      "paid_fee": "7496.345827083875",
+      "locked": "0",
+      "prevented_locked": "0",
+      "executed_volume": "10068.96685975",
+      "trades_count": 1,
+      "application_name": "android",
+      "thirdparty": false,
+      "is_cancel_and_newable": true
+    },
     {
       "uuid": "6e90ad39-26bb-4d30-9cad-9e7d98960ea1",
       "side": "bid",
@@ -2491,6 +2515,19 @@
     }
   ],
   "deposits": [
+    {
+      "type": "deposit",
+      "uuid": "9bc414ab-56f3-4462-b5be-ed4c214b622f",
+      "currency": "KRW",
+      "net_type": null,
+      "txid": "BKD-2026-03-24-d774ac07d6d4d90e2f3873ef28",
+      "state": "ACCEPTED",
+      "created_at": "2026-03-24T16:01:31+09:00",
+      "done_at": "2026-03-24T16:01:59+09:00",
+      "amount": "10000000.0",
+      "fee": "0.0",
+      "transaction_type": "default"
+    },
     {
       "type": "deposit",
       "uuid": "43ddb6a5-5159-4794-959f-a52494554bfd",
