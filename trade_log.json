@@ -6,6 +6,37 @@
     "strategy": "SMA(29, day)",
     "reason": "주기 미도래(day)",
     "detail": "interval=day, 보충매수/매도만 실행",
+    "current_price": 103839000.0,
+    "buy_target": 101829034.48275863,
+    "sell_target": 101829034.48275863,
+    "buy_gap": 1.9738628844425454,
+    "sell_gap": 1.9738628844425454,
+    "position_state": "BUY",
+    "condition": "현재가 103,839,000원 | 매도타점(SMA_29) 101,829,034원 | 이격 +1.97% | 조건미충족",
+    "time": "2026-03-25 05:00:16 KST"
+  },
+  {
+    "mode": "signal",
+    "ticker": "KRW-BTC",
+    "side": "HOLD",
+    "strategy": "Donchian(115/105, 4H)",
+    "detail": "prev=HOLD → raw=HOLD → HOLD",
+    "current_price": 103839000.0,
+    "buy_target": 112450000.0,
+    "sell_target": 97500000.0,
+    "buy_gap": -7.6576256113828345,
+    "sell_gap": 6.50153846153847,
+    "condition": "현재가 103,839,000원 | 매도타점(하단 105) 97,500,000원 | 이격 +6.50% | 조건미충족",
+    "reason": "조건미충족 (중립구간)",
+    "time": "2026-03-25 05:00:15 KST"
+  },
+  {
+    "mode": "signal",
+    "ticker": "KRW-BTC",
+    "side": "SKIP",
+    "strategy": "SMA(29, day)",
+    "reason": "주기 미도래(day)",
+    "detail": "interval=day, 보충매수/매도만 실행",
     "current_price": 104273000.0,
     "buy_target": 101829034.48275863,
     "sell_target": 101829034.48275863,
@@ -2986,29 +3017,5 @@
     "reason": "주기 미도래(day)",
     "detail": "interval=day, 보충매수/매도만 실행",
     "time": "2026-03-08 13:00:16 KST"
-  },
-  {
-    "mode": "signal",
-    "ticker": "KRW-BTC",
-    "side": "HOLD",
-    "strategy": "Donchian(115/105, 4H)",
-    "detail": "prev=HOLD → raw=HOLD → HOLD",
-    "current_price": 99159000.0,
-    "buy_target": 107547000.0,
-    "sell_target": 92000000.0,
-    "buy_gap": -7.799380735864325,
-    "sell_gap": 7.781521739130426,
-    "condition": "현재가 99,159,000원 | 매도타점(하단 105) 92,000,000원 | 이격 +7.78% | 조건미충족",
-    "reason": "조건미충족 (중립구간)",
-    "time": "2026-03-08 13:00:16 KST"
-  },
-  {
-    "mode": "signal",
-    "ticker": "KRW-BTC",
-    "side": "SKIP",
-    "strategy": "SMA(29, day)",
-    "reason": "주기 미도래(day)",
-    "detail": "interval=day, 보충매수/매도만 실행",
-    "time": "2026-03-08 01:20:16 KST"
   }
 ]
