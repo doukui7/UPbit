@@ -4,19 +4,19 @@
     "buy_target": 102166862.06896552,
     "sell_target": 102166862.06896552,
     "strategy_type": "sma",
-    "current_price": 105708000.0,
-    "buy_dist": 3.466033760187437,
-    "sell_dist": 3.466033760187437,
-    "updated_at": "2026-03-26 01:00:19"
+    "current_price": 105876000.0,
+    "buy_dist": 3.6304706398153863,
+    "sell_dist": 3.6304706398153863,
+    "updated_at": "2026-03-26 05:00:17"
   },
   "KRW-BTC_Donchian_115_minute240": {
     "state": "HOLD",
     "buy_target": 112450000.0,
     "sell_target": 97500000.0,
     "strategy_type": "donchian",
-    "current_price": 105708000.0,
-    "buy_dist": -5.995553579368607,
-    "sell_dist": 8.41846153846153,
-    "updated_at": "2026-03-26 01:00:19"
+    "current_price": 105876000.0,
+    "buy_dist": -5.846153846153845,
+    "sell_dist": 8.590769230769224,
+    "updated_at": "2026-03-26 05:00:17"
   }
 }
