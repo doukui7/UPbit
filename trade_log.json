@@ -2,6 +2,36 @@
   {
     "mode": "signal",
     "ticker": "KRW-BTC",
+    "side": "HOLD",
+    "strategy": "SMA(29, 1D)",
+    "detail": "prev=SELL → raw=SELL → SELL",
+    "current_price": 100894000.0,
+    "buy_target": 102932310.34482759,
+    "sell_target": 102932310.34482759,
+    "buy_gap": -1.9802434609688335,
+    "sell_gap": -1.9802434609688335,
+    "condition": "현재가 100,894,000원 | 매수타점(SMA_29) 102,932,310원 | 이격 -1.98% | 조건미충족",
+    "reason": "전환조건 미충족 (기존 SELL 상태 유지)",
+    "time": "2026-03-29 09:00:12 KST"
+  },
+  {
+    "mode": "signal",
+    "ticker": "KRW-BTC",
+    "side": "HOLD",
+    "strategy": "Donchian(115/105, 4H)",
+    "detail": "prev=HOLD → raw=HOLD → HOLD",
+    "current_price": 100894000.0,
+    "buy_target": 112450000.0,
+    "sell_target": 99952000.0,
+    "buy_gap": -10.276567363272571,
+    "sell_gap": 0.9424523771410342,
+    "condition": "현재가 100,894,000원 | 매도타점(하단 105) 99,952,000원 | 이격 +0.94% | 조건미충족",
+    "reason": "조건미충족 (중립구간)",
+    "time": "2026-03-29 09:00:11 KST"
+  },
+  {
+    "mode": "signal",
+    "ticker": "KRW-BTC",
     "side": "SKIP",
     "strategy": "SMA(29, day)",
     "reason": "주기 미도래(day)",
@@ -3040,36 +3070,5 @@
     "condition": "현재가 103,074,000원 | 매수타점(상단 115) 107,547,000원 | 이격 -4.16% | 조건미충족",
     "reason": "조건미충족 (중립구간)",
     "time": "2026-03-13 01:00:15 KST"
-  },
-  {
-    "mode": "signal",
-    "ticker": "KRW-BTC",
-    "side": "SKIP",
-    "strategy": "SMA(29, day)",
-    "reason": "주기 미도래(day)",
-    "detail": "interval=day, 보충매수/매도만 실행",
-    "current_price": 103079000.0,
-    "buy_target": 99624103.44827586,
-    "sell_target": 99624103.44827586,
-    "buy_gap": 3.467932389994255,
-    "sell_gap": 3.467932389994255,
-    "position_state": "BUY",
-    "condition": "현재가 103,079,000원 | 매수타점(SMA_29) 99,624,103원 | 이격 +3.47% | 조건충족",
-    "time": "2026-03-12 21:00:11 KST"
-  },
-  {
-    "mode": "signal",
-    "ticker": "KRW-BTC",
-    "side": "HOLD",
-    "strategy": "Donchian(115/105, 4H)",
-    "detail": "prev=HOLD → raw=HOLD → HOLD",
-    "current_price": 103079000.0,
-    "buy_target": 107547000.0,
-    "sell_target": 92000000.0,
-    "buy_gap": -4.154462700028827,
-    "sell_gap": 12.042391304347833,
-    "condition": "현재가 103,079,000원 | 매수타점(상단 115) 107,547,000원 | 이격 -4.15% | 조건미충족",
-    "reason": "조건미충족 (중립구간)",
-    "time": "2026-03-12 21:00:11 KST"
   }
 ]
